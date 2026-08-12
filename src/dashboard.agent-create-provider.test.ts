@@ -16,7 +16,7 @@
 // `''` through as "omitted" — and normalizeProviderConfig's read-oriented
 // fallback would then create the agent on Claude, silently.
 
-import { describe, it, expect, beforeAll, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 
 // Provider preflight shells out to `where`/`which`. Claim every command exists
 // so the assertions never depend on which CLIs the host happens to have.
@@ -71,6 +71,13 @@ beforeAll(() => {
 beforeEach(() => {
   _initTestDatabase();
   state.createCalls.length = 0;
+  // OpenAI preflight requires either Codex login state or an API key. Keep this
+  // provider-boundary suite independent of credentials on the test host.
+  vi.stubEnv('OPENAI_API_KEY', 'test-openai-key');
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
 });
 
 /** POST a create body VERBATIM — no key is added or dropped on the way in. */
