@@ -105,8 +105,16 @@ systemctl restart claudeclaw         # restart after .env changes
 ```
 
 Update to the latest code: re-run `bash install-vps.sh` (it `git reset --hard`s to the
-configured branch, rebuilds, and restarts — your `.env`, `DASHBOARD_TOKEN`, and `store/`
-are preserved).
+configured branch, rebuilds, and restarts — `store/` is untouched).
+
+`.env` is **rewritten** from the template on every run. Carried across: `DASHBOARD_TOKEN`,
+`DB_ENCRYPTION_KEY`, and every per-agent `*_BOT_TOKEN` the dashboard's New Agent wizard
+added. Any *other* key you hand-edited into `.env` is lost.
+
+Settings the installer supports belong in `claudeclaw-deploy.conf`. Note that the conf is
+not a general passthrough: it is sourced, but only the variables the installer explicitly
+supports are written into the generated `.env`. A custom runtime key placed there does not
+reach `.env` either, and needs a separately supported persistence mechanism.
 
 Rotate the dashboard token:
 
