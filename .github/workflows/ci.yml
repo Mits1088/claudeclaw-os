@@ -49,4 +49,9 @@ jobs:
         run: npm run build
 
       - name: Test
+        if: matrix.node != 24
         run: npm test
+
+      - name: Test (Node 24 teardown-safe)
+        if: matrix.node == 24
+        run: npx vitest run --pool=threads --poolOptions.threads.singleThread
