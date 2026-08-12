@@ -124,6 +124,41 @@ sudo sed -i "s/^DASHBOARD_TOKEN=.*/DASHBOARD_TOKEN=$(openssl rand -hex 24)/" \
 sudo systemctl restart claudeclaw
 ```
 
+### Starting and stopping agents
+
+Only the main bot is a systemd service. Other agents are started and stopped from the
+dashboard's Agents page — Start spawns a detached child of the main process, Stop kills it.
+No SSH, no root, no per-agent unit files, same as the macOS and Windows installs.
+
+Agents are stopped whenever the main service stops, and are **not** brought back
+automatically. Press Start again after any of these:
+
+- a host **reboot**;
+- `systemctl restart claudeclaw`, including every installer re-run.
+
+That is deliberate. Agents join the main unit's cgroup, so systemd's default
+`KillMode=control-group` stops them alongside main. Letting them survive would leave them
+running the *previous* build after an update — a Node process loads its code at spawn, so a
+rebuilt `dist/` never reaches an already-running agent — giving you a mixed-version fleet
+until each one was restarted by hand. Being stopped and restarted deliberately is the
+cheaper failure.
+
+Agent logs are `logs/<agent-id>.log` in the install directory, not `journalctl` — agents
+aren't systemd units.
+
+If you previously hand-wrote `claudeclaw-agent-*.service` units to work around agent Start
+being broken, remove them, or systemd and the dashboard will fight over the same PID file.
+Note that `disable` takes no glob, so name each unit:
+
+```bash
+for a in <your-agent-ids>; do
+  systemctl disable --now "claudeclaw-agent-$a" 2>/dev/null || true
+done
+rm -f /etc/systemd/system/claudeclaw-agent-*.service
+rm -f /etc/systemd/system/multi-user.target.wants/claudeclaw-agent-*.service
+systemctl daemon-reload
+```
+
 ## Troubleshooting
 
 - **`tailscale serve failed`** — HTTPS certs aren't enabled for your tailnet. Enable them

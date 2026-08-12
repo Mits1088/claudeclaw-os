@@ -3448,19 +3448,26 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
-  // Activate an agent (install service + start)
+  // Activate an agent (install service + start).
+  // A failed activation MUST be a non-2xx: apiPost (web/src/lib/api.ts) only
+  // throws on non-2xx, so returning 200 with {ok:false} made the dashboard's
+  // Start button fail silently — it flipped to "Starting…", flipped back, and
+  // told the user nothing while the agent stayed down.
   app.post('/api/agents/:id/activate', (c) => {
     const agentId = c.req.param('id');
     if (agentId === 'main') return c.json({ error: 'Cannot activate main via this endpoint' }, 400);
     const result = activateAgent(agentId);
+    if (!result.ok) return c.json({ error: result.error ?? 'Activation failed' }, 500);
     return c.json(result);
   });
 
-  // Deactivate an agent (stop + uninstall service)
+  // Deactivate an agent (stop + uninstall service). Same status contract as
+  // activate above.
   app.post('/api/agents/:id/deactivate', (c) => {
     const agentId = c.req.param('id');
     if (agentId === 'main') return c.json({ error: 'Cannot deactivate main via this endpoint' }, 400);
     const result = deactivateAgent(agentId);
+    if (!result.ok) return c.json({ error: result.error ?? 'Deactivation failed' }, 500);
     return c.json(result);
   });
 

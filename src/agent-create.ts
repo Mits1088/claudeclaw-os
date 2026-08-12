@@ -10,7 +10,7 @@ import { ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, 
 import { refreshAgentRegistry } from './orchestrator.js';
 import { atomicEnvWrite } from './env-write.js';
 import { logger } from './logger.js';
-import { IS_WINDOWS, IS_MACOS, IS_LINUX, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern } from './platform.js';
+import { IS_MACOS, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern } from './platform.js';
 import {
   DEFAULT_CLAUDE_MODEL,
   ProviderConfig,
@@ -422,9 +422,14 @@ function removeBotTokenFromEnv(envPath: string, envKey: string, agentId: string)
 
 function generateServiceConfig(agentId: string): string | null {
   if (IS_MACOS) return generateLaunchdPlist(agentId);
-  if (IS_LINUX) return generateSystemdUnit(agentId);
-  // Windows: no per-agent service config. Main bot spawns agents as
-  // detached child processes at activate time (see activateWindows).
+  // Linux and Windows: no per-agent service config. The main bot spawns
+  // agents as detached child processes at activate time (activateDetached).
+  //
+  // Linux used to get a `systemctl --user` unit here. It was removed because
+  // the user bus it needs does not exist on a headless deploy: the VPS
+  // installer runs the bot from a system unit as a `--system --shell nologin`
+  // account, so `systemctl --user` fails with "Failed to connect to bus".
+  // Writing a unit no one can load only produced dead files.
   return null;
 }
 
@@ -486,35 +491,6 @@ function generateLaunchdPlist(agentId: string): string {
   return plistPath;
 }
 
-function generateSystemdUnit(agentId: string): string {
-  const unitDir = path.join(os.homedir(), '.config', 'systemd', 'user');
-  fs.mkdirSync(unitDir, { recursive: true });
-
-  const serviceName = `com.claudeclaw.agent-${agentId}`;
-  const unitPath = path.join(unitDir, `${serviceName}.service`);
-
-  const nodePath = process.execPath;
-
-  const unit = `[Unit]
-Description=ClaudeClaw Agent: ${agentId}
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=${nodePath} ${PROJECT_ROOT}/dist/index.js --agent ${agentId}
-WorkingDirectory=${PROJECT_ROOT}
-Environment=NODE_ENV=production
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=default.target
-`;
-
-  fs.writeFileSync(unitPath, unit, 'utf-8');
-  return unitPath;
-}
-
 // ── Activate / Deactivate ────────────────────────────────────────────
 
 export interface ActivationResult {
@@ -529,25 +505,24 @@ export function activateAgent(agentId: string): ActivationResult {
   }
   try {
     if (IS_MACOS) return activateLaunchd(agentId);
-    if (IS_LINUX) return activateSystemd(agentId);
-    if (IS_WINDOWS) {
-      const result = activateWindows(agentId);
-      if (!result.ok) {
-        return {
-          ok: false,
-          error:
-            `${result.error ?? 'Windows activation failed'}\n` +
-            claudeCodeHandoff({
-              projectRoot: PROJECT_ROOT,
-              what: `Activating agent "${agentId}"`,
-              error: result.error,
-              file: 'src/agent-create.ts (activateWindows function)',
-            }),
-        };
-      }
-      return result;
+    // Everything else (Linux, Windows) spawns a detached child. This needs no
+    // service manager and no privileges, so it works the same on a desktop and
+    // inside the hardened systemd unit the VPS installer writes.
+    const result = activateDetached(agentId);
+    if (!result.ok) {
+      return {
+        ok: false,
+        error:
+          `${result.error ?? 'Agent activation failed'}\n` +
+          claudeCodeHandoff({
+            projectRoot: PROJECT_ROOT,
+            what: `Activating agent "${agentId}"`,
+            error: result.error,
+            file: 'src/agent-create.ts (activateDetached function)',
+          }),
+      };
     }
-    return { ok: false, error: `Unsupported platform: ${os.platform()}` };
+    return result;
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
@@ -606,27 +581,29 @@ function activateLaunchd(agentId: string): ActivationResult {
   return { ok: true, pid };
 }
 
-function activateSystemd(agentId: string): ActivationResult {
-  const serviceName = `com.claudeclaw.agent-${agentId}`;
-  try {
-    execSync(`systemctl --user daemon-reload`, { stdio: 'ignore' });
-    execSync(`systemctl --user enable "${serviceName}"`, { stdio: 'ignore' });
-    execSync(`systemctl --user start "${serviceName}"`, { stdio: 'ignore' });
-    logger.info({ agentId }, 'Agent activated (systemd)');
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
-
 /**
- * Activate an agent on Windows by spawning a detached child process.
- * The main bot owns it; to deactivate we kill the PID. No schtasks,
- * no service, no UAC. If the main bot exits the agent will exit too,
- * which is fine since the user controls main bot lifecycle (terminal,
- * PM2, or the scheduled task the wizard installed).
+ * Activate an agent by spawning a detached child process. Used on Linux and
+ * Windows; macOS goes through launchd instead.
+ *
+ * The main bot owns it in the sense that it records the PID and kills it on
+ * deactivate. No schtasks, no service, no UAC, no systemd, no root.
+ *
+ * Lifecycle: the child is detached and unref'd, so it does NOT exit when the
+ * parent does — that is what `detached: true` buys. What actually reclaims it
+ * depends on how the main bot is supervised:
+ *
+ *   - systemd: the child joins the unit's cgroup, so the default
+ *     KillMode=control-group stops main and its agents together on
+ *     stop/restart. Agents are therefore replaced on every update rather than
+ *     left running the previous build.
+ *   - terminal / PM2: nothing reclaims it. The child keeps running until it is
+ *     killed via its PID file (deactivateAgent).
+ *
+ * Nothing restarts a stopped agent automatically. Restoring previously active
+ * agents after a restart is a cross-platform lifecycle concern, deliberately
+ * not solved here.
  */
-function activateWindows(agentId: string): ActivationResult {
+function activateDetached(agentId: string): ActivationResult {
   const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
   if (!fs.existsSync(entry)) {
     return { ok: false, error: `Build output missing: ${entry}. Run "npm run build" first.` };
@@ -655,10 +632,16 @@ function activateWindows(agentId: string): ActivationResult {
     // of the main bot.
     fs.writeFileSync(path.join(STORE_DIR, `agent-${agentId}.pid`), String(child.pid), 'utf-8');
 
-    logger.info({ agentId, pid: child.pid }, 'Agent activated (Windows detached child)');
+    logger.info({ agentId, pid: child.pid }, 'Agent activated (detached child)');
     return { ok: true, pid: child.pid };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    // The child got its own duplicate of the log fd at spawn time, so the
+    // parent's copy is dead weight. Leaving it open leaked one descriptor per
+    // activation in the long-lived main process (and on Windows held a lock on
+    // the log file). Close it on every exit path.
+    try { fs.closeSync(out); } catch { /* already closed */ }
   }
 }
 
@@ -674,18 +657,9 @@ export function deactivateAgent(agentId: string): { ok: boolean; error?: string 
         try { execSync(`launchctl unload "${destPlist}"`, { stdio: 'ignore' }); } catch { /* ok */ }
         fs.unlinkSync(destPlist);
       }
-    } else if (IS_LINUX) {
-      const serviceName = `com.claudeclaw.agent-${agentId}`;
-      try {
-        execSync(`systemctl --user stop "${serviceName}"`, { stdio: 'ignore' });
-        execSync(`systemctl --user disable "${serviceName}"`, { stdio: 'ignore' });
-      } catch { /* ok */ }
-      const unitPath = path.join(os.homedir(), '.config', 'systemd', 'user', `${serviceName}.service`);
-      if (fs.existsSync(unitPath)) fs.unlinkSync(unitPath);
-      try { execSync('systemctl --user daemon-reload', { stdio: 'ignore' }); } catch { /* ok */ }
     }
-    // On Windows there's no service to unregister. The shared kill logic
-    // below handles stopping the detached child via its PID file.
+    // On Linux and Windows there's no service to unregister. The shared kill
+    // logic below stops the detached child via its PID file.
 
     // Kill the process if still running (cross-platform)
     const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
@@ -794,25 +768,18 @@ export function restartAgent(agentId: string): { ok: boolean; error?: string } {
       }
       logger.info({ agentId }, 'Agent restarted (launchd)');
       return { ok: true };
-    } else if (IS_LINUX) {
-      const serviceName = `com.claudeclaw.agent-${agentId}`;
-      execSync(`systemctl --user restart "${serviceName}"`, { stdio: 'ignore' });
-      logger.info({ agentId }, 'Agent restarted (systemd)');
-      return { ok: true };
-    } else if (IS_WINDOWS) {
-      // Kill existing child (if any) then re-spawn.
-      const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
-      if (fs.existsSync(pidFile)) {
-        const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-        if (!isNaN(pid)) killProcess(pid, true);
-        try { fs.unlinkSync(pidFile); } catch { /* ok */ }
-      }
-      const result = activateWindows(agentId);
-      if (!result.ok) return { ok: false, error: result.error };
-      logger.info({ agentId, pid: result.pid }, 'Agent restarted (Windows detached child)');
-      return { ok: true };
     }
-    return { ok: false, error: `Unsupported platform: ${os.platform()}` };
+    // Linux and Windows: kill the existing child (if any) then re-spawn.
+    const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
+    if (fs.existsSync(pidFile)) {
+      const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      if (!isNaN(pid)) killProcess(pid, true);
+      try { fs.unlinkSync(pidFile); } catch { /* ok */ }
+    }
+    const result = activateDetached(agentId);
+    if (!result.ok) return { ok: false, error: result.error };
+    logger.info({ agentId, pid: result.pid }, 'Agent restarted (detached child)');
+    return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
