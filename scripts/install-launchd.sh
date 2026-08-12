@@ -69,7 +69,12 @@ for plist in "$LAUNCHD_DIR"/com.claudeclaw.*.plist; do
       -e "s|__HOME__|$HOME|g" \
       -e "s|__NODE_PATH__|$NODE_PATH|g" \
       -e "s|__NODE_BIN_DIR__|$NODE_BIN_DIR|g" \
+      -e "s|__LOG_DIR__|$LOG_DIR|g" \
       "$plist" > "$dest"
+  if grep -q '__[A-Z_]*__' "$dest"; then
+    echo "Refusing to load $label: unresolved placeholder remains" >&2
+    exit 1
+  fi
   launchctl load "$dest"
 done
 

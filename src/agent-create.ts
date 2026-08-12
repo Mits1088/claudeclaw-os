@@ -434,7 +434,7 @@ function generateServiceConfig(agentId: string): string | null {
 }
 
 function generateLaunchdPlist(agentId: string): string {
-  const plistDir = path.join(PROJECT_ROOT, 'launchd');
+  const plistDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
   fs.mkdirSync(plistDir, { recursive: true });
 
   const label = `com.claudeclaw.${agentId}`;
@@ -463,7 +463,7 @@ function generateLaunchdPlist(agentId: string): string {
     <string>${agentId}</string>
   </array>
   <key>WorkingDirectory</key>
-  <string>__PROJECT_DIR__</string>
+  <string>${PROJECT_ROOT}</string>
   <key>EnvironmentVariables</key>
   <dict>
     <key>NODE_ENV</key>
@@ -471,7 +471,7 @@ function generateLaunchdPlist(agentId: string): string {
     <key>PATH</key>
     <string>${envPath}</string>
     <key>HOME</key>
-    <string>__HOME__</string>
+    <string>${os.homedir()}</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -480,9 +480,9 @@ function generateLaunchdPlist(agentId: string): string {
   <key>ThrottleInterval</key>
   <integer>30</integer>
   <key>StandardOutPath</key>
-  <string>__LOG_DIR__/${agentId}.log</string>
+  <string>${path.join(os.homedir(), 'Library', 'Logs', 'claudeclaw', `${agentId}.log`)}</string>
   <key>StandardErrorPath</key>
-  <string>__LOG_DIR__/${agentId}.log</string>
+  <string>${path.join(os.homedir(), 'Library', 'Logs', 'claudeclaw', `${agentId}.log`)}</string>
 </dict>
 </plist>
 `;
@@ -530,11 +530,10 @@ export function activateAgent(agentId: string): ActivationResult {
 
 function activateLaunchd(agentId: string): ActivationResult {
   const label = `com.claudeclaw.${agentId}`;
-  const templatePlist = path.join(PROJECT_ROOT, 'launchd', `${label}.plist`);
   const destPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
 
-  if (!fs.existsSync(templatePlist)) {
-    return { ok: false, error: `Plist not found: ${templatePlist}` };
+  if (!fs.existsSync(destPlist)) {
+    return { ok: false, error: `Plist not found: ${destPlist}` };
   }
 
   // launchd silently exits with code 78 (EX_CONFIG) when StandardOutPath /
@@ -548,12 +547,6 @@ function activateLaunchd(agentId: string): ActivationResult {
     return { ok: false, error: `Log directory contains spaces (launchd exit 78 risk): ${logDir}` };
   }
 
-  // Substitute placeholders
-  let content = fs.readFileSync(templatePlist, 'utf-8');
-  content = content.replace(/__PROJECT_DIR__/g, PROJECT_ROOT);
-  content = content.replace(/__HOME__/g, os.homedir());
-  content = content.replace(/__LOG_DIR__/g, logDir);
-
   // Ensure LaunchAgents directory exists
   fs.mkdirSync(path.dirname(destPlist), { recursive: true });
 
@@ -562,7 +555,6 @@ function activateLaunchd(agentId: string): ActivationResult {
     execSync(`launchctl unload "${destPlist}" 2>/dev/null`, { stdio: 'ignore' });
   } catch { /* not loaded */ }
 
-  fs.writeFileSync(destPlist, content, 'utf-8');
   execSync(`launchctl load "${destPlist}"`);
 
   // Wait briefly and check if process started
@@ -698,10 +690,6 @@ export function deleteAgent(agentId: string): { ok: boolean; error?: string } {
         fs.rmSync(agentDir, { recursive: true, force: true });
       }
     }
-
-    // Remove launchd plist template (macOS)
-    const plistTemplate = path.join(PROJECT_ROOT, 'launchd', `com.claudeclaw.${agentId}.plist`);
-    if (fs.existsSync(plistTemplate)) fs.unlinkSync(plistTemplate);
 
     // Remove token from .env
     removeBotTokenFromEnv(path.join(PROJECT_ROOT, '.env'), envKey, agentId);
