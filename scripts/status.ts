@@ -5,6 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getMainProviderConfig, getProviderDisplay, checkProviderAvailability } from '../src/provider.js';
+import { getSelectedProviderConfig } from '../src/active-provider.js';
 
 // ── ANSI helpers ────────────────────────────────────────────────────────────
 const c = {
@@ -89,8 +90,12 @@ async function main() {
   const env = parseEnvFile(envPath);
 
   // Agent provider
-  const provider = getMainProviderConfig();
+  const savedProvider = getMainProviderConfig();
+  const provider = getSelectedProviderConfig();
   const providerLabel = getProviderDisplay(provider);
+  if (savedProvider.type !== provider.type) {
+    warn(`Saved provider ${getProviderDisplay(savedProvider)} is gated off; running ${providerLabel}`);
+  }
   if (provider.type === 'claude') {
     if (commandExists('claude')) {
       let claudeVersion = '';
