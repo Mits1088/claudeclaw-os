@@ -82,12 +82,15 @@ let schedulerAgentId = 'main';
  * `mission-cli handback <task-id>` workflow. The stored user prompt remains
  * unchanged; runtime metadata is added only when the mission is executed.
  */
-export function missionExecutionPrompt(mission: Pick<MissionTask, 'id' | 'title' | 'created_by' | 'prompt'>): string {
+export function missionExecutionPrompt(mission: Pick<MissionTask, 'id' | 'title' | 'created_by' | 'prompt' | 'role'>): string {
+  const completionInstruction = mission.role === 'handback'
+    ? 'This is a terminal handback. Return the report directly and do not create another handback.'
+    : `If an explicit handback is required, use: mission-cli handback ${mission.id} "<report>".`;
   return [
     `[Mission task: ${mission.title}]`,
     `Task ID: ${mission.id}`,
     `Created by: @${mission.created_by}`,
-    `If an explicit handback is required, use: mission-cli handback ${mission.id} "<report>".`,
+    completionInstruction,
     '',
     mission.prompt,
   ].join('\n');

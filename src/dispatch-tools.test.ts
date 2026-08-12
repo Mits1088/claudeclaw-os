@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { ProviderConfig } from './provider.js';
 import {
   _initTestDatabase,
+  createMissionTask,
   getAllScheduledTasks,
   getHiveMindEntries,
   getMissionTask,
@@ -102,6 +103,31 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
     const r = await callTool('mission_handback', { task_id: 'ghost', report: 'done' });
     expect(r.isError).toBe(true);
     expect(asText(r)).toContain('Task not found');
+  });
+
+  it('rejects a handback when the task originator and reporting agent are the same', async () => {
+    await callTool('mission_create', { prompt: 'resume after restart', agent: 'main', title: 'Self recap' });
+    const [parent] = getMissionTasks();
+
+    const r = await callTool('mission_handback', { task_id: parent.id, report: 'resumed' });
+
+    expect(r.isError).toBe(true);
+    expect(asText(r)).toContain('complete it directly without a handback');
+    expect(getMissionTasks()).toHaveLength(1);
+  });
+
+  it('marks handback missions terminal and rejects a handback of a handback', async () => {
+    createMissionTask('parent', 'Original', 'do work', 'main', 'dashboard', 5);
+    const first = await callTool('mission_handback', { task_id: 'parent', report: 'finished' });
+    expect(first.isError).toBeFalsy();
+
+    const handback = getMissionTasks().find((task) => task.parent_task_id === 'parent');
+    expect(handback?.role).toBe('handback');
+
+    const second = await callTool('mission_handback', { task_id: handback!.id, report: 'relay complete' });
+    expect(second.isError).toBe(true);
+    expect(asText(second)).toContain('terminal handback');
+    expect(getMissionTasks()).toHaveLength(2);
   });
 
   it('schedule_create stores a recurring task', async () => {

@@ -128,8 +128,16 @@ export function actionHandbackMission(input: HandbackInput): HandbackResult {
   const priority = input.priority ?? 5;
   const parent = getMissionTask(input.taskId);
   if (!parent) throw new CliActionError(`Task not found: ${input.taskId}`);
+  if (parent.role === 'handback') {
+    throw new CliActionError(`Task ${parent.id} is already a terminal handback and cannot generate another handback`);
+  }
 
   const dest = resolveHandbackDestination(parent.created_by);
+  if (dest.kind === 'agent' && dest.agent === createdBy.trim().toLowerCase()) {
+    throw new CliActionError(
+      `Task ${parent.id} was created by and assigned back to @${dest.agent}; complete it directly without a handback`,
+    );
+  }
   const id = randomBytes(4).toString('hex');
   const title = `Handback: ${parent.title}`.slice(0, 80);
 
@@ -140,7 +148,7 @@ export function actionHandbackMission(input: HandbackInput): HandbackResult {
       '',
       input.report,
     ].join('\n');
-    createMissionTask(id, title, body, dest.agent, createdBy, priority, parent.id);
+    createMissionTask(id, title, body, dest.agent, createdBy, priority, parent.id, null, 'handback');
     return { kind: 'agent', missionId: id, parentId: parent.id, dest: dest.agent };
   }
 
@@ -152,7 +160,7 @@ export function actionHandbackMission(input: HandbackInput): HandbackResult {
     '',
     input.report,
   ].join('\n');
-  createMissionTask(id, title, body, dest.via ?? MAIN_AGENT_ID, createdBy, priority, parent.id);
+  createMissionTask(id, title, body, dest.via ?? MAIN_AGENT_ID, createdBy, priority, parent.id, null, 'handback');
   return { kind: 'human', missionId: id, parentId: parent.id, dest: dest.via, reason: dest.reason };
 }
 
