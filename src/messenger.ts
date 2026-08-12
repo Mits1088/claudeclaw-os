@@ -67,6 +67,20 @@ export interface MessengerFactory {
   create(agentId: string): Messenger;
 }
 
+/**
+ * Stop a messenger during process shutdown without turning a transport/network
+ * failure into an uncaught rejection. Telegram's Bot.stop(), for example,
+ * confirms its polling offset with one final getUpdates request and can reject
+ * when the network is already unavailable. Shutdown must still complete cleanly.
+ */
+export async function stopMessengerForShutdown(messenger: Pick<Messenger, 'kind' | 'stop'>): Promise<void> {
+  try {
+    await messenger.stop();
+  } catch (err) {
+    logger.warn({ err, messenger: messenger.kind }, 'Messenger stop failed during shutdown; exiting anyway');
+  }
+}
+
 /** Convenience: Telegram's ALLOWED_CHAT_ID, exposed so factories don't re-read config. */
 export const TELEGRAM_PRIMARY_RECIPIENT = ALLOWED_CHAT_ID;
 
@@ -428,7 +442,7 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
       logger.info('Shutting down...');
       setTelegramConnected(false);
       releaseLock();
-      await messenger.stop();
+      await stopMessengerForShutdown(messenger);
       process.exit(0);
     };
     process.on('SIGINT', () => void shutdown());
