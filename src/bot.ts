@@ -4,7 +4,7 @@ import os from 'os';
 import { isDeepStrictEqual } from 'util';
 import { Api, Bot, Context, InlineKeyboard, InputFile, RawApi } from 'grammy';
 
-import { runAgent, runAgentWithRetry, UsageInfo, AgentProgressEvent, AgentToolPolicy } from './agent.js';
+import { runAgent, runAgentWithRetry, emptyTurnReply, UsageInfo, AgentProgressEvent, AgentToolPolicy } from './agent.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
 import type {
   AskUserQuestionRequest,
@@ -1745,7 +1745,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       logger.info({ newSessionId: result.newSessionId }, 'Session saved');
     }
 
-    let rawResponse = result.text?.trim() || 'Done.';
+    let rawResponse = result.text?.trim() || emptyTurnReply(result);
 
     // Exfiltration guard: scan for leaked secrets before sending to Telegram
     if (EXFILTRATION_GUARD_ENABLED) {
@@ -2209,7 +2209,12 @@ export function createBot(): Bot {
           clearTimeout(summaryTimer);
 
           const summary = result.text?.trim();
-          if (summary && summary.length > 0) {
+          // If the saved session could not actually be resumed (the engine
+          // recovers such turns on a fresh session), the model had no view of
+          // the conversation being summarized — its "summary" would be noise.
+          // Only commit when the run stayed on the session it summarizes.
+          const resumedOriginal = !result.newSessionId || result.newSessionId === sessionToSummarize;
+          if (summary && summary.length > 0 && resumedOriginal) {
             logToHiveMind(AGENT_ID, chatIdStr, 'session_end', summary.slice(0, 300));
             logger.info({ agentId: AGENT_ID, summary }, 'Hive mind auto-commit (LLM summary)');
           }
@@ -3123,7 +3128,7 @@ async function processDashboardMessage(
       setSession(chatIdStr, result.newSessionId, AGENT_ID);
     }
 
-    const rawResponse = result.text?.trim() || 'Done.';
+    const rawResponse = result.text?.trim() || emptyTurnReply(result);
 
     // Save conversation turn
     saveConversationTurn(chatIdStr, text, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);

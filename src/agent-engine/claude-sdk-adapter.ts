@@ -119,6 +119,18 @@ export function makeStderrRelay(
 }
 const relayStderr = makeStderrRelay((obj, msg) => logger.error(obj, msg));
 
+// `claude --resume` scopes its session lookup to the current project directory
+// (derived from cwd) in the SDK's bundled CLI. When an agent's cwd changes
+// between turns — e.g. the main agent's cwd moves from the repo root to
+// agents/main/ once its CLAUDE.md appears — every session saved under the old
+// cwd becomes unresumable: the CLI reports the miss only on stderr and ends the
+// turn as an `error_during_execution` result that carries no text, which chat
+// surfaces would otherwise render as an empty success ("Done."), and the stale
+// mapping makes every following turn fail the same way. Watch stderr for the
+// signature so `invoke` can abandon the doomed attempt and rerun the turn on a
+// fresh session.
+const SESSION_NOT_FOUND_RE = /No conversation found with session ID/;
+
 const TOOL_LABELS: Record<string, string> = {
   Read: 'Reading file',
   Write: 'Writing file',
@@ -295,6 +307,28 @@ async function* singleTurn(text: string, sessionId?: string): AsyncGenerator<{
 
 export class ClaudeSdkEngineAdapter implements AgentEngine {
   async *invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent> {
+    const firstAttempt = { unresumableSession: false };
+    yield* this.runTurn(input, firstAttempt);
+    if (firstAttempt.unresumableSession) {
+      logger.warn(
+        { sessionId: input.sessionId },
+        'Saved session not found on resume; rerunning the turn on a fresh session',
+      );
+      yield* this.runTurn({ ...input, sessionId: undefined }, null);
+    }
+  }
+
+  /**
+   * One SDK query attempt. `resumeRecovery` is non-null only on the first
+   * attempt of a resumed turn: when the CLI reports the saved session as
+   * missing, the attempt is abandoned (no usage/result yielded), the flag is
+   * set, and `invoke` reruns the turn on a fresh session. The rerun passes
+   * null so any second failure surfaces normally.
+   */
+  private async *runTurn(
+    input: AgentTurnInput,
+    resumeRecovery: { unresumableSession: boolean } | null,
+  ): AsyncIterable<AgentEngineEvent> {
     let didCompact = false;
     let preCompactTokens: number | null = null;
     let lastCallCacheRead = 0;
@@ -335,6 +369,14 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
     // tool handling is unchanged.
     const canUseTool = buildAskUserQuestionCanUseTool(input);
 
+    // Armed only on the first attempt of a resumed turn (see SESSION_NOT_FOUND_RE).
+    const watchResume = resumeRecovery !== null && !!input.sessionId;
+    let sawSessionNotFound = false;
+    const stderrHook = (data: string) => {
+      if (watchResume && SESSION_NOT_FOUND_RE.test(data)) sawSessionNotFound = true;
+      relayStderr(data);
+    };
+
     try {
       for await (const event of query({
         prompt: singleTurn(input.prompt, input.sessionId),
@@ -364,7 +406,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           ...(input.disallowedTools ? { disallowedTools: input.disallowedTools } : {}),
           ...(input.abortController ? { abortController: input.abortController } : {}),
           ...(CLAUDE_EXECUTABLE_OVERRIDE ? { pathToClaudeCodeExecutable: CLAUDE_EXECUTABLE_OVERRIDE } : {}),
-          stderr: relayStderr,
+          stderr: stderrHook,
           // TODO(#72): the SDK Options type (@anthropic-ai/claude-agent-sdk) lags
           // some fields we pass conditionally (effort, thinking, model overrides),
           // so the whole object is cast. Narrow to the SDK Options type and cast
@@ -516,6 +558,14 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
       }
 
       if (ev.type === 'result') {
+        // The resume target does not exist in this cwd's project directory.
+        // Abandon the attempt without yielding usage or a result — invoke()
+        // reruns the turn on a fresh session.
+        if (resumeRecovery && sawSessionNotFound && ev.is_error === true) {
+          resumeRecovery.unresumableSession = true;
+          return;
+        }
+
         // Prefer the full assembled turn text over the SDK's `result` field,
         // which only holds the final assistant text block. Fall back to
         // `ev.result` when no top-level text was captured.
@@ -565,6 +615,12 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
       }
       }
     } catch (err) {
+      if (resumeRecovery?.unresumableSession) {
+        // Teardown of the abandoned resume attempt: the SDK may rethrow the
+        // "No conversation found" error once iteration stops. Swallow it —
+        // invoke() is about to rerun the turn on a fresh session.
+        return;
+      }
       if (emittedResult) {
         logger.warn(
           { err: err instanceof Error ? err.message : err },

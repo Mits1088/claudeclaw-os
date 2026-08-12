@@ -6,7 +6,7 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
-import { runAgentWithRetry, AgentProgressEvent, AgentToolPolicy } from './agent.js';
+import { runAgentWithRetry, emptyTurnReply, AgentProgressEvent, AgentToolPolicy } from './agent.js';
 import { getMainProviderConfig, ProviderConfig } from './provider.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
 import {
@@ -535,7 +535,7 @@ export function createSignalBot(): SignalBot {
 
       if (result.newSessionId) setSession(chatId, result.newSessionId, AGENT_ID);
 
-      let rawResponse = result.text?.trim() || 'Done.';
+      let rawResponse = result.text?.trim() || emptyTurnReply(result);
 
       // Exfiltration guard — same behaviour as bot.ts.
       if (EXFILTRATION_GUARD_ENABLED) {

@@ -169,6 +169,21 @@ export interface AgentResult {
   newSessionId: string | undefined;
   usage: UsageInfo | null;
   aborted?: boolean;
+  /** SDK result subtype (e.g. 'success', 'error_during_execution'). */
+  stopReason?: string;
+}
+
+/**
+ * Reply text for a completed turn that produced no assistant text. A clean
+ * silent turn reads as "Done." — but an errored turn must not: mapping an
+ * error result to "Done." tells the user their message was handled when it
+ * never was, and hides that every following turn may fail the same way.
+ */
+export function emptyTurnReply(result: AgentResult): string {
+  const failed = result.usage?.isError === true || result.stopReason?.startsWith('error');
+  if (!failed) return 'Done.';
+  const reason = result.stopReason ?? 'unknown error';
+  return `⚠️ The agent run failed (${reason}) and produced no reply — this message was not handled. Check the agent log for details.`;
 }
 
 /**
@@ -248,6 +263,7 @@ export async function runAgent(
 
   let newSessionId: string | undefined;
   let resultText: string | null = null;
+  let resultStopReason: string | undefined;
   let usage: UsageInfo | null = null;
   let didCompact = false;
   let preCompactTokens: number | null = null;
@@ -367,6 +383,7 @@ export async function runAgent(
 
       if (event.type === 'result') {
         resultText = event.text;
+        resultStopReason = event.stopReason;
         if (event.usage) {
           usage = event.usage;
           logger.info(
@@ -406,7 +423,7 @@ export async function runAgent(
     clearInterval(typingInterval);
   }
 
-  return { text: resultText, newSessionId: encodeProviderSession(provider, newSessionId), usage };
+  return { text: resultText, newSessionId: encodeProviderSession(provider, newSessionId), usage, stopReason: resultStopReason };
 }
 
 // ── Retry wrapper ─────────────────────────────────────────────────
