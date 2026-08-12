@@ -5,6 +5,20 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.8.4] - 2026-08-12
+
+### Bug Fixes
+
+- **missions:** Stop recursive mission handbacks ([#231](https://github.com/earlyaidopters/claudeclaw-os/pull/231))
+- **launchd:** Keep generated plists out of repo ([#220](https://github.com/earlyaidopters/claudeclaw-os/pull/220))
+- **agents:** Start agents via detached child on Linux ([#228](https://github.com/earlyaidopters/claudeclaw-os/pull/228))
+- **deploy:** Preserve per-agent bot tokens across installer re-runs ([#229](https://github.com/earlyaidopters/claudeclaw-os/pull/229))
+- **status:** Report effective provider ([#221](https://github.com/earlyaidopters/claudeclaw-os/pull/221))
+- **missions:** Include task id in execution prompt ([#218](https://github.com/earlyaidopters/claudeclaw-os/pull/218))
+- **shutdown:** Tolerate messenger stop failures ([#217](https://github.com/earlyaidopters/claudeclaw-os/pull/217))
+- **claude:** Recover unresumable saved sessions instead of replying "Done." ([#212](https://github.com/earlyaidopters/claudeclaw-os/pull/212))
+- **setup:** Assign CLAUDECLAW_OWNER_NAME after env is declared ([#205](https://github.com/earlyaidopters/claudeclaw-os/pull/205))
+
 ## [1.8.3] - 2026-08-04
 
 ### Features
