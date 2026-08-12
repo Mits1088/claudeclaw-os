@@ -77,6 +77,22 @@ const runningTaskIds = new Set<string>();
  */
 let schedulerAgentId = 'main';
 
+/**
+ * Give the target agent the mission identity required by the documented
+ * `mission-cli handback <task-id>` workflow. The stored user prompt remains
+ * unchanged; runtime metadata is added only when the mission is executed.
+ */
+export function missionExecutionPrompt(mission: Pick<MissionTask, 'id' | 'title' | 'created_by' | 'prompt'>): string {
+  return [
+    `[Mission task: ${mission.title}]`,
+    `Task ID: ${mission.id}`,
+    `Created by: @${mission.created_by}`,
+    `If an explicit handback is required, use: mission-cli handback ${mission.id} "<report>".`,
+    '',
+    mission.prompt,
+  ].join('\n');
+}
+
 export function initScheduler(send: Sender, agentId = 'main'): void {
   if (!ALLOWED_CHAT_ID) {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler will not send results');
@@ -234,7 +250,7 @@ async function runDueMissionTasks(): Promise<void> {
 
     try {
       const result = await runAgent(
-        mission.prompt,
+        missionExecutionPrompt(mission),
         undefined,
         () => {},
         undefined,
