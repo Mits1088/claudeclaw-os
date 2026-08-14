@@ -40,4 +40,4 @@ jobs:
         run: npm run build
 
       - name: Test
-        run: npx vitest run --pool=threads --poolOptions.threads.singleThread
+        run: npm test
