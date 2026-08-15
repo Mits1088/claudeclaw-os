@@ -1497,7 +1497,7 @@ SELECT * FROM sessions;
 
 ## Customizing your assistant (CLAUDE.md)
 
-`CLAUDE.md` is loaded into every ClaudeClaw session. It's the personality and context file, and setup also creates an `AGENTS.md` symlink for tools that look for that filename. Edit `CLAUDE.md` to make ClaudeClaw yours.
+`CLAUDE.md` is loaded into every ClaudeClaw session. It's the personality and context file, and setup also creates an `AGENTS.md` symlink for tools that look for that filename. The main bot's copy lives at `CLAUDECLAW_CONFIG/agents/main/CLAUDE.md` (default `~/.claudeclaw/agents/main/CLAUDE.md`) — the same per-agent layout as sub-agents — and you can also edit it from the dashboard's Agent files editor, which keeps version history. Edit it to make ClaudeClaw yours.
 
 The sections that matter most:
 
@@ -1911,7 +1911,7 @@ flowchart TD
 claudeclaw/
 │
 │  ← Files you'll actually touch
-├── CLAUDE.md             ← START HERE: your assistant's personality and context
+├── CLAUDE.md.example     ← Persona template. Your real persona lives at ~/.claudeclaw/agents/main/CLAUDE.md
 ├── banner.txt            ← ASCII art shown on startup. edit or replace freely
 ├── .env                  ← Your API keys (created by setup wizard, gitignored)
 │
@@ -1976,7 +1976,7 @@ claudeclaw/
 ```
 
 **The only files you need to edit to get started:**
-1. `CLAUDE.md`. fill in your name, what you do, your file paths, your skills
+1. Your persona at `~/.claudeclaw/agents/main/CLAUDE.md` (created by the setup wizard, editable from the dashboard). fill in your name, what you do, your file paths, your skills
 2. `.env`. add your API keys (the setup wizard does this for you)
 
 Everything else runs without modification.
