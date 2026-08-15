@@ -5,6 +5,24 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.8.5] - 2026-08-15
+
+### Bug Fixes
+
+- **orchestrator:** Route failed delegations to failure status ([#239](https://github.com/earlyaidopters/claudeclaw-os/pull/239))
+- **deps:** Patch hono server and js-yaml advisories ([#240](https://github.com/earlyaidopters/claudeclaw-os/pull/240))
+- **deps:** Remediate compatible audit findings in hono and ip-address ([#204](https://github.com/earlyaidopters/claudeclaw-os/pull/204))
+- **runtime:** Use sliding and absolute turn deadlines ([#222](https://github.com/earlyaidopters/claudeclaw-os/pull/222))
+- **missions:** Release the gather join when the last child is cancelled ([#237](https://github.com/earlyaidopters/claudeclaw-os/pull/237))
+- **scheduler:** Route failed agent runs to failure status ([#236](https://github.com/earlyaidopters/claudeclaw-os/pull/236))
+- **signal:** Resolve models from active provider ([#219](https://github.com/earlyaidopters/claudeclaw-os/pull/219))
+- **health:** Align documented Supabase env names ([#235](https://github.com/earlyaidopters/claudeclaw-os/pull/235))
+- **deps:** Upgrade better-sqlite3 for Node 24 ([#234](https://github.com/earlyaidopters/claudeclaw-os/pull/234))
+
+### Documentation
+
+- **readme:** Point persona instructions at agents/main/CLAUDE.md instead of the removed repo-root file ([#210](https://github.com/earlyaidopters/claudeclaw-os/pull/210))
+
 ## [1.8.4] - 2026-08-12
 
 ### Bug Fixes
