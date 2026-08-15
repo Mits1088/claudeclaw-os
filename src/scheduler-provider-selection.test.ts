@@ -57,6 +57,7 @@ vi.mock('./active-provider.js', () => ({
 }));
 
 vi.mock('./agent.js', () => ({
+  isFailedTurn: () => false,
   runAgent: vi.fn(async (...args: unknown[]) => {
     state.runAgentCalls.push(args);
     return { text: 'done', newSessionId: undefined, usage: null };

@@ -174,14 +174,25 @@ export interface AgentResult {
 }
 
 /**
+ * Whether a non-aborted result is actually a failed run. Both engines can
+ * surface a failure as a normal result instead of a throw: the Claude SDK
+ * emits `stopReason: 'error_during_execution'` / `usage.isError`, and the
+ * Codex app-server adapter yields the error message as `text` with
+ * `stopReason: 'error'`. Every consumer routing on success/failure must use
+ * this single predicate rather than re-deriving it.
+ */
+export function isFailedTurn(result: AgentResult): boolean {
+  return result.usage?.isError === true || result.stopReason?.startsWith('error') === true;
+}
+
+/**
  * Reply text for a completed turn that produced no assistant text. A clean
  * silent turn reads as "Done." — but an errored turn must not: mapping an
  * error result to "Done." tells the user their message was handled when it
  * never was, and hides that every following turn may fail the same way.
  */
 export function emptyTurnReply(result: AgentResult): string {
-  const failed = result.usage?.isError === true || result.stopReason?.startsWith('error');
-  if (!failed) return 'Done.';
+  if (!isFailedTurn(result)) return 'Done.';
   const reason = result.stopReason ?? 'unknown error';
   return `⚠️ The agent run failed (${reason}) and produced no reply — this message was not handled. Check the agent log for details.`;
 }

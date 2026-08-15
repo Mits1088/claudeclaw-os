@@ -21,7 +21,7 @@ import {
 } from './db.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
-import { runAgent } from './agent.js';
+import { isFailedTurn, runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
 import { getSelectedProviderConfig } from './active-provider.js';
 import { evaluateAcceptance } from './acceptance.js';
@@ -171,6 +171,20 @@ async function runDueTasks(): Promise<void> {
           return;
         }
 
+        if (isFailedTurn(result)) {
+          const reason = result.stopReason ?? 'unknown error';
+          // Codex adapter puts the error message in result.text — keep it as the
+          // error, never as the result.
+          updateTaskAfterRun(task.id, nextRun, `Agent run failed (${reason})${result.text ? `: ${result.text.slice(0, 400)}` : ''}`.slice(0, 500), 'failed');
+          logger.error({ taskId: task.id, stopReason: result.stopReason }, 'Scheduled task run failed');
+          try {
+            await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${reason}`);
+          } catch (sendErr) {
+            logger.warn({ err: sendErr, taskId: task.id }, 'Failed to send task failure notification');
+          }
+          return;
+        }
+
         const text = result.text?.trim() || 'Task completed with no output.';
         const acceptancePassed = evaluateAcceptance(task.acceptance_check, result.text ?? '');
         const lastStatus: 'success' | 'failed' = acceptancePassed ? 'success' : 'failed';
@@ -282,6 +296,18 @@ async function runDueMissionTasks(): Promise<void> {
             logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send mission timeout notification');
           }
         }
+      } else if (isFailedTurn(result)) {
+        const reason = result.stopReason ?? 'unknown error';
+        // Codex adapter puts the error message in result.text — keep it as the
+        // error, never as the result.
+        completeMissionTask(mission.id, null, 'failed', `Agent run failed (${reason})${result.text ? `: ${result.text.slice(0, 400)}` : ''}`);
+        maybeReleaseJoinForMission({ ...mission, status: 'failed' });
+        logger.error({ missionId: mission.id, stopReason: result.stopReason }, 'Mission task run failed');
+        try {
+          await sender(`❌ Mission task failed: "${mission.title}" (${reason})`);
+        } catch (sendErr) {
+          logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send mission failure notification');
+        }
       } else {
         // A mission can finish with nothing to say — most often an FYI handback
         // that landed on this agent's board (e.g. a report routed back to the
@@ -334,6 +360,11 @@ async function runDueMissionTasks(): Promise<void> {
         completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
         maybeReleaseJoinForMission({ ...mission, status: 'failed' });
         logger.error({ err, missionId: mission.id }, 'Mission task failed');
+        try {
+          await sender(`❌ Mission task failed: "${mission.title}" — ${errMsg.slice(0, 200)}`);
+        } catch (sendErr) {
+          logger.warn({ err: sendErr, missionId: mission.id }, 'Failed to send mission failure notification');
+        }
       }
     } finally {
       clearInterval(cancelPoll);

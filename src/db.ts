@@ -1414,9 +1414,14 @@ export function updateTaskAfterRun(
   lastStatus: 'success' | 'failed' | 'timeout' = 'success',
 ): void {
   const now = Math.floor(Date.now() / 1000);
-  db.prepare(
-    `UPDATE scheduled_tasks SET status = 'active', last_run = ?, next_run = ?, last_result = ?, last_status = ?, started_at = NULL WHERE id = ?`,
-  ).run(now, nextRun, result.slice(0, 4000), lastStatus, id);
+  // Retry so a post-run write never loses the lock race and leaves the task
+  // stuck in 'running' with a stale next_run (same failure mode as
+  // completeMissionTask, issue #155).
+  withBusyRetry(() =>
+    db.prepare(
+      `UPDATE scheduled_tasks SET status = 'active', last_run = ?, next_run = ?, last_result = ?, last_status = ?, started_at = NULL WHERE id = ?`,
+    ).run(now, nextRun, result.slice(0, 4000), lastStatus, id),
+  );
 }
 
 export function resetStuckTasks(agentId: string): number {

@@ -30,7 +30,7 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-import { runAgentWithRetry } from './agent.js';
+import { emptyTurnReply, isFailedTurn, runAgentWithRetry, type AgentResult } from './agent.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -242,4 +242,33 @@ describe('runAgentWithRetry', () => {
     expect(capturedModels[0]).toBe('claude-opus-4-6');
     expect(capturedModels[1]).toBe('claude-sonnet-4-6');
   }, 15000);
+});
+
+describe('isFailedTurn', () => {
+  const base: AgentResult = { text: 'fine', newSessionId: undefined, usage: null };
+  const usage = (isError: boolean) => ({
+    inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
+    totalCostUsd: 0, contextWindow: null, lastCallCacheRead: 0, lastCallInputTokens: 0,
+    lastCallCacheCreation: 0, didCompact: false, preCompactTokens: null, model: null,
+    durationMs: 0, durationApiMs: 0, numTurns: 1, stopReasonDetail: null, isError,
+  });
+
+  it('flags usage.isError (Claude SDK error result)', () => {
+    expect(isFailedTurn({ ...base, usage: usage(true) })).toBe(true);
+  });
+
+  it('flags error stop reasons, including the bare Codex "error"', () => {
+    expect(isFailedTurn({ ...base, stopReason: 'error_during_execution' })).toBe(true);
+    expect(isFailedTurn({ ...base, stopReason: 'error' })).toBe(true);
+  });
+
+  it('passes a healthy result through', () => {
+    expect(isFailedTurn(base)).toBe(false);
+    expect(isFailedTurn({ ...base, stopReason: 'end_turn', usage: usage(false) })).toBe(false);
+  });
+
+  it('keeps emptyTurnReply consistent with the shared predicate', () => {
+    expect(emptyTurnReply(base)).toBe('Done.');
+    expect(emptyTurnReply({ ...base, stopReason: 'error_during_execution' })).toContain('failed');
+  });
 });
