@@ -112,7 +112,7 @@ Files: `scripts/whoop_common.py` (OAuth + HTTP + env helpers), `scripts/whoop-au
 
 A self-contained dark trends dashboard that reads straight from Supabase and updates live. The whole page (CSS + Chart.js + GridStack) is one server-rendered string, so there is no build step for the look. See [`dashboard/`](./dashboard/): the page (`health-dashboard.ts`), the Supabase data layer (`health-data.ts`), the route wiring (`routes.example.ts`), and a full walkthrough.
 
-> 🔒 **Never expose `SUPABASE_SERVICE_ROLE_KEY` to the browser.** It bypasses RLS, so it must stay server-side only — the data layer (`health-data.ts`) runs on the server and the rendered page sent to the client must never embed it. If a browser ever needs direct Supabase access, use the anon key (which, with RLS on and no policies, reads nothing).
+> 🔒 **Never expose `HEALTH_SUPABASE_SERVICE_ROLE_KEY` to the browser.** It bypasses RLS, so it must stay server-side only — the data layer (`health-data.ts`) runs on the server and the rendered page sent to the client must never embed it. If a browser ever needs direct Supabase access, use the anon key (which, with RLS on and no policies, reads nothing).
 
 ## Prerequisites
 
@@ -161,10 +161,10 @@ Every secret lives in `~/.env` (your home directory, never a project `.env`, nev
 | Variable | Purpose |
 |---|---|
 | `HEALTH_BOT_TOKEN` | Telegram bot token (from @BotFather) |
-| `SUPABASE_URL` | `https://<project-ref>.supabase.co` |
-| `SUPABASE_SERVICE_ROLE_KEY` | Server-side DB access (bypasses RLS) |
-| `SUPABASE_ANON_KEY` | Public key (RLS means it reads nothing) |
-| `SUPABASE_DB_PASSWORD` | For `supabase` CLI migrations |
+| `HEALTH_SUPABASE_URL` | `https://<project-ref>.supabase.co` |
+| `HEALTH_SUPABASE_SERVICE_ROLE_KEY` | Server-side DB access (bypasses RLS) |
+| `HEALTH_SUPABASE_DB_PASSWORD` | For `supabase` CLI migrations |
+| `HEALTH_SUPABASE_PROJECT_REF` | Supabase project ref for exercise-clip uploads |
 | `OPENAI_API_KEY` | Embeddings for semantic memory |
 | `GOOGLE_API_KEY` | Vision for food/lab photos + workout clips (Gemini) |
 | `DASHBOARD_TOKEN` | Gates the web dashboard |
@@ -177,7 +177,7 @@ Every secret lives in `~/.env` (your home directory, never a project `.env`, nev
 
 1. **Supabase project** (its own, walled off): `supabase link` then `supabase db push` the migrations. Copy `0002_seed_example.sql` and replace the placeholders with your real goals + context.
 2. **Storage bucket** `health-assets` (private) for food/lab/body photos.
-3. **`~/.env`** (home dir): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `SUPABASE_ANON_KEY`, `SUPABASE_DB_PASSWORD`, `OPENAI_API_KEY` (embeddings), `GOOGLE_API_KEY` (food-photo + workout-clip vision), and your `<AGENT>_BOT_TOKEN`. For WHOOP: `WHOOP_CLIENT_ID`, `WHOOP_CLIENT_SECRET` (the sync writes `WHOOP_REFRESH_TOKEN`).
+3. **`~/.env`** (home dir): `HEALTH_SUPABASE_URL`, `HEALTH_SUPABASE_SERVICE_ROLE_KEY`, `HEALTH_SUPABASE_DB_PASSWORD`, `HEALTH_SUPABASE_PROJECT_REF`, `OPENAI_API_KEY` (embeddings), `GOOGLE_API_KEY` (food-photo + workout-clip vision), and your `<AGENT>_BOT_TOKEN`. For WHOOP: `WHOOP_CLIENT_ID`, `WHOOP_CLIENT_SECRET` (the sync writes `WHOOP_REFRESH_TOKEN`).
 4. **Telegram bot**: create via @BotFather, put the token in `~/.env`, set `telegram_bot_token_env` in `agent.yaml`.
 5. **CLAUDE.md**: copy the template, fill in your own goals, labs, and preferences. The richer it is, the smarter the coach.
 6. **Cron**: schedule `whoop-sync.py` for the morning and the morning check-in for ~7am local.
