@@ -2,12 +2,13 @@ import { execFile } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { promisify } from 'util';
+import { isDeepStrictEqual, promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
 import { runAgentWithRetry, emptyTurnReply, AgentProgressEvent, AgentToolPolicy } from './agent.js';
-import { getMainProviderConfig, ProviderConfig } from './provider.js';
+import { ProviderConfig, setMainProviderConfig } from './provider.js';
+import { setAgentProvider } from './agent-config.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
 import {
   makeSignalAskUserQuestionResolver,
@@ -30,6 +31,7 @@ import {
   agentDefaultModel,
   agentMcpAllowlist,
   agentSystemPrompt,
+  updateAgentProvider,
 } from './config.js';
 import {
   SIGNAL_AUTHORIZED_RECIPIENTS,
@@ -39,14 +41,13 @@ import {
 } from './signal-config.js';
 import {
   CLAUDE_MODEL_OPUS as LATEST_OPUS_MODEL,
-  CLAUDE_MODEL_SONNET as LATEST_SONNET_MODEL,
-  CLAUDE_MODEL_HAIKU as LATEST_HAIKU_MODEL,
 } from './config.js';
 import { buildCostFooter } from './cost-footer.js';
-import { modelDisplayLabel, selectedEffortForProvider } from './model-catalog.js';
-import { getSelectedProviderConfig } from './active-provider.js';
+import { modelDisplayLabel, reconcileRuntimeOptions, resetProviderModelSelection, selectedEffortForProvider } from './model-catalog.js';
+import { defaultModelForProvider, getSelectedProviderConfig } from './active-provider.js';
 import {
   clearSession,
+  clearAgentSessions,
   getRecentMemories,
   getRecentTaskOutputs,
   getSession,
@@ -79,7 +80,7 @@ import {
 } from './security.js';
 import { SignalIncomingMessage, SignalRpcClient, groupRecipient } from './signal-rpc.js';
 import { agentHasGroups, shouldHandleInbound } from './signal-groups.js';
-import { formatForSignal } from './bot.js';
+import { formatForSignal, resolveTelegramModelSelection } from './bot.js';
 import { completionStatusGlyph } from './completion-glyph.js';
 import { emitChatEvent, setActiveAbort, setProcessing } from './state.js';
 import { synthesizeSpeech, transcribeAudio, voiceCapabilities } from './voice.js';
@@ -108,10 +109,6 @@ export const SIGNAL_MAX_MESSAGE_LENGTH = 4000;
 // Typing indicators on Signal expire after ~15s.
 const SIGNAL_TYPING_REFRESH_MS = 10_000;
 
-// Per-chat model override, same pattern as bot.ts. Signal only has one
-// authorized sender in personal-use mode, but the map is future-proof.
-const chatModelOverride = new Map<string, string>();
-
 // Per-chat voice-reply preference. Three states:
 //   'on'    → always reply as TTS, even for typed prompts
 //   'off'   → never reply as TTS, even for voice notes (hard-mute)
@@ -119,6 +116,18 @@ const chatModelOverride = new Map<string, string>();
 //             text-in ⇒ text-out
 // Toggled via /voice on|off. Resets on bot restart.
 const voiceMode = new Map<string, 'on' | 'off'>();
+
+/** Resolve Signal's turn model from the same provider decision used by the engine. */
+export function resolveSignalTurnModel(
+  provider: ProviderConfig,
+  claudeModel: string | undefined,
+  useCheapClaudeModel = false,
+): string | undefined {
+  if (provider.type === 'claude' && useCheapClaudeModel && !claudeModel) {
+    return SMART_ROUTING_CHEAP_MODEL;
+  }
+  return defaultModelForProvider(provider, claudeModel ?? LATEST_OPUS_MODEL);
+}
 
 /**
  * Write a Buffer to a temp file with the given suffix and return its path.
@@ -256,15 +265,6 @@ function extractFileMarkers(text: string): { text: string; files: FileMarker[] }
   });
   return { text: cleaned.replace(/\n{3,}/g, '\n\n').trim(), files };
 }
-
-const AVAILABLE_MODELS: Record<string, string> = {
-  opus: LATEST_OPUS_MODEL,
-  sonnet: LATEST_SONNET_MODEL,
-  haiku: LATEST_HAIKU_MODEL,
-  opus5: 'claude-opus-5',
-  fable5: 'claude-fable-5',
-  sonnet5: 'claude-sonnet-5',
-};
 
 export interface SignalBot {
   start(): Promise<void>;
@@ -458,10 +458,15 @@ export function createSignalBot(): SignalBot {
     if (shouldNudgeMemory(chatId, AGENT_ID)) parts.push(MEMORY_NUDGE_TEXT);
     parts.push(message);
 
-    const userModel = chatModelOverride.get(chatId) ?? agentDefaultModel;
-    const effectiveModel = (SMART_ROUTING_ENABLED && !userModel && classifyMessageComplexity(message) === 'simple')
-      ? SMART_ROUTING_CHEAP_MODEL
-      : (userModel ?? LATEST_OPUS_MODEL);
+    const provider = getSelectedProviderConfig();
+    const configuredClaudeModel = provider.type === 'claude'
+      ? (agentDefaultModel ?? provider.model)
+      : undefined;
+    const effectiveModel = resolveSignalTurnModel(
+      provider,
+      configuredClaudeModel,
+      SMART_ROUTING_ENABLED && classifyMessageComplexity(message) === 'simple',
+    );
 
     void sendTyping(chatId);
     const typingInterval = setInterval(() => void sendTyping(chatId), SIGNAL_TYPING_REFRESH_MS);
@@ -497,8 +502,6 @@ export function createSignalBot(): SignalBot {
       // MINDFIELD (PR #111 review #4): resolve the real provider and constrain
       // non-Claude chat turns to read-only tools (was passing undefined for both,
       // which silently defaulted to Claude and dropped the tool sandbox).
-      const provider = getMainProviderConfig();
-
       const result = await runAgentWithRetry(
         fullMessage,
         sessionId,
@@ -731,16 +734,52 @@ export function createSignalBot(): SignalBot {
       }
 
       case 'model': {
-        const key = arg.toLowerCase();
-        if (!key) {
-          const current = chatModelOverride.get(chatId) ?? agentDefaultModel ?? LATEST_OPUS_MODEL;
-          await sendMessage(chatId, `Current model: ${modelDisplayLabel(current)}\n\nUsage: /model <opus|sonnet|haiku|opus5|fable5|sonnet5>`);
+        const provider = getSelectedProviderConfig();
+        if (provider.type !== 'claude' && provider.type !== 'openai') {
+          await sendMessage(chatId, `Provider ${provider.type} manages its model outside ClaudeClaw.`);
           return true;
         }
-        const target = AVAILABLE_MODELS[key];
-        if (!target) { await sendMessage(chatId, 'Unknown model. Use opus, sonnet, haiku, opus5, fable5, or sonnet5.'); return true; }
-        chatModelOverride.set(chatId, target);
-        await sendMessage(chatId, `Model switched to ${modelDisplayLabel(target)}.`);
+
+        const persist = (next: ProviderConfig): boolean => {
+          if (isDeepStrictEqual(provider, next)) return false;
+          if (AGENT_ID === 'main') setMainProviderConfig(next);
+          else setAgentProvider(AGENT_ID, next);
+          updateAgentProvider(next);
+          clearAgentSessions(AGENT_ID);
+          return true;
+        };
+
+        const key = arg.trim().toLowerCase();
+        if (!key) {
+          const current = defaultModelForProvider(provider, agentDefaultModel ?? LATEST_OPUS_MODEL);
+          const selection = resolveTelegramModelSelection(provider, '__list__');
+          await sendMessage(chatId, `Current model: ${modelDisplayLabel(current)}\nShortcuts: ${Object.keys(selection.shortcuts).join(', ')}\nReset: /model reset`);
+          return true;
+        }
+        if (key === 'reset' || key === 'default') {
+          try {
+            const changed = persist(resetProviderModelSelection(provider));
+            await sendMessage(chatId, changed ? 'Reset to provider defaults. Started a fresh session.' : 'Already using provider defaults.');
+          } catch (err) {
+            await sendMessage(chatId, `Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
+          }
+          return true;
+        }
+
+        const selection = resolveTelegramModelSelection(provider, key);
+        if (!selection.model) {
+          await sendMessage(chatId, selection.error ?? 'Unknown model.');
+          return true;
+        }
+        const { provider: next, cleared } = reconcileRuntimeOptions({ ...provider, model: selection.model });
+        try {
+          persist(next);
+        } catch (err) {
+          await sendMessage(chatId, `Failed to persist: ${err instanceof Error ? err.message : String(err)}`);
+          return true;
+        }
+        const clearedLine = cleared.length ? ` Cleared unsupported options: ${cleared.map((item) => item.label).join(', ')}.` : '';
+        await sendMessage(chatId, `Model changed: ${modelDisplayLabel(selection.model)}. Persisted to agent.yaml.${clearedLine}`);
         return true;
       }
 
