@@ -12,11 +12,7 @@ import {
   completeMissionTask,
   resetStuckMissionTasks,
   getMissionTask,
-  areAllGroupChildrenTerminal,
-  getGroupChildren,
-  getJoinMission,
-  releaseJoinMission,
-  updateMissionPrompt,
+  maybeReleaseJoinForMission,
   type MissionTask,
 } from './db.js';
 import { logger } from './logger.js';
@@ -32,38 +28,6 @@ type Sender = (text: string) => Promise<void>;
 const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
 
 let sender: Sender;
-
-/**
- * Tier 3 gather/join: when a group-tagged 'task' mission reaches a terminal
- * status, check whether every sibling in its group is now terminal too. If
- * so, assemble the children's results into the parked 'waiting' join
- * mission's prompt and atomically release it (waiting -> queued). Defensive:
- * a non-grouped mission, or a group with no join mission, is a no-op.
- */
-function maybeReleaseJoinForMission(mission: MissionTask): void {
-  if (!mission.group_id || mission.role !== 'task') return;
-  if (!areAllGroupChildrenTerminal(mission.group_id)) return;
-
-  const join = getJoinMission(mission.group_id);
-  if (!join) {
-    logger.warn({ groupId: mission.group_id }, 'Gather group has no join mission to release');
-    return;
-  }
-
-  const children = getGroupChildren(mission.group_id);
-  const assembled = children
-    .map((c) => `=== ${c.title} (@${c.assigned_agent ?? 'unassigned'}) ===\n${c.result ?? c.error ?? '(no output)'}`)
-    .join('\n\n');
-  updateMissionPrompt(join.id, `${join.prompt}\n\n--- Collected results ---\n${assembled}`);
-
-  const released = releaseJoinMission(mission.group_id);
-  if (released) {
-    logger.info({ groupId: mission.group_id, joinId: join.id }, 'Released join mission for gather group');
-  }
-  // If released === false, another completing sibling already won the race;
-  // this caller does nothing further (the prompt write above is idempotent-safe
-  // since it re-derives from current child state each time it runs).
-}
 
 /**
  * In-memory set of task IDs currently being executed.

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { areAllGroupChildrenTerminal, claimNextMissionTask, completeMissionTask, updateTaskAfterRun } from './db.js';
+import { claimNextMissionTask, completeMissionTask, maybeReleaseJoinForMission, updateTaskAfterRun } from './db.js';
 
 // Routing regression for failed turns: both engines can surface a failure as a
 // normal (non-thrown, non-aborted) result — Claude SDK via usage.isError /
@@ -48,6 +48,7 @@ vi.mock('./db.js', () => ({
     return m;
   }),
   completeMissionTask: vi.fn(),
+  maybeReleaseJoinForMission: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
   getMissionTask: vi.fn(() => null),
   areAllGroupChildrenTerminal: vi.fn(() => false),
@@ -171,8 +172,9 @@ describe('scheduler failed-turn routing', () => {
       'failed',
       expect.stringContaining('Agent run failed (error_during_execution)'),
     );
-    // maybeReleaseJoinForMission ran for the failed child (guard consulted).
-    expect(vi.mocked(areAllGroupChildrenTerminal)).toHaveBeenCalledWith('g1');
+    expect(vi.mocked(maybeReleaseJoinForMission)).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'm1', status: 'failed' }),
+    );
     expect(send).toHaveBeenCalledWith(expect.stringContaining('❌ Mission task failed'));
   });
 

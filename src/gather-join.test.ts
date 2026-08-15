@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
+  cancelMissionTask,
   createMissionTask,
   completeMissionTask,
   getGroupChildren,
@@ -9,6 +10,7 @@ import {
   getJoinMission,
   updateMissionPrompt,
   getMissionTask,
+  maybeReleaseJoinForMission,
 } from './db.js';
 
 describe('gather / join primitive (Tier 3)', () => {
@@ -35,11 +37,13 @@ describe('gather / join primitive (Tier 3)', () => {
 
     completeMissionTask(c0, 'result 0', 'completed');
     expect(areAllGroupChildrenTerminal(groupId)).toBe(false);
-    // The scheduler only calls releaseJoinMission after areAllGroupChildrenTerminal
-    // is true; releaseJoinMission itself just performs the atomic flip and doesn't
-    // re-check termination, so calling it here (as a caller who skipped the guard
-    // never would) still flips a genuinely 'waiting' row. Assert the guarded path
-    // instead: with one child still outstanding, the join must stay parked.
+    // Release goes through maybeReleaseJoinForMission (scheduler terminal paths
+    // and cancelMissionTask), which guards on areAllGroupChildrenTerminal before
+    // calling releaseJoinMission; releaseJoinMission itself just performs the
+    // atomic flip and doesn't re-check termination, so calling it here (as a
+    // caller who skipped the guard never would) still flips a genuinely
+    // 'waiting' row. Assert the guarded path instead: with one child still
+    // outstanding, the join must stay parked.
     expect(getJoinMission(groupId)?.status).toBe('waiting');
 
     completeMissionTask(c1, 'result 1', 'completed');
@@ -102,6 +106,63 @@ describe('gather / join primitive (Tier 3)', () => {
     expect(updated?.prompt).toContain('finding A');
     expect(updated?.prompt).toContain('finding B');
     expect(updated?.prompt).toContain('Collected results');
+  });
+
+  it('releases the join when the last non-terminal child is cancelled', () => {
+    const groupId = 'g8';
+    const [c0, c1] = seedGroup(groupId);
+    completeMissionTask(c0, 'result 0', 'completed');
+    expect(getJoinMission(groupId)?.status).toBe('waiting');
+
+    // Cancelling via the dashboard/CLI surface must release the parked join —
+    // the scheduler never sees a queued child again after this flip.
+    expect(cancelMissionTask(c1)).toBe(true);
+    expect(areAllGroupChildrenTerminal(groupId)).toBe(true);
+    expect(getJoinMission(groupId)?.status).toBe('queued');
+
+    // The cancelled child contributes its placeholder to the assembled prompt.
+    const join = getJoinMission(groupId);
+    expect(join?.prompt).toContain('Collected results');
+    expect(join?.prompt).toContain('result 0');
+    expect(join?.prompt).toContain('(cancelled)');
+  });
+
+  it('does not release or rewrite twice after repeated cancellation', () => {
+    const groupId = 'g9';
+    const [c0, c1] = seedGroup(groupId);
+    completeMissionTask(c0, 'result 0', 'completed');
+
+    expect(cancelMissionTask(c1)).toBe(true);
+    const released = getJoinMission(groupId);
+    expect(released?.status).toBe('queued');
+    expect(cancelMissionTask(c1)).toBe(false);
+    maybeReleaseJoinForMission(getMissionTask(c1)!);
+    expect(getJoinMission(groupId)?.prompt).toBe(released?.prompt);
+    expect(released?.prompt.match(/Collected results/g)).toHaveLength(1);
+  });
+
+  it('leaves non-gather tasks and already-terminal groups unchanged', () => {
+    createMissionTask('plain', 'Plain', 'Do thing', 'agent0', 'main');
+    expect(cancelMissionTask('plain')).toBe(true);
+
+    const groupId = 'g10';
+    const [c0, c1] = seedGroup(groupId);
+    completeMissionTask(c0, 'result 0', 'completed');
+    expect(cancelMissionTask(c1)).toBe(true);
+    const released = getJoinMission(groupId);
+    maybeReleaseJoinForMission(getMissionTask(c0)!);
+    expect(getJoinMission(groupId)).toEqual(released);
+  });
+
+  it('assembles cancelled children in deterministic id order', () => {
+    const groupId = 'g11';
+    const [c0, c1] = seedGroup(groupId);
+    expect(cancelMissionTask(c1)).toBe(true);
+    expect(cancelMissionTask(c0)).toBe(true);
+
+    const prompt = getJoinMission(groupId)?.prompt ?? '';
+    expect(prompt.indexOf('Child 0')).toBeLessThan(prompt.indexOf('Child 1'));
+    expect(prompt.match(/\(cancelled\)/g)).toHaveLength(2);
   });
 
   it('getGroupChildren only returns role=task rows, excluding the join', () => {

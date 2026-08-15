@@ -2483,7 +2483,60 @@ export function cancelMissionTask(id: string): boolean {
   const result = db.prepare(
     `UPDATE mission_tasks SET status = 'cancelled', completed_at = ? WHERE id = ? AND status IN ('queued', 'running')`,
   ).run(Math.floor(Date.now() / 1000), id);
+  if (result.changes > 0) {
+    // Cancelling the last non-terminal child of a gather group must release
+    // the parked join, or the group deadlocks in 'waiting' forever. Both
+    // cancel surfaces (dashboard and CLI) go through this function, and the
+    // scheduler's own cancelled branches only run after the status was
+    // already flipped here — so this is the single release point needed.
+    const task = getMissionTask(id);
+    if (task) maybeReleaseJoinForMission(task);
+  }
   return result.changes > 0;
+}
+
+/**
+ * Tier 3 gather/join: when a group-tagged 'task' mission reaches a terminal
+ * status, check whether every sibling in its group is now terminal too. If
+ * so, assemble the children's results into the parked 'waiting' join
+ * mission's prompt and atomically release it (waiting -> queued). Defensive:
+ * a non-grouped mission, or a group with no join mission, is a no-op.
+ */
+export function maybeReleaseJoinForMission(mission: MissionTask): void {
+  if (!mission.group_id || mission.role !== 'task') return;
+  const groupId = mission.group_id;
+  const release = db.transaction((): { released: boolean; joinId?: string; missingJoin?: boolean } => {
+    const children = getGroupChildren(groupId);
+    if (children.length === 0 || children.some((c) => !['completed', 'failed', 'cancelled'].includes(c.status))) {
+      return { released: false };
+    }
+
+    const join = getJoinMission(groupId);
+    if (!join) return { released: false, missingJoin: true };
+    if (!releaseJoinMission(groupId)) return { released: false };
+
+    const assembled = children
+      .sort((a, b) => a.id.localeCompare(b.id))
+      .map((c) => {
+        const output = c.status === 'cancelled'
+          ? '(cancelled)'
+          : c.result ?? c.error ?? '(no output)';
+        return `=== ${c.title} (@${c.assigned_agent ?? 'unassigned'}) ===\n${output}`;
+      })
+      .join('\n\n');
+    updateMissionPrompt(join.id, `${join.prompt}\n\n--- Collected results ---\n${assembled}`);
+    return { released: true, joinId: join.id };
+  });
+  const outcome = withBusyRetry(() => release.immediate());
+
+  if (outcome.missingJoin) {
+    logger.warn({ groupId }, 'Gather group has no join mission to release');
+    return;
+  }
+  const released = outcome.released;
+  if (released) {
+    logger.info({ groupId, joinId: outcome.joinId }, 'Released join mission for gather group');
+  }
 }
 
 export function deleteMissionTask(id: string): boolean {
