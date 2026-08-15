@@ -7,6 +7,7 @@ import { isDeepStrictEqual, promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
 import { runAgentWithRetry, emptyTurnReply, AgentProgressEvent, AgentToolPolicy } from './agent.js';
+import { turnAbortMessage } from './turn-watchdog.js';
 import { ProviderConfig, setMainProviderConfig } from './provider.js';
 import { setAgentProvider } from './agent-config.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
@@ -17,7 +18,6 @@ import {
 import { AgentError } from './errors.js';
 import {
   AGENT_ID,
-  AGENT_TIMEOUT_MS,
   DASHBOARD_PORT,
   DASHBOARD_TOKEN,
   DASHBOARD_URL,
@@ -492,11 +492,6 @@ export function createSignalBot(): SignalBot {
 
       const abortCtrl = new AbortController();
       setActiveAbort(chatId, abortCtrl);
-      const timeoutId = setTimeout(() => {
-        logger.warn({ chatId, timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out (Signal)');
-        abortCtrl.abort();
-      }, AGENT_TIMEOUT_MS);
-
       const fullMessage = parts.join('\n\n');
 
       // MINDFIELD (PR #111 review #4): resolve the real provider and constrain
@@ -522,15 +517,12 @@ export function createSignalBot(): SignalBot {
         makeSignalAskUserQuestionResolver(chatId, sendMessage, abortCtrl),
       );
 
-      clearTimeout(timeoutId);
       clearInterval(typingInterval);
       setActiveAbort(chatId, null);
 
       if (result.aborted) {
         setProcessing(chatId, false);
-        const msg = result.text === null
-          ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Raise AGENT_TIMEOUT_MS in your .env (default is 1800000 = 30 min) and restart, or break the task into smaller steps.`
-          : 'Stopped.';
+        const msg = turnAbortMessage(result.abortReason);
         emitChatEvent({ type: 'assistant_message', chatId, content: msg, source: 'signal' });
         await sendMessage(chatId, msg);
         return;

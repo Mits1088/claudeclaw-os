@@ -12,6 +12,8 @@ vi.mock('./env.js', () => ({
 
 vi.mock('./config.js', () => ({
   AGENT_MAX_TURNS: 30,
+  AGENT_IDLE_TIMEOUT_MS: 900000,
+  AGENT_MAX_RUNTIME_MS: 3600000,
   PROJECT_ROOT: '/tmp/test',
   agentCwd: undefined,
   agentSystemPrompt: undefined,

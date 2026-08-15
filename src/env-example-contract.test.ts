@@ -7,6 +7,8 @@ const example = fs.readFileSync(path.resolve(__dirname, '..', '.env.example'), '
 describe('.env.example release-critical defaults', () => {
   it('documents the current interactive timeout default', () => {
     expect(example).toContain('# AGENT_TIMEOUT_MS=900000');
+    expect(example).toContain('# AGENT_IDLE_TIMEOUT_MS=900000');
+    expect(example).toContain('# AGENT_MAX_RUNTIME_MS=3600000');
     expect(example).toContain('Default: 900000 ms (15 minutes).');
     expect(example).not.toContain('Default: 300000 (5 min)');
   });

@@ -42,6 +42,8 @@ const envConfig = readEnvFile([
   'DB_ENCRYPTION_KEY',
   'GOOGLE_API_KEY',
   'AGENT_TIMEOUT_MS',
+  'AGENT_IDLE_TIMEOUT_MS',
+  'AGENT_MAX_RUNTIME_MS',
   'AGENT_MAX_TURNS',
   'SECURITY_PIN_HASH',
   'IDLE_LOCK_MINUTES',
@@ -221,9 +223,22 @@ export const TYPING_REFRESH_MS = 4000;
 // Default: 15 minutes. Use /stop in Telegram to manually kill a running query.
 // Previously 5 min, which caused mid-execution timeouts on bulk API work
 // (posting YouTube comments, sending multiple messages) leading to duplicate posts.
-export const AGENT_TIMEOUT_MS = parseInt(
-  process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '900000',
-  10,
+export function parseTimeoutMs(name: string, raw: string): number {
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0 || value > 2_147_483_647) {
+    throw new Error(`${name} must be a positive integer no greater than 2147483647 milliseconds`);
+  }
+  return value;
+}
+
+export const AGENT_TIMEOUT_MS = parseTimeoutMs(
+  'AGENT_TIMEOUT_MS', process.env.AGENT_TIMEOUT_MS || envConfig.AGENT_TIMEOUT_MS || '900000',
+);
+export const AGENT_IDLE_TIMEOUT_MS = parseTimeoutMs(
+  'AGENT_IDLE_TIMEOUT_MS', process.env.AGENT_IDLE_TIMEOUT_MS || envConfig.AGENT_IDLE_TIMEOUT_MS || String(AGENT_TIMEOUT_MS),
+);
+export const AGENT_MAX_RUNTIME_MS = parseTimeoutMs(
+  'AGENT_MAX_RUNTIME_MS', process.env.AGENT_MAX_RUNTIME_MS || envConfig.AGENT_MAX_RUNTIME_MS || '3600000',
 );
 
 // Maximum number of agentic turns (tool-use rounds) per query.

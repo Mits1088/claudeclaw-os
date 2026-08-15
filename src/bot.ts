@@ -5,6 +5,7 @@ import { isDeepStrictEqual } from 'util';
 import { Api, Bot, Context, InlineKeyboard, InputFile, RawApi } from 'grammy';
 
 import { runAgent, runAgentWithRetry, emptyTurnReply, UsageInfo, AgentProgressEvent, AgentToolPolicy } from './agent.js';
+import { turnAbortMessage } from './turn-watchdog.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
 import type {
   AskUserQuestionRequest,
@@ -27,7 +28,6 @@ import {
   agentMcpAllowlist,
   agentSystemPrompt,
   TYPING_REFRESH_MS,
-  AGENT_TIMEOUT_MS,
   STREAM_STRATEGY,
   MODEL_FALLBACK_CHAIN,
   SHOW_COST_FOOTER,
@@ -1466,7 +1466,6 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   // Declared out here so the catch below can stop it: an interval left running past a
   // thrown turn would keep editing a message for a turn that no longer exists.
   let workingTicker: ReturnType<typeof setInterval> | undefined;
-  let timeoutId: ReturnType<typeof setTimeout> | undefined;
   let streamMsgId: number | undefined;
   let streamMutation: Promise<void> = Promise.resolve();
   const turnActivity = new Map<string, TurnActivityEntry>();
@@ -1553,12 +1552,6 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
-
-    // Auto-abort if the agent runs too long (prevents runaway commands from blocking the bot)
-    timeoutId = setTimeout(() => {
-      logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out, aborting');
-      abortCtrl.abort();
-    }, AGENT_TIMEOUT_MS);
 
     // Streaming: send a placeholder message and edit it as text arrives
     let streamMsgPending = false;
@@ -1716,7 +1709,6 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       makeAskUserQuestionResolver(ctx, chatId, abortCtrl),
     );
 
-    if (timeoutId) clearTimeout(timeoutId);
     setActiveAbort(chatIdStr, null);
     clearInterval(typingInterval);
     // Stop before finalizing the persistent stream message.
@@ -1726,9 +1718,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Handle abort (manual /stop or timeout)
     if (result.aborted) {
       setProcessing(chatIdStr, false);
-      const msg = result.text === null
-        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. The task may have been too complex or a command got stuck. Try breaking it into smaller steps.`
-        : 'Stopped.';
+      const msg = turnAbortMessage(result.abortReason);
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'telegram' });
       const ledger = renderTurnActivity(turnActivity);
       const abortedText = ledger ? `${msg}\n\n${ledger}` : msg;
@@ -1947,7 +1937,6 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
   } catch (err) {
     clearInterval(typingInterval);
     if (workingTicker) clearInterval(workingTicker);
-    if (timeoutId) clearTimeout(timeoutId);
     await streamMutation;
     setActiveAbort(chatIdStr, null);
     setProcessing(chatIdStr, false);
@@ -3093,11 +3082,6 @@ async function processDashboardMessage(
 
     const abortCtrl = new AbortController();
     setActiveAbort(chatIdStr, abortCtrl);
-    const dashTimeout = setTimeout(() => {
-      logger.warn({ chatId: chatIdStr, timeoutMs: AGENT_TIMEOUT_MS }, 'Dashboard agent query timed out, aborting');
-      abortCtrl.abort();
-    }, AGENT_TIMEOUT_MS);
-
     const dashProvider = activeProvider();
     const result = await runAgent(
       fullMessage,
@@ -3112,14 +3096,11 @@ async function processDashboardMessage(
       chatToolProfileFor(dashProvider),
     );
 
-    clearTimeout(dashTimeout);
     setActiveAbort(chatIdStr, null);
 
     // Handle abort
     if (result.aborted) {
-      const msg = result.text === null
-        ? `Timed out after ${Math.round(AGENT_TIMEOUT_MS / 1000)}s. Try breaking the task into smaller steps.`
-        : 'Stopped.';
+      const msg = turnAbortMessage(result.abortReason);
       emitChatEvent({ type: 'assistant_message', chatId: chatIdStr, content: msg, source: 'dashboard' });
       return;
     }

@@ -1,7 +1,8 @@
 import fs from 'fs';
 import path from 'path';
 
-import { AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd, agentSystemPrompt } from './config.js';
+import { AGENT_IDLE_TIMEOUT_MS, AGENT_MAX_RUNTIME_MS, AGENT_MAX_TURNS, PROJECT_ROOT, agentCwd, agentSystemPrompt } from './config.js';
+import { TurnWatchdog, type TurnAbortReason } from './turn-watchdog.js';
 import { readEnvFile } from './env.js';
 import { classifyError, AgentError } from './errors.js';
 import { logger } from './logger.js';
@@ -169,6 +170,7 @@ export interface AgentResult {
   newSessionId: string | undefined;
   usage: UsageInfo | null;
   aborted?: boolean;
+  abortReason?: TurnAbortReason;
   /** SDK result subtype (e.g. 'success', 'error_during_execution'). */
   stopReason?: string;
 }
@@ -234,6 +236,7 @@ export async function runAgent(
   providerConfig?: ProviderConfig,
   toolPolicy?: AgentToolPolicy,
   onAskUserQuestion?: AskUserQuestionResolver,
+  sharedWatchdog?: TurnWatchdog,
 ): Promise<AgentResult> {
   // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
   // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
@@ -244,6 +247,10 @@ export async function runAgent(
   requireEnabled('LLM_SPAWN_ENABLED');
 
   const provider = providerConfig ?? getSelectedProviderConfig();
+  const turnAbort = abortController ?? new AbortController();
+  const watchdog = sharedWatchdog ?? new TurnWatchdog(turnAbort, AGENT_IDLE_TIMEOUT_MS, AGENT_MAX_RUNTIME_MS);
+  const ownsWatchdog = !sharedWatchdog;
+  if (ownsWatchdog) watchdog.start();
   const providerSessionId = sessionBelongsToProvider(sessionId, provider)
     ? decodeProviderSession(provider, sessionId)
     : undefined;
@@ -346,8 +353,9 @@ export async function runAgent(
       ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
       ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
       ...(onAskUserQuestion ? { onAskUserQuestion } : {}),
-      abortController,
+      abortController: turnAbort,
     })) {
+      watchdog.touch();
       if (event.type === 'session') {
         newSessionId = event.sessionId;
         logger.info({ newSessionId }, 'Session initialized');
@@ -389,6 +397,7 @@ export async function runAgent(
           newSessionId: encodeProviderSession(provider, event.sessionId ?? newSessionId ?? providerSessionId),
           usage: event.usage,
           aborted: true,
+          abortReason: watchdog.reason(),
         };
       }
 
@@ -417,9 +426,10 @@ export async function runAgent(
       }
     }
   } catch (err) {
-    if (abortController?.signal.aborted) {
-      logger.info('Agent query aborted by user');
-      return { text: null, newSessionId, usage, aborted: true };
+    if (turnAbort.signal.aborted) {
+      const abortReason = watchdog.reason();
+      logger.info({ abortReason }, 'Agent query aborted');
+      return { text: null, newSessionId, usage, aborted: true, abortReason };
     }
 
     // Classify the error and attach context-aware metadata
@@ -432,6 +442,7 @@ export async function runAgent(
     throw classified;
   } finally {
     clearInterval(typingInterval);
+    if (ownsWatchdog) watchdog.dispose();
   }
 
   return { text: resultText, newSessionId: encodeProviderSession(provider, newSessionId), usage, stopReason: resultStopReason };
@@ -443,8 +454,17 @@ const MAX_RETRIES = 2;
 const BACKOFF_BASE_MS = 2000;
 const BACKOFF_MULTIPLIER = 4; // 2s, 8s
 
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+function sleepUntil(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    signal.addEventListener('abort', done, { once: true });
+    function done(): void {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    }
+  });
 }
 
 /**
@@ -468,8 +488,12 @@ export async function runAgentWithRetry(
   onAskUserQuestion?: AskUserQuestionResolver,
 ): Promise<AgentResult> {
   let lastError: AgentError | undefined;
+  const turnAbort = abortController ?? new AbortController();
+  const watchdog = new TurnWatchdog(turnAbort, AGENT_IDLE_TIMEOUT_MS, AGENT_MAX_RUNTIME_MS);
+  watchdog.start();
 
-  for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+  try {
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
     try {
       const currentModel =
         attempt === 0 ? model
@@ -479,18 +503,22 @@ export async function runAgentWithRetry(
 
       return await runAgent(
         message, sessionId, onTyping, onProgress,
-        currentModel, abortController, onStreamText,
+        currentModel, turnAbort, onStreamText,
         mcpAllowlist,
         providerConfig,
         toolPolicy,
         onAskUserQuestion,
+        watchdog,
       );
     } catch (err) {
       if (!(err instanceof AgentError)) throw err;
       lastError = err;
 
       // Don't retry non-retryable errors or if aborted
-      if (!err.recovery.shouldRetry || abortController?.signal.aborted) {
+      if (!err.recovery.shouldRetry || turnAbort.signal.aborted) {
+        if (turnAbort.signal.aborted) {
+          return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
+        }
         throw err;
       }
 
@@ -512,10 +540,15 @@ export async function runAgentWithRetry(
       );
 
       onRetry?.(attempt + 1, err);
-      await sleep(delayMs + jitter);
+      await sleepUntil(delayMs + jitter, turnAbort.signal);
+      if (turnAbort.signal.aborted) {
+        return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
+      }
     }
-  }
+    }
 
-  // Should never reach here, but TypeScript needs it
-  throw lastError ?? new Error('Retry loop exhausted');
+    throw lastError ?? new Error('Retry loop exhausted');
+  } finally {
+    watchdog.dispose();
+  }
 }
