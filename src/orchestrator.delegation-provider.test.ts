@@ -9,6 +9,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const runAgentMock = vi.fn(async (..._args: unknown[]) => ({ text: 'ok', usage: null }));
 
 vi.mock('./agent.js', () => ({
+  isFailedTurn: () => false,
   runAgent: (...args: unknown[]) => runAgentMock(...args),
 }));
 

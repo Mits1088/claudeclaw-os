@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import fs from 'fs';
 import path from 'path';
 
-import { runAgent, UsageInfo } from './agent.js';
+import { isFailedTurn, runAgent, UsageInfo } from './agent.js';
 import { loadAgentConfig, listAgentIds, resolveAgentClaudeMd, resolveAgentId } from './agent-config.js';
 import { PROJECT_ROOT } from './config.js';
 import { logToHiveMind, createInterAgentTask, completeInterAgentTask } from './db.js';
@@ -233,6 +233,20 @@ export async function delegateToAgent(
       );
 
       clearTimeout(timer);
+
+      // A timed-out or errored run must not be recorded as 'completed' — the
+      // catch below already routes failures correctly (completeInterAgentTask
+      // 'failed', hive_mind delegate_error, re-throw → user notification).
+      if (result.aborted) {
+        throw new Error(`Delegation timed out after ${Math.round(timeoutMs / 1000)}s`);
+      }
+      if (isFailedTurn(result)) {
+        const reason = result.stopReason ?? 'unknown error';
+        // Codex adapters preserve actionable provider diagnostics in text.
+        // Keep the bounded detail just as scheduler and mission failures do.
+        const detail = result.text ? `: ${result.text.slice(0, 400)}` : '';
+        throw new Error(`Agent run failed (${reason})${detail}`.slice(0, 500));
+      }
 
       const durationMs = Date.now() - start;
       completeInterAgentTask(taskId, 'completed', result.text);

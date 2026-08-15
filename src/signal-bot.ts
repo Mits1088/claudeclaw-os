@@ -419,11 +419,10 @@ export function createSignalBot(): SignalBot {
           chatId,
           AGENT_ID,
         );
-        // Delegation is now async: delegateToAgent queues a mission_task and
-        // returns an acknowledgement immediately. The specialist's own
-        // scheduler picks it up and delivers the actual result via its
-        // sendToPrimary — keeping main responsive for follow-up messages.
-        const ackText = result.text ?? `${delegation.agentId} queued.`;
+        // Delegation is blocking and in-process (same path as bot.ts): the
+        // result IS the specialist's final output. Errored or timed-out runs
+        // throw inside delegateToAgent and land in the catch below.
+        const ackText = result.text?.trim() || `${delegation.agentId} completed with no output.`;
         emitChatEvent({ type: 'assistant_message', chatId, content: ackText, source: 'signal' });
         await sendMessage(chatId, ackText);
       } catch (err) {
