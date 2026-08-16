@@ -116,7 +116,10 @@ async function runDueTasks(): Promise<void> {
       const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
 
       try {
-        await sender(`Scheduled task running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`);
+        await sender([
+          `🕐 Scheduled job running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`,
+          `Job ID: ${task.id}`,
+        ].join('\n'));
 
         // Run as a fresh agent call (no session — scheduled tasks are autonomous)
         const result = await runAgent(
@@ -234,6 +237,11 @@ async function runDueMissionTasks(): Promise<void> {
     }, 5_000);
 
     try {
+      await sender([
+        `🎯 Mission task running: "${mission.title}"`,
+        `Task ID: ${mission.id}`,
+      ].join('\n'));
+
       const result = await runAgent(
         missionExecutionPrompt(mission),
         undefined,

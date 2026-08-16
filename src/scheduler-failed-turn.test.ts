@@ -113,6 +113,7 @@ describe('scheduler failed-turn routing', () => {
 
     await runSchedulerCycle(send);
 
+    expect(send).toHaveBeenNthCalledWith(1, '🕐 Scheduled job running: "daily briefing"\nJob ID: cron-1');
     expect(vi.mocked(updateTaskAfterRun)).toHaveBeenCalledWith(
       'cron-1',
       expect.any(Number),
@@ -165,6 +166,7 @@ describe('scheduler failed-turn routing', () => {
 
     await runSchedulerCycle(send);
 
+    expect(send).toHaveBeenNthCalledWith(1, '🎯 Mission task running: "Research X"\nTask ID: m1');
     expect(vi.mocked(claimNextMissionTask)).toHaveBeenCalled();
     expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith(
       'm1',
@@ -194,6 +196,7 @@ describe('scheduler failed-turn routing', () => {
 
     await runSchedulerCycle(send);
 
+    expect(send).toHaveBeenNthCalledWith(1, '🎯 Mission task running: "Report Y"\nTask ID: m2');
     expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith('m2', 'all good', 'completed');
     expect(send).toHaveBeenCalledWith('all good');
   });
