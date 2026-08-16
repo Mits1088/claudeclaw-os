@@ -46,9 +46,13 @@ let schedulerAgentId = 'main';
  * `mission-cli handback <task-id>` workflow. The stored user prompt remains
  * unchanged; runtime metadata is added only when the mission is executed.
  */
-export function missionExecutionPrompt(mission: Pick<MissionTask, 'id' | 'title' | 'created_by' | 'prompt' | 'role'>): string {
+export function missionExecutionPrompt(mission: Pick<MissionTask, 'id' | 'title' | 'created_by' | 'assigned_agent' | 'prompt' | 'role' | 'continuation_limit'>): string {
   const completionInstruction = mission.role === 'handback'
     ? 'This is a terminal handback. Return the report directly and do not create another handback.'
+    : mission.assigned_agent === mission.created_by
+      ? mission.role === 'continuation'
+        ? `This is a bounded self-directed continuation. To queue another step, use the mission_continue tool when available with task_id ${mission.id}; CLI fallback: mission-cli continue ${mission.id} "<next-step prompt>" --key <stable-key>. The chain limit is ${mission.continuation_limit}.`
+        : `This task is self-directed. Complete it directly without a handback. If the request explicitly requires a bounded queued continuation, use the mission_continue tool when available with task_id ${mission.id}; CLI fallback: mission-cli continue ${mission.id} "<next-step prompt>" --key <stable-key> --max-steps <N>.`
     : `If an explicit handback is required, use: mission-cli handback ${mission.id} "<report>".`;
   return [
     `[Mission task: ${mission.title}]`,

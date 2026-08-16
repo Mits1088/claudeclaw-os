@@ -79,6 +79,8 @@ Binary: `node dist/mission-cli.js`
 
 - `create [--agent <id>] [--title "Label"] [--priority N] "Full prompt text"` — Queue a one-shot mission task. --agent assigns it (omit to leave unassigned for dashboard auto-assign); --title defaults to the first 60 chars of the prompt; --priority defaults to 5.
 - `handback <task-id> "Report text"` — Report back on a task you were assigned. Routes deterministically to the task's originator (created_by) — another agent, or the human via the primary agent. Use this to close the loop; never guess the recipient.
+- `continue <task-id> "Next-step prompt" --key <idempotency-key> [--max-steps N]` — Queue the next step of an explicitly bounded self-directed chain. The first step fixes the chain limit; every request requires a stable idempotency key.
+- `cancel-chain <chain-id>` — Persistently stop a self-directed continuation chain and cancel its queued next steps. A running step may finish but cannot advance the cancelled chain.
 - `gather --summary-agent <id> --title "Label" --task "agent:prompt" [--task "agent:prompt" ...] "join/summary prompt"` — Non-blocking fan-out: queue one child task per --task, then a parked join task for --summary-agent. The scheduler releases the join with all child results once the last child finishes, producing ONE consolidated summary. Children finish with their findings as output — they do NOT handback.
 - `list [--status <status>]` — List mission tasks, optionally filtered by status (e.g. queued).
 - `result <id>` — Show a task with its status and result (or error) once it has run.

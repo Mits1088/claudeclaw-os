@@ -239,11 +239,24 @@ function createSchema(database: Database.Database): void {
       completed_at    INTEGER,
       parent_task_id  TEXT,
       group_id        TEXT,
-      role            TEXT NOT NULL DEFAULT 'task'
+      role            TEXT NOT NULL DEFAULT 'task',
+      chain_id        TEXT,
+      continuation_step INTEGER,
+      continuation_limit INTEGER,
+      continuation_key TEXT
     );
 
     CREATE INDEX IF NOT EXISTS idx_mission_status
       ON mission_tasks(assigned_agent, status, priority DESC, created_at ASC);
+
+    CREATE TABLE IF NOT EXISTS mission_chains (
+      id              TEXT PRIMARY KEY,
+      owner_agent     TEXT NOT NULL,
+      max_steps       INTEGER NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'active',
+      created_at      INTEGER NOT NULL,
+      cancelled_at    INTEGER
+    );
 
     CREATE TABLE IF NOT EXISTS meet_sessions (
       id              TEXT PRIMARY KEY,         -- session id from the provider's join response
@@ -775,6 +788,21 @@ function runMigrations(database: Database.Database): void {
     database.exec(`ALTER TABLE mission_tasks ADD COLUMN role TEXT NOT NULL DEFAULT 'task'`);
     logger.info('Migration: added mission_tasks.role');
   }
+
+  const missionColsContinuation = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+  for (const [name, type] of [
+    ['chain_id', 'TEXT'],
+    ['continuation_step', 'INTEGER'],
+    ['continuation_limit', 'INTEGER'],
+    ['continuation_key', 'TEXT'],
+  ] as const) {
+    if (!missionColsContinuation.some((c) => c.name === name)) {
+      database.exec(`ALTER TABLE mission_tasks ADD COLUMN ${name} ${type}`);
+      logger.info(`Migration: added mission_tasks.${name}`);
+    }
+  }
+  database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_continuation_key
+    ON mission_tasks(continuation_key) WHERE continuation_key IS NOT NULL`);
 
   // Live Meetings: add provider column so we can track which platform
   // each session used (pika avatar vs recall voice-only). Default 'pika'
@@ -2341,6 +2369,19 @@ export interface MissionTask {
   parent_task_id: string | null;
   group_id: string | null;
   role: string;
+  chain_id: string | null;
+  continuation_step: number | null;
+  continuation_limit: number | null;
+  continuation_key: string | null;
+}
+
+export interface MissionChain {
+  id: string;
+  owner_agent: string;
+  max_steps: number;
+  status: 'active' | 'cancelled';
+  created_at: number;
+  cancelled_at: number | null;
 }
 
 export function createMissionTask(
@@ -2360,6 +2401,59 @@ export function createMissionTask(
     `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at, parent_task_id, group_id, role)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(id, title, prompt, assignedAgent, status, createdBy, priority, now, parentTaskId, groupId, role);
+}
+
+export function createMissionContinuation(input: {
+  id: string; title: string; prompt: string; agent: string; priority: number;
+  parentId: string; chainId: string; step: number; limit: number; key: string;
+}): { id: string; duplicate: boolean; cancelled: boolean } {
+  return db.transaction(() => {
+    const now = Math.floor(Date.now() / 1000);
+    db.prepare(
+      `INSERT OR IGNORE INTO mission_chains (id, owner_agent, max_steps, status, created_at)
+       VALUES (?, ?, ?, 'active', ?)`,
+    ).run(input.chainId, input.agent, input.limit, now);
+    const chain = db.prepare('SELECT * FROM mission_chains WHERE id = ?').get(input.chainId) as MissionChain;
+    if (chain.status === 'cancelled') return { id: '', duplicate: false, cancelled: true };
+    if (chain.owner_agent !== input.agent || chain.max_steps !== input.limit) {
+      throw new Error(`Continuation chain ${input.chainId} metadata mismatch`);
+    }
+    const existing = db.prepare('SELECT id FROM mission_tasks WHERE continuation_key = ?').get(input.key) as { id: string } | undefined;
+    if (existing) return { id: existing.id, duplicate: true, cancelled: false };
+    db.prepare(
+      `INSERT INTO mission_tasks
+        (id, title, prompt, assigned_agent, status, created_by, priority, created_at,
+         parent_task_id, role, chain_id, continuation_step, continuation_limit, continuation_key)
+       VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, 'continuation', ?, ?, ?, ?)`,
+    ).run(input.id, input.title, input.prompt, input.agent, input.agent, input.priority, now,
+      input.parentId, input.chainId, input.step, input.limit, input.key);
+    return { id: input.id, duplicate: false, cancelled: false };
+  })();
+}
+
+export function cancelMissionChain(chainId: string, ownerAgent: string): {
+  found: boolean; alreadyCancelled: boolean; cancelledTasks: number;
+} {
+  return db.transaction(() => {
+    const chain = db.prepare('SELECT * FROM mission_chains WHERE id = ?').get(chainId) as MissionChain | undefined;
+    if (!chain || chain.owner_agent !== ownerAgent) {
+      return { found: false, alreadyCancelled: false, cancelledTasks: 0 };
+    }
+    const now = Math.floor(Date.now() / 1000);
+    const alreadyCancelled = chain.status === 'cancelled';
+    if (!alreadyCancelled) {
+      db.prepare(`UPDATE mission_chains SET status = 'cancelled', cancelled_at = ? WHERE id = ?`).run(now, chainId);
+    }
+    const result = db.prepare(
+      `UPDATE mission_tasks SET status = 'cancelled', completed_at = ?
+       WHERE chain_id = ? AND role = 'continuation' AND status IN ('queued', 'waiting')`,
+    ).run(now, chainId);
+    return { found: true, alreadyCancelled, cancelledTasks: result.changes };
+  })();
+}
+
+export function getMissionChain(id: string): MissionChain | null {
+  return (db.prepare('SELECT * FROM mission_chains WHERE id = ?').get(id) as MissionChain) ?? null;
 }
 
 export function getUnassignedMissionTasks(): MissionTask[] {

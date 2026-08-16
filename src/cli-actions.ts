@@ -25,6 +25,8 @@ import { STORE_DIR } from './config.js';
 import {
   ensureDatabase,
   createMissionTask,
+  createMissionContinuation,
+  cancelMissionChain,
   getMissionTasks,
   getMissionTask,
   cancelMissionTask,
@@ -162,6 +164,67 @@ export function actionHandbackMission(input: HandbackInput): HandbackResult {
   ].join('\n');
   createMissionTask(id, title, body, dest.via ?? MAIN_AGENT_ID, createdBy, priority, parent.id, null, 'handback');
   return { kind: 'human', missionId: id, parentId: parent.id, dest: dest.via, reason: dest.reason };
+}
+
+export interface ContinueMissionInput {
+  taskId: string;
+  prompt: string;
+  idempotencyKey: string;
+  maxSteps?: number;
+  priority?: number;
+  createdBy?: string;
+}
+
+export function actionContinueMission(input: ContinueMissionInput): {
+  missionId: string; chainId: string; step: number; limit: number; duplicate: boolean;
+} {
+  if (!input.taskId || !input.prompt || !input.idempotencyKey) {
+    throw new CliActionError('continue requires a task id, next-step prompt, and idempotency key');
+  }
+  ensureDatabase();
+  const agent = (input.createdBy ?? defaultAgent()).trim().toLowerCase();
+  const parent = getMissionTask(input.taskId);
+  if (!parent) throw new CliActionError(`Task not found: ${input.taskId}`);
+  if (parent.role === 'handback') {
+    throw new CliActionError(`Task ${parent.id} is a terminal handback and cannot continue`);
+  }
+  if (parent.assigned_agent !== agent || parent.created_by.trim().toLowerCase() !== agent) {
+    throw new CliActionError(`Task ${parent.id} is not a self-directed task owned by @${agent}`);
+  }
+  const limit = parent.continuation_limit ?? input.maxSteps;
+  if (!Number.isInteger(limit) || limit! < 1 || limit! > 100) {
+    throw new CliActionError('the first continuation requires --max-steps from 1 to 100');
+  }
+  if (parent.continuation_limit != null && input.maxSteps != null && input.maxSteps !== parent.continuation_limit) {
+    throw new CliActionError(`continuation limit is already fixed at ${parent.continuation_limit}`);
+  }
+  const step = (parent.continuation_step ?? 0) + 1;
+  if (step > limit!) throw new CliActionError(`continuation chain exhausted at ${limit} step(s)`);
+  const chainId = parent.chain_id ?? parent.id;
+  const id = randomBytes(4).toString('hex');
+  const prompt = [
+    input.prompt,
+    '',
+    '[Continuation control: If this step queues another continuation, use the Task ID from this mission\'s own runtime metadata. Never reuse a parent task id.]',
+  ].join('\n');
+  const created = createMissionContinuation({
+    id, title: `Continuation ${step}/${limit}: ${parent.title}`.slice(0, 80), prompt,
+    agent, priority: input.priority ?? parent.priority, parentId: parent.id, chainId,
+    step, limit: limit!, key: `${chainId}:${input.idempotencyKey}`,
+  });
+  if (created.cancelled) throw new CliActionError(`continuation chain ${chainId} is cancelled`);
+  return { missionId: created.id, chainId, step, limit: limit!, duplicate: created.duplicate };
+}
+
+export function actionCancelMissionChain(input: { chainId: string; createdBy?: string }): {
+  chainId: string; alreadyCancelled: boolean; cancelledTasks: number;
+} {
+  if (!input.chainId) throw new CliActionError('a continuation chain id is required');
+  ensureDatabase();
+  const agent = (input.createdBy ?? defaultAgent()).trim().toLowerCase();
+  const result = cancelMissionChain(input.chainId, agent);
+  if (!result.found) throw new CliActionError(`Continuation chain not found or not owned by @${agent}: ${input.chainId}`);
+  return { chainId: input.chainId, alreadyCancelled: result.alreadyCancelled, cancelledTasks: result.cancelledTasks };
 }
 
 export function actionListMissions(input: { status?: string } = {}): MissionTask[] {

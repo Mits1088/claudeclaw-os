@@ -4,9 +4,11 @@ import type { ProviderConfig } from './provider.js';
 import {
   _initTestDatabase,
   createMissionTask,
+  claimNextMissionTask,
   getAllScheduledTasks,
   getHiveMindEntries,
   getMissionTask,
+  getMissionChain,
   getMissionTasks,
 } from './db.js';
 import type { TurnToolPolicy } from './agent-engine/types.js';
@@ -20,6 +22,7 @@ import {
   dispatchToolNames,
   dispatchToolsAllowed,
 } from './dispatch-tools.js';
+import { actionHandbackMission } from './cli-actions.js';
 
 interface ToolResult {
   content: Array<{ type: string; text: string }>;
@@ -105,7 +108,7 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
     expect(asText(r)).toContain('Task not found');
   });
 
-  it('rejects a handback when the task originator and reporting agent are the same', async () => {
+  it('keeps self-handback rejected while allowing an explicit bounded continuation', async () => {
     await callTool('mission_create', { prompt: 'resume after restart', agent: 'main', title: 'Self recap' });
     const [parent] = getMissionTasks();
 
@@ -114,6 +117,111 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
     expect(r.isError).toBe(true);
     expect(asText(r)).toContain('complete it directly without a handback');
     expect(getMissionTasks()).toHaveLength(1);
+
+    const continued = await callTool('mission_continue', {
+      task_id: parent.id, prompt: 'next bounded step', idempotency_key: 'step-1', max_steps: 2,
+    });
+    expect(continued.isError).toBeFalsy();
+    const next = getMissionTasks().find((task) => task.role === 'continuation');
+    expect(next).toMatchObject({
+      assigned_agent: 'main', created_by: 'main', parent_task_id: parent.id,
+      chain_id: parent.id, continuation_step: 1, continuation_limit: 2,
+    });
+    expect(next?.prompt).toContain("use the Task ID from this mission's own runtime metadata");
+    expect(next?.prompt).toContain('Never reuse a parent task id');
+  });
+
+  it('deduplicates continuation retries and enforces the fixed chain bound', async () => {
+    await callTool('mission_create', { prompt: 'start', agent: 'main', title: 'Chain' });
+    const [root] = getMissionTasks();
+    const args = { task_id: root.id, prompt: 'step one', idempotency_key: 'one', max_steps: 1 };
+    const first = await callTool('mission_continue', args);
+    const replay = await callTool('mission_continue', args);
+    expect(first.isError).toBeFalsy();
+    expect(asText(replay)).toContain('Existing continuation');
+    expect(getMissionTasks()).toHaveLength(2);
+
+    const next = getMissionTasks().find((task) => task.role === 'continuation')!;
+    const exhausted = await callTool('mission_continue', {
+      task_id: next.id, prompt: 'too far', idempotency_key: 'two',
+    });
+    expect(exhausted.isError).toBe(true);
+    expect(asText(exhausted)).toContain('chain exhausted');
+    expect(getMissionTasks()).toHaveLength(2);
+  });
+
+  it('cancels queued chain work idempotently and permanently blocks advancement', async () => {
+    await callTool('mission_create', { prompt: 'start', agent: 'main', title: 'Cancelable' });
+    const [root] = getMissionTasks();
+    const first = await callTool('mission_continue', {
+      task_id: root.id, prompt: 'queued next', idempotency_key: 'one', max_steps: 3,
+    });
+    expect(first.isError).toBeFalsy();
+    expect(getMissionChain(root.id)?.status).toBe('active');
+
+    const cancelled = await callTool('mission_cancel_chain', { chain_id: root.id });
+    expect(cancelled.isError).toBeFalsy();
+    expect(asText(cancelled)).toContain('1 queued task(s) stopped');
+    expect(getMissionChain(root.id)?.status).toBe('cancelled');
+    expect(getMissionTasks().find((task) => task.role === 'continuation')?.status).toBe('cancelled');
+
+    const repeat = await callTool('mission_cancel_chain', { chain_id: root.id });
+    expect(asText(repeat)).toContain('already cancelled');
+    const blocked = await callTool('mission_continue', {
+      task_id: root.id, prompt: 'must not queue', idempotency_key: 'two', max_steps: 3,
+    });
+    expect(blocked.isError).toBe(true);
+    expect(asText(blocked)).toContain('is cancelled');
+    expect(getMissionTasks()).toHaveLength(2);
+  });
+
+  it('leaves a running step alive but prevents it from recreating a cancelled chain', async () => {
+    await callTool('mission_create', { prompt: 'root', agent: 'main', title: 'Running cancel' });
+    const [root] = getMissionTasks();
+    await callTool('mission_continue', {
+      task_id: root.id, prompt: 'running step', idempotency_key: 'one', max_steps: 3,
+    });
+    await callTool('mission_cancel', { id: root.id });
+    const running = claimNextMissionTask('main');
+    expect(running?.role).toBe('continuation');
+
+    const cancelled = await callTool('mission_cancel_chain', { chain_id: root.id });
+    expect(asText(cancelled)).toContain('0 queued task(s) stopped');
+    expect(getMissionTask(running!.id)?.status).toBe('running');
+    const blocked = await callTool('mission_continue', {
+      task_id: running!.id, prompt: 'another step', idempotency_key: 'two',
+    });
+    expect(blocked.isError).toBe(true);
+    expect(asText(blocked)).toContain('is cancelled');
+    expect(getMissionTasks().filter((task) => task.role === 'continuation')).toHaveLength(1);
+  });
+
+  it('does not let another agent cancel a chain it does not own', async () => {
+    await callTool('mission_create', { prompt: 'root', agent: 'main', title: 'Owned' });
+    const [root] = getMissionTasks();
+    await callTool('mission_continue', {
+      task_id: root.id, prompt: 'next', idempotency_key: 'one', max_steps: 2,
+    });
+    const { actionCancelMissionChain } = await import('./cli-actions.js');
+    expect(() => actionCancelMissionChain({ chainId: root.id, createdBy: 'amos' }))
+      .toThrow('not owned by @amos');
+    expect(getMissionChain(root.id)?.status).toBe('active');
+  });
+
+  it('rejects continuation from cross-agent and terminal handback tasks', async () => {
+    createMissionTask('cross', 'Cross', 'work', 'main', 'amos', 5);
+    const cross = await callTool('mission_continue', {
+      task_id: 'cross', prompt: 'next', idempotency_key: 'x', max_steps: 2,
+    });
+    expect(cross.isError).toBe(true);
+    expect(asText(cross)).toContain('not a self-directed task');
+
+    createMissionTask('terminal', 'Terminal', 'relay', 'main', 'main', 5, null, null, 'handback');
+    const terminal = await callTool('mission_continue', {
+      task_id: 'terminal', prompt: 'next', idempotency_key: 'y', max_steps: 2,
+    });
+    expect(terminal.isError).toBe(true);
+    expect(asText(terminal)).toContain('terminal handback');
   });
 
   it('marks handback missions terminal and rejects a handback of a handback', async () => {
@@ -128,6 +236,14 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
     expect(second.isError).toBe(true);
     expect(asText(second)).toContain('terminal handback');
     expect(getMissionTasks()).toHaveLength(2);
+  });
+
+  it('routes main to Amos work back to main as one terminal handback', () => {
+    createMissionTask('delegated', 'Delegated', 'inspect', 'amos', 'main', 5);
+    const result = actionHandbackMission({ taskId: 'delegated', report: 'done', createdBy: 'amos' });
+    expect(result).toMatchObject({ kind: 'agent', dest: 'main', parentId: 'delegated' });
+    const relay = getMissionTask(result.missionId);
+    expect(relay).toMatchObject({ assigned_agent: 'main', created_by: 'amos', role: 'handback' });
   });
 
   it('schedule_create stores a recurring task', async () => {
@@ -201,8 +317,8 @@ describe('dispatch tool schemas are derived from the descriptor specs', () => {
     expect(dispatchToolNames().sort()).toEqual(
       [
         'hive_log', 'hive_path', 'hive_read',
-        'mission_cancel', 'mission_create', 'mission_gather',
-        'mission_handback', 'mission_list', 'mission_result',
+        'mission_cancel', 'mission_cancel_chain', 'mission_create', 'mission_gather',
+        'mission_continue', 'mission_handback', 'mission_list', 'mission_result',
         'schedule_create', 'schedule_delete', 'schedule_list',
         'schedule_pause', 'schedule_resume',
       ].sort(),

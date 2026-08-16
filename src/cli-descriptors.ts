@@ -159,6 +159,30 @@ export const missionDescriptor: CliDescriptor = {
       },
     },
     {
+      usage: 'continue <task-id> "Next-step prompt" --key <idempotency-key> [--max-steps N]',
+      description: 'Queue the next step of an explicitly bounded self-directed chain. The first step fixes the chain limit; every request requires a stable idempotency key.',
+      tool: {
+        name: 'mission_continue',
+        params: [
+          { name: 'task_id', type: 'string', required: true, description: 'Current self-directed task id.' },
+          { name: 'prompt', type: 'string', required: true, description: 'Prompt for the next step.' },
+          { name: 'idempotency_key', type: 'string', required: true, description: 'Stable key preventing duplicate next steps.' },
+          { name: 'max_steps', type: 'number', required: false, description: 'Total chain limit, required on the first continuation.' },
+          { name: 'priority', type: 'number', required: false, description: 'Priority (inherits the parent by default).' },
+        ],
+      },
+    },
+    {
+      usage: 'cancel-chain <chain-id>',
+      description: 'Persistently stop a self-directed continuation chain and cancel its queued next steps. A running step may finish but cannot advance the cancelled chain.',
+      tool: {
+        name: 'mission_cancel_chain',
+        params: [
+          { name: 'chain_id', type: 'string', required: true, description: 'Continuation chain id returned by mission_continue.' },
+        ],
+      },
+    },
+    {
       usage:
         'gather --summary-agent <id> --title "Label" --task "agent:prompt" [--task "agent:prompt" ...] "join/summary prompt"',
       description:

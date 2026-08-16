@@ -48,6 +48,8 @@ import { setDispatchResolver, type DispatchTurnContext } from './dispatch-regist
 import {
   CliActionError,
   actionCancelMission,
+  actionCancelMissionChain,
+  actionContinueMission,
   actionCreateMission,
   actionCreateSchedule,
   actionDeleteSchedule,
@@ -145,6 +147,22 @@ const HANDLERS: Record<string, Handler> = {
     return r.kind === 'agent'
       ? `Handback delivered to @${r.dest} (originator of ${r.parentId}). Mission: ${r.missionId}`
       : `Handback routed to @${r.dest} to surface to the human (${r.reason}). Mission: ${r.missionId}`;
+  },
+
+  mission_continue: (a) => {
+    const r = actionContinueMission({
+      taskId: asStr(a.task_id) ?? '', prompt: asStr(a.prompt) ?? '',
+      idempotencyKey: asStr(a.idempotency_key) ?? '', maxSteps: asNum(a.max_steps),
+      priority: asNum(a.priority),
+    });
+    return `${r.duplicate ? 'Existing' : 'Queued'} continuation ${r.step}/${r.limit} in chain ${r.chainId}. Mission: ${r.missionId}`;
+  },
+
+  mission_cancel_chain: (a) => {
+    const r = actionCancelMissionChain({ chainId: asStr(a.chain_id) ?? '' });
+    return r.alreadyCancelled
+      ? `Continuation chain ${r.chainId} is already cancelled.`
+      : `Cancelled continuation chain ${r.chainId}; ${r.cancelledTasks} queued task(s) stopped.`;
   },
 
   mission_gather: (a) => {

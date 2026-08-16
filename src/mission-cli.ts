@@ -29,6 +29,8 @@ import { missionDescriptor as descriptor } from './cli-descriptors.js';
 import {
   CliActionError,
   actionCancelMission,
+  actionCancelMissionChain,
+  actionContinueMission,
   actionCreateMission,
   actionGather,
   actionHandbackMission,
@@ -112,6 +114,10 @@ function dispatch(): void {
   const priorityArg = priorityFlagIdx !== -1
     ? parseInt(process.argv[priorityFlagIdx + 1] ?? '0', 10)
     : 5;
+  const keyFlagIdx = process.argv.indexOf('--key');
+  const keyArg = keyFlagIdx !== -1 ? process.argv[keyFlagIdx + 1] ?? '' : '';
+  const maxStepsFlagIdx = process.argv.indexOf('--max-steps');
+  const maxStepsArg = maxStepsFlagIdx !== -1 ? parseInt(process.argv[maxStepsFlagIdx + 1] ?? '0', 10) : undefined;
 
   // Parse --summary-agent flag (gather command's join assignee)
   const summaryAgentFlagIdx = process.argv.indexOf('--summary-agent');
@@ -126,7 +132,7 @@ function dispatch(): void {
 
   // Clean argv: remove all flag pairs
   const flagIndices = new Set<number>();
-  [agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx].forEach(idx => {
+  [agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx, keyFlagIdx, maxStepsFlagIdx].forEach(idx => {
     if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
   });
   taskFlagIndices.forEach((idx) => flagIndices.add(idx));
@@ -139,7 +145,7 @@ function dispatch(): void {
   // silently accepted as the prompt/report body and corrupt the task. See #162.
   const KNOWN_FLAGS = [
     '--agent', '--title', '--priority', '--status', '--summary-agent', '--task',
-    '--help',
+    '--key', '--max-steps', '--help',
   ];
   const unknownFlags = rest.filter((tok) => tok.startsWith('--'));
   if (unknownFlags.length > 0) {
@@ -188,6 +194,35 @@ function dispatch(): void {
         console.log(`Handback routed to @${r.dest} to surface to the human (${r.reason}).`);
         console.log(`  Mission: ${r.missionId}`);
       }
+      break;
+    }
+
+    case 'continue': {
+      const parentId = rest[0];
+      const prompt = rest[1];
+      if (!parentId || !prompt || !keyArg) {
+        console.error('Usage: mission-cli continue <task-id> "Next-step prompt" --key <idempotency-key> [--max-steps N]');
+        process.exit(1);
+      }
+      const r = actionContinueMission({
+        taskId: parentId, prompt, idempotencyKey: keyArg, maxSteps: maxStepsArg,
+        priority: priorityFlagIdx !== -1 ? priorityArg : undefined, createdBy,
+      });
+      console.log(`${r.duplicate ? 'Existing' : 'Queued'} continuation ${r.step}/${r.limit} in chain ${r.chainId}.`);
+      console.log(`  Mission: ${r.missionId}`);
+      break;
+    }
+
+    case 'cancel-chain': {
+      const chainId = rest[0];
+      if (!chainId) {
+        console.error('Usage: mission-cli cancel-chain <chain-id>');
+        process.exit(1);
+      }
+      const r = actionCancelMissionChain({ chainId, createdBy });
+      console.log(r.alreadyCancelled
+        ? `Continuation chain ${r.chainId} is already cancelled.`
+        : `Cancelled continuation chain ${r.chainId}; ${r.cancelledTasks} queued task(s) stopped.`);
       break;
     }
 
@@ -257,7 +292,7 @@ function dispatch(): void {
     }
 
     default:
-      console.error('Commands: create | handback | list | result | cancel | gather');
+      console.error('Commands: create | handback | continue | cancel-chain | list | result | cancel | gather');
       process.exit(1);
   }
 }
