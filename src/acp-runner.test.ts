@@ -52,6 +52,15 @@ class FakeAgent {
         ],
       };
     }
+    if (${JSON.stringify(mode)} === 'model-config') {
+      return {
+        sessionId: id,
+        configOptions: [
+          { id: 'model', name: 'Model', category: 'model', type: 'select', currentValue: 'gpt-5.5', options: [{ value: 'gpt-5.5', name: 'GPT-5.5' }, { value: 'gpt-5.6-sol', name: 'GPT-5.6 Sol' }] },
+          { id: 'effort', name: 'Reasoning effort', category: 'thought_level', type: 'select', currentValue: 'low', options: [{ value: 'low', name: 'Low' }, { value: 'medium', name: 'Medium' }, { value: 'max', name: 'Max' }] },
+        ],
+      };
+    }
     return { sessionId: id };
   }
   async resumeSession(params) { this.sessions.add(params.sessionId); this.mcpServers = params.mcpServers || []; return {}; }
@@ -60,6 +69,8 @@ class FakeAgent {
   async setSessionConfigOption(params) {
     if (params.configId === 'mode') this.currentMode = params.value;
     if (params.configId === 'thought') this.currentThought = params.value;
+    if (params.configId === 'model') this.currentModel = params.value;
+    if (params.configId === 'effort') this.currentThought = params.value;
     return { configOptions: [] };
   }
   async unstable_setSessionModel(params) { this.currentModel = params.modelId; return {}; }
@@ -74,6 +85,10 @@ class FakeAgent {
     }
     if (${JSON.stringify(mode)} === 'model') {
       await this.conn.sessionUpdate({ sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: this.currentModel || 'no-model' } } });
+      return { stopReason: 'end_turn' };
+    }
+    if (${JSON.stringify(mode)} === 'model-config') {
+      await this.conn.sessionUpdate({ sessionId: params.sessionId, update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: (this.currentModel || 'no-model') + '/' + (this.currentThought || 'no-thought') } } });
       return { stopReason: 'end_turn' };
     }
     if (${JSON.stringify(mode)} === 'config') {
@@ -276,6 +291,20 @@ describe('runAcpAgent', () => {
     );
 
     expect(result.text).toBe('fake-model-1');
+  });
+
+  it('uses advertised model and reasoning config for Codex ACP', async () => {
+    const { oldPath } = writeFakePresetCommand('codex-acp', [], 'model-config');
+    try {
+      const result = await runAcpAgent(
+        { type: 'acp-codex', model: 'gpt-5.6-sol', thinkingMode: 'max' },
+        'hi',
+        undefined,
+      );
+      expect(result.text).toBe('gpt-5.6-sol/max');
+    } finally {
+      process.env.PATH = oldPath;
+    }
   });
 
   it('sets ACP runtime and thinking config when advertised', async () => {

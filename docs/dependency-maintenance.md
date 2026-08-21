@@ -80,8 +80,10 @@ As of 2026-08-01 after PR #181:
 - The full development audit also reports the Vitest 2 and Vite 5 toolchain.
   These packages do not ship in the production audit. Upgrade Vitest, coverage,
   Vite, and their coupled packages together in a separate PR.
-- The `@zed-industries/codex-acp` package rename remains a separate direct
-  dependency migration.
+
+Codex ACP uses the maintained `@agentclientprotocol/codex-acp` package. Keep it
+off the retired `@zed-industries/codex-acp` line so new Codex models and model
+metadata remain compatible.
 
 ## Validation matrix
 

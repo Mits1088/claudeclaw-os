@@ -621,9 +621,32 @@ export class AcpEngineAdapter implements AgentEngine {
         }
       }
 
-      const setSessionModel = async (sessionIdForModel: string): Promise<AgentEngineEvent | null> => {
+      const setSessionModel = async (
+        sessionIdForModel: string,
+        configOptions: acp.SessionConfigOption[],
+      ): Promise<AgentEngineEvent | null> => {
         if (!input.model) return null;
         try {
+          // Current ACP providers advertise model selection as a stable session
+          // config option. Prefer it over the legacy unstable method: newer
+          // codex-acp releases use compound IDs such as `model[effort]` for the
+          // unstable method while keeping model and reasoning as separate
+          // config values.
+          const modelOption = configOptions.find((cfg) => cfg.category === 'model');
+          const modelValue = modelOption ? selectExactConfigValue(modelOption, input.model) : undefined;
+          if (modelOption && typeof modelValue === 'string') {
+            const response = await withSpawnError(connection.setSessionConfigOption({
+              sessionId: sessionIdForModel,
+              configId: modelOption.id,
+              value: modelValue,
+            }));
+            if (response.configOptions?.length) activeConfigOptions = response.configOptions;
+            return {
+              type: 'progress' as const,
+              progress: { type: 'task_started' as const, description: `${input.provider.type} model set to ${input.model}` },
+            };
+          }
+
           // `unstable_setSessionModel` is an UNSTABLE ACP method. Verified against
           // @agentclientprotocol/sdk 0.21.0 — recheck on SDK bumps. (#72 Finding 11)
           await withSpawnError(connection.unstable_setSessionModel({
@@ -702,7 +725,7 @@ export class AcpEngineAdapter implements AgentEngine {
                 ? { type: 'boolean' as const, value }
                 : { value }),
             }));
-            activeConfigOptions = response.configOptions ?? activeConfigOptions;
+            if (response.configOptions?.length) activeConfigOptions = response.configOptions;
             if (target.category === 'mode') appliedModeConfig = true;
             events.push({
               type: 'progress',
@@ -732,7 +755,7 @@ export class AcpEngineAdapter implements AgentEngine {
               configId: accessOption.id,
               value: fullAccessValue,
             }));
-            activeConfigOptions = response.configOptions ?? activeConfigOptions;
+            if (response.configOptions?.length) activeConfigOptions = response.configOptions;
           } catch (err) {
             if (isMethodNotFoundError(err) || isInvalidParamsError(err)) {
               logger.warn({ provider: input.provider.type }, 'ACP provider could not apply full-access mode');
@@ -754,7 +777,7 @@ export class AcpEngineAdapter implements AgentEngine {
       };
 
       if (!activeSessionId) activeSessionId = await createSession();
-      const modelEvent = await setSessionModel(activeSessionId);
+      const modelEvent = await setSessionModel(activeSessionId, activeConfigOptions);
       if (modelEvent) yield modelEvent;
       for (const event of await applySessionConfig(activeSessionId, activeConfigOptions)) yield event;
 
@@ -777,7 +800,7 @@ export class AcpEngineAdapter implements AgentEngine {
         if (!isSessionNotFoundError(err)) throw err;
         logger.warn({ provider: input.provider.type, sessionId: activeSessionId }, 'ACP provider rejected stale session; starting a new session');
         activeSessionId = await createSession();
-        const retryModelEvent = await setSessionModel(activeSessionId);
+        const retryModelEvent = await setSessionModel(activeSessionId, activeConfigOptions);
         if (retryModelEvent) yield retryModelEvent;
         for (const event of await applySessionConfig(activeSessionId, activeConfigOptions)) yield event;
         yield { type: 'session', sessionId: activeSessionId };

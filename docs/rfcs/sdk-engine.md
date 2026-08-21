@@ -117,7 +117,7 @@ The dashboard also exposes provider configuration through the engine seam:
 - Thinking levels are saved as raw provider values, for example Codex `low`, `medium`, `high`, `xhigh`.
 - Speed-like modes are shown only when they are actually speed options. ACP access/build/plan modes are not shown in Settings.
 - ACP providers are run in full-access mode when they advertise a full-access mode, matching Claude Code's non-interactive `bypassPermissions` behavior.
-- Codex defaults to `gpt-5.5` and uses the bundled `@zed-industries/codex-acp` adapter on the local `node_modules/.bin` PATH.
+- Codex defaults to `gpt-5.5` and uses the bundled `@agentclientprotocol/codex-acp` adapter on the local `node_modules/.bin` PATH.
 
 The engine preserves provider-prefixed sessions through the existing `provider.ts`
 helpers. Legacy unprefixed Claude sessions remain valid for Claude, while switching

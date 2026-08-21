@@ -511,7 +511,7 @@ gemini
 npm run provider:setup
 ```
 
-For Codex, install/authenticate the Codex CLI first, then run `codex` once in your terminal to confirm it works. ClaudeClaw includes the `@zed-industries/codex-acp` package and launches the bundled `codex-acp` adapter for you, so you normally do not need to install a separate `codex-acp` binary globally.
+For Codex, install/authenticate the Codex CLI first, then run `codex` once in your terminal to confirm it works. ClaudeClaw includes the `@agentclientprotocol/codex-acp` package and launches the bundled `codex-acp` adapter for you, so you normally do not need to install a separate `codex-acp` binary globally.
 
 For a custom ACP provider, install and authenticate that provider first, then select "Custom ACP" and enter the command and args. The dashboard Settings page can save provider-specific model ids, thinking levels, and speed options when the provider advertises them through ACP `session/configuration`. Access/sandbox mode is not exposed as a setting: ClaudeClaw runs providers in full-access mode when the ACP provider offers it, because this is an autonomous local assistant.
 
