@@ -88,7 +88,7 @@ Follow these steps in order. The whole thing takes about 5 minutes.
 
 | Requirement | Notes |
 |-------------|-------|
-| **Node.js 20+** | Check: `node --version`. Download at [nodejs.org](https://nodejs.org) |
+| **Node.js 22 or 24 (LTS)** | Check: `node --version`. Download at [nodejs.org](https://nodejs.org) |
 | **Git** | Check: `git --version`. If you've never used git, also run the two commands below |
 | **Claude Code** | Authenticate via `claude login` (any plan), or set `ANTHROPIC_API_KEY` for pay-per-token. Other ACP providers (OpenCode, Gemini CLI, Codex adapter, custom) are an experimental opt-in — see the provider disclaimer above. |
 | **Telegram account** | Any existing account works |

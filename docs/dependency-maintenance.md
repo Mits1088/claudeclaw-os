@@ -7,7 +7,7 @@ security advisories, npm overrides, and cross-platform validation.
 
 ## Supported toolchain
 
-- Node.js 20 LTS and Node.js 22 LTS are the supported release lines.
+- Node.js 22 LTS and Node.js 24 LTS are the supported release lines.
 - `package-lock.json` is authoritative and must stay committed with
   `package.json` changes.
 - Use the npm version supplied by a supported Node release.
@@ -89,8 +89,8 @@ metadata remain compatible.
 
 Any PR that changes `package.json`, `package-lock.json`, or an override must pass:
 
-1. A clean install on Windows using Node 20 or 22.
-2. A clean install on macOS or Linux using Node 20 or 22.
+1. A clean install on Windows using Node 22 or 24.
+2. A clean install on macOS or Linux using Node 22 or 24.
 3. `npm run build`.
 4. `npm run typecheck`.
 5. `npm test`.

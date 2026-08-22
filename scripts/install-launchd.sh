@@ -12,7 +12,7 @@ LOG_DIR="$PROJECT_DIR/logs"
 # (Apple Silicon homebrew, Intel homebrew, nvm, asdf, system node).
 NODE_PATH="$(command -v node)"
 if [ -z "$NODE_PATH" ]; then
-  echo "Error: node not found on PATH. Install Node 20+ first." >&2
+  echo "Error: node not found on PATH. Install Node 22+ first." >&2
   exit 1
 fi
 NODE_BIN_DIR="$(dirname "$NODE_PATH")"
