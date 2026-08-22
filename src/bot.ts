@@ -1792,6 +1792,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     for (const file of fileMarkers) {
       try {
         if (!fs.existsSync(file.filePath)) {
+          logger.warn({ filePath: file.filePath, chatId: chatIdStr }, 'Could not send file: not found');
           await ctx.reply(`Could not send file: ${file.filePath} (not found)`);
           continue;
         }
@@ -1801,6 +1802,10 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
         } else {
           await ctx.replyWithDocument(input, file.caption ? { caption: file.caption } : undefined);
         }
+        logger.info(
+          { filePath: file.filePath, type: file.type, chatId: chatIdStr, caption: !!file.caption },
+          'Sent file via Telegram',
+        );
       } catch (fileErr) {
         logger.error({ err: fileErr, filePath: file.filePath }, 'Failed to send file via Telegram');
         await ctx.reply(`Failed to send file: ${file.filePath}`);
