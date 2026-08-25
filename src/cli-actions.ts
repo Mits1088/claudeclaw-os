@@ -40,8 +40,10 @@ import {
   type MissionTask,
   type ScheduledTask,
   type HiveMindEntry,
+  getWorkerRuntime,
+  isWorkerLeaseCurrent,
 } from './db.js';
-import { resolveAgentId, knownAgentIds } from './agent-config.js';
+import { resolveAgentId, knownAgentIds, loadAgentConfig } from './agent-config.js';
 import { resolveHandbackDestination, MAIN_AGENT_ID } from './routing.js';
 import { computeNextRun } from './cron.js';
 
@@ -61,6 +63,22 @@ export class CliActionError extends Error {
 /** Default creating/owning agent for a write, from the process env. */
 function defaultAgent(): string {
   return process.env.CLAUDECLAW_AGENT_ID ?? 'main';
+}
+
+function isHeadlessAgent(agentId: string): boolean {
+  try {
+    return loadAgentConfig(agentId).runtimeMode === 'headless';
+  } catch {
+    return false;
+  }
+}
+
+function assertMissionTargetAvailable(agentId: string): void {
+  if (!isHeadlessAgent(agentId)) return;
+  const worker = getWorkerRuntime(agentId);
+  if (!worker?.instance_id || !isWorkerLeaseCurrent(agentId, worker.instance_id)) {
+    throw new CliActionError(`headless worker '${agentId}' is offline or has no current lease`);
+  }
 }
 
 /**
@@ -102,6 +120,7 @@ export function actionCreateMission(input: CreateMissionInput): CreateMissionRes
     input.agent !== null && input.agent !== undefined && input.agent !== ''
       ? resolveAgentOrThrow(input.agent)
       : null;
+  if (resolvedAgent) assertMissionTargetAvailable(resolvedAgent);
   const priority = input.priority ?? 5;
   const title = input.title || prompt.slice(0, 60);
   const id = randomBytes(4).toString('hex');
@@ -287,6 +306,8 @@ export function actionGather(input: GatherInput): GatherResult {
     };
   });
   const resolvedSummaryAgent = resolveAgentOrThrow(input.summaryAgent);
+  for (const child of children) assertMissionTargetAvailable(child.agent);
+  assertMissionTargetAvailable(resolvedSummaryAgent);
 
   const groupId = randomBytes(4).toString('hex');
   const childIds: string[] = [];

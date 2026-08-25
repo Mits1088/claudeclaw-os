@@ -70,6 +70,8 @@ import {
   dismissAgentSuggestion,
   markAgentSuggestionActed,
   getRecentlySuggestedSplits,
+  getWorkerRuntime,
+  isWorkerLeaseCurrent,
 } from './db.js';
 import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
@@ -446,7 +448,7 @@ function resolveInboundProvider(
 }
 
 async function classifyTaskAgent(prompt: string): Promise<string | null> {
-  const agentIds = listAgentIds();
+  const agentIds = listAgentIds().filter((id) => !isHeadlessAgentUnavailable(id));
   const agentDescriptions = agentIds.map((id) => {
     try {
       const config = loadAgentConfig(id);
@@ -469,7 +471,7 @@ Reply with JSON: {"agent": "agent_id"}`;
     const raw = await extractViaProvider(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(raw);
     const resolved = parsed?.agent ? resolveAgentId(parsed.agent) : null;
-    if (resolved) return resolved;
+    if (resolved && !isHeadlessAgentUnavailable(resolved)) return resolved;
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : err }, 'selected-provider classify failed, falling back to Gemini');
   }
@@ -480,11 +482,21 @@ Reply with JSON: {"agent": "agent_id"}`;
     const response = await generateContent(classificationPrompt);
     const parsed = parseJsonResponse<{ agent: string }>(response);
     const resolved = parsed?.agent ? resolveAgentId(parsed.agent) : null;
-    if (resolved) return resolved;
+    if (resolved && !isHeadlessAgentUnavailable(resolved)) return resolved;
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : err }, 'Gemini classify failed, defaulting to main');
   }
   return 'main';
+}
+
+function isHeadlessAgentUnavailable(agentId: string): boolean {
+  try {
+    if (loadAgentConfig(agentId).runtimeMode !== 'headless') return false;
+    const worker = getWorkerRuntime(agentId);
+    return !worker?.instance_id || !isWorkerLeaseCurrent(agentId, worker.instance_id);
+  } catch {
+    return false;
+  }
 }
 
 // Meeting id format: wr_<timestampBase36>_<6-hex-random>. Regex also allows
@@ -1992,6 +2004,9 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       if (!assignedAgent) {
         return c.json({ error: `Unknown agent: ${rawAgent}. Known: ${knownAgentIds().join(', ')}` }, 400);
       }
+      if (isHeadlessAgentUnavailable(assignedAgent)) {
+        return c.json({ error: `Headless worker ${assignedAgent} is offline or has no current lease` }, 409);
+      }
     }
 
     const id = crypto.randomBytes(4).toString('hex');
@@ -2051,6 +2066,9 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const resolvedAgent = resolveAgentId(newAgent);
     if (!resolvedAgent) {
       return c.json({ error: `Unknown agent: ${newAgent}. Known: ${knownAgentIds().join(', ')}` }, 400);
+    }
+    if (isHeadlessAgentUnavailable(resolvedAgent)) {
+      return c.json({ error: `Headless worker ${resolvedAgent} is offline or has no current lease` }, 409);
     }
     const ok = reassignMissionTask(id, resolvedAgent);
     return c.json({ ok });
@@ -2337,16 +2355,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const agents = agentIds.map((id) => {
       try {
         const config = loadAgentConfig(id);
-        // Check if agent process is alive via PID file.
-        // Main agent uses 'claudeclaw.pid'; others use 'agent-<id>.pid'.
-        const pidFile = path.join(STORE_DIR, id === 'main' ? 'claudeclaw.pid' : `agent-${id}.pid`);
-        let running = false;
-        if (fs.existsSync(pidFile)) {
-          try {
-            const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-            running = isProcessAlive(pid);
-          } catch { /* process not running */ }
-        }
+        // Headless status is lease-backed; messenger status remains PID-backed.
+        // This prevents stale detached workers from appearing online after a
+        // runtime restart and prevents a stale PID file from hiding a live lease.
+        const running = isAgentRunning(id);
         const stats = getAgentTokenStats(id);
         const mainOverride = id === 'main' ? getMainModelOverride() : undefined;
         // For main, prefer the model persisted in main-config.json over the
@@ -2379,6 +2391,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           model,
           modelLabel: modelDisplayLabel(model),
           provider: displayProvider,
+          executionMode: config.runtimeMode,
+          lifecycleMode: config.lifecycleMode,
           // Per-model effort/thinking option lists so the agent card renders
           // one dropdown per list the model actually supports (Opus 5 =
           // effort only; Opus 4.8 = effort + thinking; Sonnet 4.5 = thinking
@@ -2393,7 +2407,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         };
       } catch {
         const fallbackName = resolveAgentDisplayName(id);
-        return { id, name: fallbackName, description: '', model: 'unknown', modelLabel: 'unknown', provider: { type: 'opencode' }, runtimeOptions: null, runtimeMode: '', thinkingMode: '', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
+        return { id, name: fallbackName, description: '', model: 'unknown', modelLabel: 'unknown', provider: { type: 'opencode' }, executionMode: 'messenger', lifecycleMode: 'persistent', runtimeOptions: null, runtimeMode: '', thinkingMode: '', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
       }
     });
 
@@ -2427,6 +2441,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           model: mainModel,
           modelLabel: modelDisplayLabel(mainModel),
           provider: displayMainProvider,
+          executionMode: 'messenger',
+          lifecycleMode: 'persistent',
           runtimeOptions: staticRuntimeOptionsFor(displayMainProvider, mainModel),
           runtimeMode: displayMainProvider.runtimeMode ?? '',
           thinkingMode: displayMainProvider.thinkingMode ?? '',
@@ -3051,13 +3067,15 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     if (!parsed || typeof parsed !== 'object') {
       return c.json({ error: 'agent.yaml must be a YAML object' }, 400);
     }
-    // Canonical schema (src/agent-config.ts loadAgentConfig): name and
-    // telegram_bot_token_env are required; description and model are
+    // Canonical schema (src/agent-config.ts loadAgentConfig): name is always
+    // required. Messenger agents also require telegram_bot_token_env;
+    // headless workers deliberately do not own a transport token.
     // strongly recommended. id is derived from the directory name, NOT
     // a yaml field. Reject the save if either required field is missing
     // so we never poison the file and crash the agent on next start.
-    if (!parsed.name || !parsed.telegram_bot_token_env) {
-      return c.json({ error: 'agent.yaml requires name and telegram_bot_token_env fields' }, 400);
+    const executionMode = parsed.runtime?.mode === 'headless' ? 'headless' : 'messenger';
+    if (!parsed.name || (executionMode === 'messenger' && !parsed.telegram_bot_token_env)) {
+      return c.json({ error: 'agent.yaml requires name; messenger agents also require telegram_bot_token_env' }, 400);
     }
 
     // Uniqueness guard: the new display name (and any aliases) must not collide
@@ -3398,17 +3416,26 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       provider?: ProviderConfig;
       template?: string;
       botToken?: string;
+      runtimeMode?: 'messenger' | 'headless';
+      lifecycleMode?: 'persistent' | 'task-scoped';
     }>();
 
     const id = body?.id?.trim();
     const name = body?.name?.trim();
     const description = body?.description?.trim();
     const botToken = body?.botToken?.trim();
+    const runtimeMode = body?.runtimeMode ?? 'messenger';
+    const lifecycleMode = body?.lifecycleMode ?? 'persistent';
 
     if (!id) return c.json({ error: 'id required' }, 400);
     if (!name) return c.json({ error: 'name required' }, 400);
     if (!description) return c.json({ error: 'description required' }, 400);
-    if (!botToken) return c.json({ error: 'botToken required' }, 400);
+    if (runtimeMode !== 'messenger' && runtimeMode !== 'headless') return c.json({ error: 'invalid runtimeMode' }, 400);
+    if (lifecycleMode !== 'persistent' && lifecycleMode !== 'task-scoped') return c.json({ error: 'invalid lifecycleMode' }, 400);
+    if (runtimeMode !== 'headless' && lifecycleMode === 'task-scoped') {
+      return c.json({ error: 'task-scoped lifecycle requires headless runtime' }, 400);
+    }
+    if (runtimeMode === 'messenger' && !botToken) return c.json({ error: 'botToken required' }, 400);
 
     try {
       // Same fail-closed rule as PATCH: a supplied-but-malformed provider is a
@@ -3440,6 +3467,8 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         provider,
         template: body?.template?.trim() || undefined,
         botToken,
+        runtimeMode,
+        lifecycleMode,
       });
       return c.json({ ok: true, ...result }, 201);
     } catch (err) {

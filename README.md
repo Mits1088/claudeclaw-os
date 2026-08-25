@@ -1503,7 +1503,7 @@ Omit `--agent` to create an unassigned task (assign from dashboard).
 
 ### Safety
 
-Mission tasks go through the same FIFO message queue as user messages and scheduled tasks. They can never collide with an active conversation. Each task runs in a fresh session and has a 10-minute timeout.
+Mission tasks go through the same FIFO message queue as user messages and scheduled tasks. They can never collide with an active conversation. Each task runs in a fresh session with a sliding 15-minute provider-inactivity timeout and a non-sliding 30-minute maximum runtime. The same bounds apply to scheduled jobs and can be overridden with `SCHEDULER_IDLE_TIMEOUT_MS` and `SCHEDULER_MAX_RUNTIME_MS`.
 
 ---
 
@@ -2096,6 +2096,8 @@ Open the dashboard's **Agents** page and click **+ New Agent**. The wizard walks
 2. **Token.** Paste your BotFather token. The wizard hits Telegram's `getMe` to validate the token in real time and shows the bot's username and profile photo on success.
 3. **Activate.** Reviews the agent name, model, token env var, and any optional Obsidian config. Clicking Activate writes `agent.yaml` and `.env`, installs the launchd plist, and starts the agent.
 
+For mission-only workers, choose **Headless worker** in step 1. Headless workers do not need a BotFather token, never poll or post to Telegram, and return task state through the mission store for the assigning agent to review.
+
 A side panel during step 2 includes a **copy-to-clipboard `/newbot` template** and inline screenshots of the BotFather flow if you've never done this before. After the agent is running you can edit its CLAUDE.md or upload a custom avatar without leaving the dashboard.
 
 #### The manual path
@@ -2147,6 +2149,8 @@ For each agent, you need two files in `agents/<name>/`:
 ```yaml
 name: Comms
 description: Email, Slack, WhatsApp, YouTube comments, community forums, LinkedIn
+runtime:
+  mode: messenger
 telegram_bot_token_env: COMMS_BOT_TOKEN
 provider:
   type: opencode
@@ -2398,6 +2402,16 @@ node dist/agent-create-cli.js \
   --token "123456789:ABCdef..." \
   --activate
 
+# Create a mission-only worker with no Telegram token
+node dist/agent-create-cli.js \
+  --id fable-worker \
+  --name "Fable Worker" \
+  --description "Bounded implementation tasks" \
+  --runtime-mode headless \
+  --lifecycle task-scoped \
+  --model claude-fable-5 \
+  --activate
+
 # Validate a token without creating anything
 node dist/agent-create-cli.js --validate --token "123456789:ABCdef..."
 
@@ -2415,12 +2429,20 @@ Flags:
 | `--id` | Yes | Lowercase identifier (letters, numbers, hyphens, underscores) |
 | `--name` | Yes | Display name shown in the dashboard and logs |
 | `--description` | Yes | What this agent does |
-| `--token` | Yes | Telegram bot token from @BotFather |
+| `--runtime-mode` | No | `messenger` (default) or `headless` |
+| `--lifecycle` | Headless only | `persistent` (default) or `task-scoped`; task-scoped workers drain and deactivate automatically |
+| `--token` | Messenger only | Telegram bot token from @BotFather |
 | `--model` | No | Claude model (default: `claude-sonnet-4-6`) |
 | `--template` | No | Template to clone from (default: `_template`) |
 | `--activate` | No | Install launchd/systemd service and start immediately |
 
 The CLI validates the bot token against the Telegram API before creating anything. If validation fails, it exits with a non-zero code and no files are written.
+
+Creating or activating a new headless worker requires explicit user
+authorization. Agents may assign work to existing workers, but must not create
+new worker identities merely because parallel capacity would help. Automatic
+task-scoped cleanup stops the worker process only; deleting its durable identity
+and history remains a manual dashboard action.
 
 #### Option C: Manual setup (advanced)
 

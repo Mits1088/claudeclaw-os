@@ -101,6 +101,57 @@ export async function findProcessesByPattern(pattern: string): Promise<number[]>
   });
 }
 
+export interface AgentProcessInfo {
+  pid: number;
+  agentId: string;
+  commandLine: string;
+}
+
+/**
+ * Enumerate ClaudeClaw agent processes for one exact build entrypoint. Unlike
+ * findProcessesByPattern(), this parses the command line and returns the agent
+ * identity, so worker reconciliation never kills a similarly-named process or
+ * a ClaudeClaw instance from another checkout.
+ */
+export function listAgentProcesses(projectRoot: string): AgentProcessInfo[] {
+  const entry = path.join(projectRoot, 'dist', 'index.js');
+  let rows: Array<{ pid: number; commandLine: string }> = [];
+  try {
+    if (IS_WINDOWS) {
+      const raw = execSync(
+        'powershell -NoProfile -Command "Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress"',
+        { encoding: 'utf-8', stdio: 'pipe', windowsHide: true },
+      );
+      const parsed = JSON.parse(raw || '[]') as
+        | { ProcessId?: number; CommandLine?: string }
+        | Array<{ ProcessId?: number; CommandLine?: string }>;
+      const items = Array.isArray(parsed) ? parsed : [parsed];
+      rows = items.map((item) => ({ pid: Number(item.ProcessId), commandLine: item.CommandLine ?? '' }));
+    } else {
+      const raw = execSync('ps -eo pid=,args=', { encoding: 'utf-8', stdio: 'pipe' });
+      rows = raw.split(/\r?\n/).map((line) => {
+        const match = line.match(/^\s*(\d+)\s+(.+)$/);
+        return { pid: match ? Number(match[1]) : 0, commandLine: match?.[2] ?? '' };
+      });
+    }
+  } catch {
+    return [];
+  }
+
+  const normalizedEntry = entry.replace(/\\/g, '/').toLowerCase();
+  const result: AgentProcessInfo[] = [];
+  for (const row of rows) {
+    if (!Number.isFinite(row.pid) || row.pid <= 0 || row.pid === process.pid) continue;
+    const normalizedCommand = row.commandLine.replace(/\\/g, '/').toLowerCase();
+    if (!normalizedCommand.includes(normalizedEntry)) continue;
+    const match = row.commandLine.match(/(?:^|\s)--agent\s+(?:"([^"\s]+)"|'([^'\s]+)'|([^\s]+))(?:\s|$)/);
+    const agentId = match?.[1] ?? match?.[2] ?? match?.[3];
+    if (!agentId || !/^[a-z][a-z0-9_-]{0,29}$/.test(agentId)) continue;
+    result.push({ pid: row.pid, agentId, commandLine: row.commandLine });
+  }
+  return result;
+}
+
 /**
  * Resolve the Python executable inside a local .venv directory.
  * POSIX: <venvDir>/bin/python. Windows: <venvDir>\Scripts\python.exe.

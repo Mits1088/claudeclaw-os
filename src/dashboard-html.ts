@@ -412,6 +412,19 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
         </div>
       </div>
       <div class="mb-3">
+        <label class="text-xs text-gray-400 block mb-1">Runtime</label>
+        <select id="caw-runtime-mode" onchange="cawRuntimeChanged()" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none;margin-bottom:8px">
+          <option value="messenger">Messenger</option>
+          <option value="headless">Headless worker</option>
+        </select>
+        <div id="caw-lifecycle-section" style="display:none">
+          <label class="text-xs text-gray-400 block mb-1">Worker lifecycle</label>
+          <select id="caw-lifecycle-mode" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none;margin-bottom:4px">
+            <option value="persistent">Persistent</option>
+            <option value="task-scoped">Task-scoped</option>
+          </select>
+          <div class="text-xs text-gray-600 mb-2">Task-scoped workers drain and stop automatically. Identity and history remain until manually deleted.</div>
+        </div>
         <label class="text-xs text-gray-400 block mb-1">Template</label>
         <select id="caw-template" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 10px;color:#e0e0e0;font-size:12px;outline:none">
           <option value="_template">Blank</option>
@@ -419,12 +432,12 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
       </div>
 
       <div id="caw-step1-error" class="text-red-400 text-xs mb-2" style="display:none"></div>
-      <button onclick="cawGoStep2()" style="width:100%;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer">Next: Set up Telegram bot</button>
+      <button id="caw-next-btn" onclick="cawGoStep2()" style="width:100%;background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:10px;font-size:13px;font-weight:600;cursor:pointer">Next: Set up Telegram bot</button>
     </div>
 
     <!-- Step 2: BotFather + Token -->
     <div id="caw-step-2" style="display:none">
-      <div style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:14px;margin-bottom:12px">
+      <div id="caw-botfather-help" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:14px;margin-bottom:12px">
         <div class="text-xs text-gray-400 font-semibold uppercase mb-2">Create a Telegram bot</div>
         <div class="text-xs text-gray-300 leading-relaxed">
           1. Open <a href="https://t.me/BotFather" target="_blank" rel="noopener" style="color:#60a5fa;text-decoration:none">@BotFather</a> in Telegram<br>
@@ -435,12 +448,14 @@ ${WARROOM_ENABLED ? `<div class="card" style="border:1px solid #1e3a5f">
         </div>
       </div>
 
-      <label class="text-xs text-gray-400 block mb-1">Bot Token</label>
-      <div style="position:relative">
-        <input type="text" id="caw-token" placeholder="Paste token from BotFather" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;padding-right:70px;color:#e0e0e0;font-size:13px;outline:none;box-sizing:border-box;font-family:monospace" oninput="cawTokenChanged()">
-        <div id="caw-token-status" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px"></div>
+      <div id="caw-token-section">
+        <label class="text-xs text-gray-400 block mb-1">Bot Token</label>
+        <div style="position:relative">
+          <input type="text" id="caw-token" placeholder="Paste token from BotFather" style="width:100%;background:#1a1a1a;border:1px solid #2a2a2a;border-radius:8px;padding:8px 12px;padding-right:70px;color:#e0e0e0;font-size:13px;outline:none;box-sizing:border-box;font-family:monospace" oninput="cawTokenChanged()">
+          <div id="caw-token-status" style="position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px"></div>
+        </div>
+        <div id="caw-token-info" class="text-xs mt-2" style="min-height:16px"></div>
       </div>
-      <div id="caw-token-info" class="text-xs mt-2" style="min-height:16px"></div>
 
       <div class="flex gap-2 mt-3">
         <button onclick="cawGoStep1()" style="flex:0 0 auto;background:#1a1a1a;color:#9ca3af;border:1px solid #2a2a2a;border-radius:8px;padding:10px 16px;font-size:13px;cursor:pointer">Back</button>
@@ -1523,6 +1538,12 @@ async function loadAgents() {
       const color = AGENT_COLORS[a.id] || '#6b7280';
       const dot = a.running ? '<span style="color:#6ee7b7">\u25CF</span>' : '<span style="color:#666">\u25CB</span>';
       const statusText = a.running ? 'live' : 'off';
+      const executionPill = a.executionMode === 'headless'
+        ? ' <span class="pill" style="background:#312e81;color:#c4b5fd">headless</span>'
+        : '';
+      const lifecyclePill = a.executionMode === 'headless'
+        ? ' <span class="pill" style="background:' + (a.lifecycleMode === 'task-scoped' ? '#78350f' : '#1f2937') + ';color:' + (a.lifecycleMode === 'task-scoped' ? '#fcd34d' : '#9ca3af') + '">' + escapeHtml(a.lifecycleMode || 'persistent') + '</span>'
+        : '';
       const providerType = (a.provider && a.provider.type) || 'opencode';
       // Catalog comes from the API (src/model-catalog.ts) — no local copy to drift.
       const catalog = (providerType === 'openai' ? data.openaiModels : data.claudeModels) || [];
@@ -1560,7 +1581,7 @@ async function loadAgents() {
           avatarImg +
           '<div style="flex:1;min-width:0">' +
             '<div class="font-bold text-white text-sm">' + escapeHtml(a.name) + '</div>' +
-            '<div class="text-xs mt-1">' + dot + ' ' + statusText + '</div>' +
+            '<div class="text-xs mt-1">' + dot + ' ' + statusText + executionPill + lifecyclePill + '</div>' +
             modelSelect +
             renderRuntimePills(a) +
             (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
@@ -2058,6 +2079,13 @@ function cawIdChanged() {
 
 function cawGoStep1() { cawShowStep(1); }
 
+function cawRuntimeChanged() {
+  var headless = document.getElementById('caw-runtime-mode').value === 'headless';
+  document.getElementById('caw-lifecycle-section').style.display = headless ? '' : 'none';
+  if (!headless) document.getElementById('caw-lifecycle-mode').value = 'persistent';
+  document.getElementById('caw-next-btn').textContent = headless ? 'Next: Create headless worker' : 'Next: Set up Telegram bot';
+}
+
 function cawGoStep2() {
   var id = document.getElementById('caw-id').value.trim();
   var name = document.getElementById('caw-name').value.trim();
@@ -2083,8 +2111,11 @@ function cawGoStep2() {
   document.getElementById('caw-token-status').innerHTML = '';
   document.getElementById('caw-token-info').innerHTML = '';
   var btn = document.getElementById('caw-create-btn');
-  btn.style.opacity = '0.5';
-  btn.style.pointerEvents = 'none';
+  var headless = document.getElementById('caw-runtime-mode').value === 'headless';
+  document.getElementById('caw-botfather-help').style.display = headless ? 'none' : '';
+  document.getElementById('caw-token-section').style.display = headless ? 'none' : '';
+  btn.style.opacity = headless ? '1' : '0.5';
+  btn.style.pointerEvents = headless ? 'auto' : 'none';
 
   cawShowStep(2);
   setTimeout(function() { document.getElementById('caw-token').focus(); }, 200);
@@ -2137,7 +2168,11 @@ function cawTokenChanged() {
 }
 
 async function cawCreate() {
-  if (!cawTokenValid) return;
+  var runtimeMode = document.getElementById('caw-runtime-mode').value;
+  var lifecycleMode = runtimeMode === 'headless'
+    ? document.getElementById('caw-lifecycle-mode').value
+    : 'persistent';
+  if (runtimeMode !== 'headless' && !cawTokenValid) return;
 
   var btn = document.getElementById('caw-create-btn');
   var errEl = document.getElementById('caw-step2-error');
@@ -2157,6 +2192,8 @@ async function cawCreate() {
         provider: cawSelectedProviderPayload(),
         template: document.getElementById('caw-template').value,
         botToken: document.getElementById('caw-token').value.trim(),
+        runtimeMode: runtimeMode,
+        lifecycleMode: lifecycleMode,
       }),
     });
     var data = await res.json();
@@ -2172,9 +2209,11 @@ async function cawCreate() {
 
     // Build summary
     var summary = '<div style="margin-bottom:6px"><span style="color:#6b7280">Agent ID:</span> <span class="text-white">' + escapeHtml(data.agentId) + '</span></div>' +
-      '<div style="margin-bottom:6px"><span style="color:#6b7280">Bot:</span> <span style="color:#6ee7b7">@' + escapeHtml(data.botInfo.username) + '</span></div>' +
+      '<div style="margin-bottom:6px"><span style="color:#6b7280">Runtime:</span> <span style="color:#6ee7b7">' + escapeHtml(runtimeMode) + '</span></div>' +
+      (runtimeMode === 'headless' ? '<div style="margin-bottom:6px"><span style="color:#6b7280">Lifecycle:</span> <span style="color:#fbbf24">' + escapeHtml(lifecycleMode) + '</span></div>' : '') +
+      (data.botInfo ? '<div style="margin-bottom:6px"><span style="color:#6b7280">Bot:</span> <span style="color:#6ee7b7">@' + escapeHtml(data.botInfo.username) + '</span></div>' : '') +
       '<div style="margin-bottom:6px"><span style="color:#6b7280">Directory:</span> <span style="color:#9ca3af;font-size:11px">' + escapeHtml(data.agentDir) + '</span></div>' +
-      '<div><span style="color:#6b7280">Token stored as:</span> <span style="color:#9ca3af">' + escapeHtml(data.envKey) + '</span></div>';
+      (data.envKey ? '<div><span style="color:#6b7280">Token stored as:</span> <span style="color:#9ca3af">' + escapeHtml(data.envKey) + '</span></div>' : '');
     document.getElementById('caw-summary').innerHTML = summary;
 
     // Reset activate section

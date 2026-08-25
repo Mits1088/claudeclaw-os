@@ -62,11 +62,22 @@ export function agentExists(agentId: string): boolean {
   }
 }
 
+export type AgentRuntimeMode = 'messenger' | 'headless';
+export type AgentLifecycleMode = 'persistent' | 'task-scoped';
+
 export interface AgentConfig {
   name: string;
   description: string;
   botTokenEnv: string;
   botToken: string;
+  /** Process surface for this agent. Headless workers run the scheduler and
+   *  mission queue without creating a Telegram/Signal transport. */
+  runtimeMode: AgentRuntimeMode;
+  /** Durable identity policy for headless workers. Persistent workers remain
+   *  available until explicitly stopped. Task-scoped workers drain after
+   *  their first unit of work and deactivate once no related work remains.
+   *  Existing configs default to persistent. */
+  lifecycleMode: AgentLifecycleMode;
   /** When false, the agent runs automation-only: it never polls Telegram
    *  for incoming updates (no getUpdates), only sending outbound messages
    *  (scheduler results, alerts). Lets a non-interactive agent share one
@@ -165,6 +176,21 @@ export function loadAgentConfig(agentId: string): AgentConfig {
 
   const name = raw['name'] as string;
   const description = (raw['description'] as string) ?? '';
+  const runtimeRaw = raw['runtime'] as Record<string, unknown> | undefined;
+  const configuredRuntimeMode = runtimeRaw?.['mode'];
+  if (configuredRuntimeMode !== undefined && configuredRuntimeMode !== 'messenger' && configuredRuntimeMode !== 'headless') {
+    throw new Error(`Agent config ${configPath} has invalid runtime.mode '${String(configuredRuntimeMode)}'`);
+  }
+  const runtimeMode: AgentRuntimeMode = configuredRuntimeMode === 'headless' ? 'headless' : 'messenger';
+  const lifecycleRaw = raw['lifecycle'] as Record<string, unknown> | undefined;
+  const configuredLifecycleMode = lifecycleRaw?.['mode'];
+  if (configuredLifecycleMode !== undefined && configuredLifecycleMode !== 'persistent' && configuredLifecycleMode !== 'task-scoped') {
+    throw new Error(`Agent config ${configPath} has invalid lifecycle.mode '${String(configuredLifecycleMode)}'`);
+  }
+  const lifecycleMode: AgentLifecycleMode = configuredLifecycleMode === 'task-scoped' ? 'task-scoped' : 'persistent';
+  if (runtimeMode !== 'headless' && lifecycleMode === 'task-scoped') {
+    throw new Error(`Agent config ${configPath} can use lifecycle.mode 'task-scoped' only with runtime.mode 'headless'`);
+  }
   const botTokenEnv = (raw['telegram_bot_token_env'] as string) || (agentId === 'main' ? 'TELEGRAM_BOT_TOKEN' : '');
   const model = raw['model'] as string | undefined;
   // interactive defaults to true; set `interactive: false` for automation-only
@@ -175,7 +201,7 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   if (!name) {
     throw new Error(`Agent config ${configPath} must have 'name'`);
   }
-  if (!botTokenEnv && agentId !== 'main') {
+  if (runtimeMode === 'messenger' && !botTokenEnv && agentId !== 'main') {
     throw new Error(`Agent config ${configPath} must have 'telegram_bot_token_env'`);
   }
 
@@ -183,7 +209,7 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   if (botTokenEnv) {
     const env = readEnvFile([botTokenEnv]);
     botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
-    if (!botToken && agentId !== 'main') {
+    if (!botToken && runtimeMode === 'messenger' && agentId !== 'main') {
       throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
     }
   }
@@ -221,6 +247,8 @@ export function loadAgentConfig(agentId: string): AgentConfig {
     description,
     botTokenEnv,
     botToken,
+    runtimeMode,
+    lifecycleMode,
     interactive,
     aliases,
     model,

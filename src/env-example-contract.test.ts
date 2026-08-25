@@ -9,6 +9,8 @@ describe('.env.example release-critical defaults', () => {
     expect(example).toContain('# AGENT_TIMEOUT_MS=900000');
     expect(example).toContain('# AGENT_IDLE_TIMEOUT_MS=900000');
     expect(example).toContain('# AGENT_MAX_RUNTIME_MS=3600000');
+    expect(example).toContain('# SCHEDULER_IDLE_TIMEOUT_MS=900000');
+    expect(example).toContain('# SCHEDULER_MAX_RUNTIME_MS=1800000');
     expect(example).toContain('Default: 900000 ms (15 minutes).');
     expect(example).not.toContain('Default: 300000 (5 min)');
   });

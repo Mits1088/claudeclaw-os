@@ -1,4 +1,11 @@
-import { AGENT_ID, ALLOWED_CHAT_ID, agentMcpAllowlist, agentDefaultModel } from './config.js';
+import {
+  AGENT_ID,
+  ALLOWED_CHAT_ID,
+  SCHEDULER_IDLE_TIMEOUT_MS,
+  SCHEDULER_MAX_RUNTIME_MS,
+  agentMcpAllowlist,
+  agentDefaultModel,
+} from './config.js';
 import { computeNextRun } from './cron.js';
 import { ingestConversationTurn } from './memory-ingest.js';
 import {
@@ -11,23 +18,42 @@ import {
   claimNextMissionTask,
   completeMissionTask,
   resetStuckMissionTasks,
+  failStuckMissionTasks,
   getMissionTask,
   maybeReleaseJoinForMission,
+  isWorkerLeaseCurrent,
+  markWorkerTaskScopeStarted,
+  deactivateWorkerIfTaskScopeDrained,
   type MissionTask,
 } from './db.js';
+import type { AgentLifecycleMode } from './agent-config.js';
 import { logger } from './logger.js';
 import { messageQueue } from './message-queue.js';
 import { isFailedTurn, runAgent } from './agent.js';
 import { formatForTelegram, splitMessage } from './bot.js';
 import { getSelectedProviderConfig } from './active-provider.js';
 import { evaluateAcceptance } from './acceptance.js';
+import { TurnWatchdog, type TurnAbortReason } from './turn-watchdog.js';
 
 type Sender = (text: string) => Promise<void>;
 
-/** Max time (ms) a scheduled task can run before being killed. */
-const TASK_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes
-
 let sender: Sender;
+
+function formatRuntime(ms: number, attributive = false): string {
+  if (ms % 60_000 !== 0) return `${ms}ms`;
+  const minutes = ms / 60_000;
+  return attributive ? `${minutes}-minute` : `${minutes} minutes`;
+}
+
+export function schedulerAbortDescription(reason: TurnAbortReason | undefined): string {
+  if (reason === 'idle_timeout') {
+    return `Timed out after ${formatRuntime(SCHEDULER_IDLE_TIMEOUT_MS)} without provider activity`;
+  }
+  if (reason === 'max_runtime') {
+    return `Stopped after reaching the ${formatRuntime(SCHEDULER_MAX_RUNTIME_MS, true)} maximum runtime`;
+  }
+  return 'Stopped';
+}
 
 /**
  * In-memory set of task IDs currently being executed.
@@ -40,6 +66,10 @@ const runningTaskIds = new Set<string>();
  * @param send  Function that sends a message to the user's Telegram chat.
  */
 let schedulerAgentId = 'main';
+let schedulerWorkerInstanceId: string | undefined;
+let schedulerLifecycleMode: AgentLifecycleMode = 'persistent';
+let onTaskScopeDrained: (() => void) | undefined;
+let taskScopeDrainRequested = false;
 
 /**
  * Give the target agent the mission identity required by the documented
@@ -64,28 +94,66 @@ export function missionExecutionPrompt(mission: Pick<MissionTask, 'id' | 'title'
   ].join('\n');
 }
 
-export function initScheduler(send: Sender, agentId = 'main'): void {
+export function initScheduler(
+  send: Sender,
+  agentId = 'main',
+  workerInstanceId?: string,
+  lifecycleMode: AgentLifecycleMode = 'persistent',
+  drained?: () => void,
+): void {
   if (!ALLOWED_CHAT_ID) {
     logger.warn('ALLOWED_CHAT_ID not set — scheduler will not send results');
   }
   sender = send;
   schedulerAgentId = agentId;
+  schedulerWorkerInstanceId = workerInstanceId;
+  schedulerLifecycleMode = lifecycleMode;
+  onTaskScopeDrained = drained;
+  taskScopeDrainRequested = false;
 
   // Recover tasks stuck in 'running' from a previous crash
   const recovered = resetStuckTasks(agentId);
   if (recovered > 0) {
     logger.warn({ recovered, agentId }, 'Reset stuck tasks from previous crash');
   }
-  const recoveredMission = resetStuckMissionTasks(agentId);
+  const recoveredMission = workerInstanceId
+    ? failStuckMissionTasks(agentId, 'Worker process restarted before recording completion; inspect side effects before retrying')
+    : resetStuckMissionTasks(agentId);
   if (recoveredMission > 0) {
-    logger.warn({ recovered: recoveredMission, agentId }, 'Reset stuck mission tasks from previous crash');
+    logger.warn(
+      { recovered: recoveredMission, agentId, fencedWorker: Boolean(workerInstanceId) },
+      workerInstanceId
+        ? 'Marked interrupted worker missions failed for reconciliation'
+        : 'Reset stuck mission tasks from previous crash',
+    );
   }
 
   setInterval(() => void runDueTasks(), 60_000);
   logger.info({ agentId }, 'Scheduler started (checking every 60s)');
 }
 
+function armTaskScope(workId: string): void {
+  if (schedulerLifecycleMode !== 'task-scoped' || !schedulerWorkerInstanceId) return;
+  markWorkerTaskScopeStarted(schedulerAgentId, schedulerWorkerInstanceId, workId);
+}
+
+function maybeDeactivateTaskScope(): void {
+  if (
+    taskScopeDrainRequested
+    || schedulerLifecycleMode !== 'task-scoped'
+    || !schedulerWorkerInstanceId
+  ) return;
+  if (!deactivateWorkerIfTaskScopeDrained(schedulerAgentId, schedulerWorkerInstanceId)) return;
+  taskScopeDrainRequested = true;
+  logger.info({ agentId: schedulerAgentId }, 'Task-scoped worker drained; deactivating');
+  onTaskScopeDrained?.();
+}
+
 async function runDueTasks(): Promise<void> {
+  if (schedulerWorkerInstanceId && !isWorkerLeaseCurrent(schedulerAgentId, schedulerWorkerInstanceId)) {
+    logger.warn({ agentId: schedulerAgentId }, 'Worker scheduler paused because its lease is not current');
+    return;
+  }
   const tasks = getDueTasks(schedulerAgentId);
 
   if (tasks.length > 0) {
@@ -102,6 +170,7 @@ async function runDueTasks(): Promise<void> {
     // Compute next occurrence BEFORE executing so we can lock the task
     // in the DB immediately, preventing re-fire on subsequent ticks.
     const nextRun = computeNextRun(task.schedule);
+    armTaskScope(task.id);
     runningTaskIds.add(task.id);
     markTaskRunning(task.id, nextRun);
 
@@ -113,7 +182,12 @@ async function runDueTasks(): Promise<void> {
     const chatId = ALLOWED_CHAT_ID || 'scheduler';
     messageQueue.enqueue(chatId, async () => {
       const abortController = new AbortController();
-      const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
+      const watchdog = new TurnWatchdog(
+        abortController,
+        SCHEDULER_IDLE_TIMEOUT_MS,
+        SCHEDULER_MAX_RUNTIME_MS,
+      );
+      watchdog.start();
 
       try {
         await sender([
@@ -132,13 +206,16 @@ async function runDueTasks(): Promise<void> {
           undefined,
           agentMcpAllowlist,
           getSelectedProviderConfig(),
+          undefined,
+          undefined,
+          watchdog,
         );
-        clearTimeout(timeout);
 
         if (result.aborted) {
-          updateTaskAfterRun(task.id, nextRun, 'Timed out after 10 minutes', 'timeout');
-          await sender(`⏱ Task timed out after 10m: "${task.prompt.slice(0, 60)}..." — killed.`);
-          logger.warn({ taskId: task.id }, 'Task timed out');
+          const description = schedulerAbortDescription(result.abortReason);
+          updateTaskAfterRun(task.id, nextRun, description, 'timeout');
+          await sender(`⏱ Task stopped: "${task.prompt.slice(0, 60)}..." — ${description}.`);
+          logger.warn({ taskId: task.id, abortReason: result.abortReason }, 'Task stopped by scheduler watchdog');
           return;
         }
 
@@ -189,7 +266,6 @@ async function runDueTasks(): Promise<void> {
 
         logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
       } catch (err) {
-        clearTimeout(timeout);
         const errMsg = err instanceof Error ? err.message : String(err);
         updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
 
@@ -200,18 +276,22 @@ async function runDueTasks(): Promise<void> {
           // ignore send failure
         }
       } finally {
+        watchdog.dispose();
         runningTaskIds.delete(task.id);
+        maybeDeactivateTaskScope();
       }
     });
   }
 
   // Also check for queued mission tasks (one-shot async tasks from Mission Control)
   await runDueMissionTasks();
+  maybeDeactivateTaskScope();
 }
 
 async function runDueMissionTasks(): Promise<void> {
-  const mission = claimNextMissionTask(schedulerAgentId);
+  const mission = claimNextMissionTask(schedulerAgentId, schedulerWorkerInstanceId);
   if (!mission) return;
+  armTaskScope(mission.id);
 
   const missionKey = 'mission-' + mission.id;
   if (runningTaskIds.has(missionKey)) return;
@@ -222,7 +302,12 @@ async function runDueMissionTasks(): Promise<void> {
   const chatId = ALLOWED_CHAT_ID || 'mission';
   messageQueue.enqueue(chatId, async () => {
     const abortController = new AbortController();
-    const timeout = setTimeout(() => abortController.abort(), TASK_TIMEOUT_MS);
+    const watchdog = new TurnWatchdog(
+      abortController,
+      SCHEDULER_IDLE_TIMEOUT_MS,
+      SCHEDULER_MAX_RUNTIME_MS,
+    );
+    watchdog.start();
 
     // Cross-process cancel signal: dashboard flips status to 'cancelled' in
     // SQLite, this poll picks it up within 5s and aborts the runAgent call.
@@ -252,8 +337,10 @@ async function runDueMissionTasks(): Promise<void> {
         undefined,
         agentMcpAllowlist,
         getSelectedProviderConfig(),
+        undefined,
+        undefined,
+        watchdog,
       );
-      clearTimeout(timeout);
       clearInterval(cancelPoll);
 
       if (result.aborted) {
@@ -261,11 +348,15 @@ async function runDueMissionTasks(): Promise<void> {
           // Status is already 'cancelled' from the dashboard write — leave it.
           logger.info({ missionId: mission.id }, 'Mission task cancelled by user');
         } else {
-          completeMissionTask(mission.id, null, 'failed', 'Timed out after 10 minutes');
+          const description = schedulerAbortDescription(result.abortReason);
+          completeMissionTask(mission.id, null, 'failed', description);
           maybeReleaseJoinForMission({ ...mission, status: 'failed' });
-          logger.warn({ missionId: mission.id }, 'Mission task timed out');
+          logger.warn(
+            { missionId: mission.id, abortReason: result.abortReason },
+            'Mission task stopped by scheduler watchdog',
+          );
           try {
-            await sender('Mission task timed out: "' + mission.title + '"');
+            await sender('Mission task stopped: "' + mission.title + '" — ' + description + '.');
           } catch (sendErr) {
             // Sender can fail for Telegram API blips or chat-not-found. We
             // still want to see it so the user isn't silently unnotified.
@@ -327,7 +418,6 @@ async function runDueMissionTasks(): Promise<void> {
         }
       }
     } catch (err) {
-      clearTimeout(timeout);
       clearInterval(cancelPoll);
       const errMsg = err instanceof Error ? err.message : String(err);
       if (cancelledByUser) {
@@ -344,7 +434,9 @@ async function runDueMissionTasks(): Promise<void> {
       }
     } finally {
       clearInterval(cancelPoll);
+      watchdog.dispose();
       runningTaskIds.delete(missionKey);
+      maybeDeactivateTaskScope();
     }
   });
 }

@@ -37,6 +37,17 @@ import {
   claimNextMissionTask,
   completeMissionTask,
   getMissionTask,
+  beginWorkerSupervisorEpoch,
+  ensureWorkerDesiredState,
+  acquireWorkerLease,
+  heartbeatWorkerLease,
+  isWorkerLeaseCurrent,
+  getAgentDeletionBlockers,
+  failStuckMissionTasks,
+  getWorkerRuntime,
+  markWorkerTaskScopeStarted,
+  deactivateWorkerIfTaskScopeDrained,
+  createScheduledTask,
 } from './db.js';
 
 describe('database', () => {
@@ -616,6 +627,154 @@ describe('mission task claim/complete', () => {
     expect(t?.status).toBe('failed');
     expect(t?.error).toBe('boom');
     expect(t?.completed_at).toBeGreaterThan(0);
+  });
+});
+
+describe('headless worker lease fencing', () => {
+  beforeEach(() => {
+    _initTestDatabase();
+    ensureWorkerDesiredState('ashford', 'active');
+    beginWorkerSupervisorEpoch('epoch-1', 'build-1');
+  });
+
+  it('allows the current leased instance to claim a mission', () => {
+    expect(acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-1', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    })).toBe(true);
+    createMissionTask('lease-ok', 'leased', 'run it', 'ashford');
+
+    expect(claimNextMissionTask('ashford', 'worker-1')?.id).toBe('lease-ok');
+  });
+
+  it('fences the old process immediately when the supervisor epoch changes', () => {
+    acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-old', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    });
+    createMissionTask('lease-fenced', 'fenced', 'do not run', 'ashford');
+
+    beginWorkerSupervisorEpoch('epoch-2', 'build-2');
+
+    expect(heartbeatWorkerLease('ashford', 'worker-old')).toBe(false);
+    expect(isWorkerLeaseCurrent('ashford', 'worker-old')).toBe(false);
+    expect(claimNextMissionTask('ashford', 'worker-old')).toBeNull();
+    expect(getMissionTask('lease-fenced')?.status).toBe('queued');
+  });
+
+  it('rejects a lease from a stale epoch or build', () => {
+    expect(acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-old', supervisorEpoch: 'epoch-old',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    })).toBe(false);
+    expect(acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-old', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-old',
+    })).toBe(false);
+  });
+
+  it('treats an expired heartbeat as offline', () => {
+    acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-1', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    });
+    const future = Math.floor(Date.now() / 1000) + 46;
+    expect(isWorkerLeaseCurrent('ashford', 'worker-1', future)).toBe(false);
+  });
+
+  it('atomically clears lease metadata when explicitly deactivated', () => {
+    expect(acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-1', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    })).toBe(true);
+
+    ensureWorkerDesiredState('ashford', 'inactive');
+
+    expect(getWorkerRuntime('ashford')).toMatchObject({
+      desired_state: 'inactive',
+      instance_id: null,
+      supervisor_epoch: null,
+      pid: null,
+      process_started_at: null,
+      heartbeat_at: null,
+      runtime_build_id: null,
+    });
+    expect(isWorkerLeaseCurrent('ashford', 'worker-1')).toBe(false);
+  });
+
+  it('reports missions and schedules that would be orphaned by deletion', () => {
+    createMissionTask('assigned', 'Assigned', 'work', 'ashford');
+    createMissionTask('created', 'Created', 'delegated work', 'dawes', 'ashford');
+    createMissionTask('finished', 'Finished', 'done', 'ashford');
+    claimNextMissionTask('ashford');
+    completeMissionTask('assigned', 'done', 'completed');
+    createScheduledTask('retained', 'retained job', '* * * * *', Math.floor(Date.now() / 1000) + 60, 'ashford');
+
+    expect(getAgentDeletionBlockers('ashford')).toEqual({
+      open_missions: 2,
+      retained_schedules: 1,
+    });
+  });
+
+  it('marks an interrupted worker mission failed instead of rerunning it blindly', () => {
+    createMissionTask('side-effect', 'external write', 'change remote state', 'ashford');
+    expect(claimNextMissionTask('ashford')?.status).toBe('running');
+
+    expect(failStuckMissionTasks('ashford', 'inspect before retry')).toBe(1);
+    expect(getMissionTask('side-effect')).toMatchObject({
+      status: 'failed',
+      error: 'inspect before retry',
+    });
+  });
+
+  it('deactivates an armed task scope after its assigned and delegated work drains', () => {
+    expect(acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-1', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    })).toBe(true);
+    expect(markWorkerTaskScopeStarted('ashford', 'worker-1', 'root')).toBe(true);
+    createMissionTask('root', 'Root', 'root work', 'ashford');
+    createMissionTask('child', 'Child', 'delegated work', 'dawes', 'ashford');
+
+    expect(deactivateWorkerIfTaskScopeDrained('ashford', 'worker-1')).toBe(false);
+    expect(getWorkerRuntime('ashford')?.desired_state).toBe('active');
+
+    claimNextMissionTask('ashford', 'worker-1');
+    completeMissionTask('root', 'done', 'completed');
+    claimNextMissionTask('dawes');
+    completeMissionTask('child', 'done', 'completed');
+
+    expect(deactivateWorkerIfTaskScopeDrained('ashford', 'worker-1')).toBe(true);
+    expect(getWorkerRuntime('ashford')?.desired_state).toBe('inactive');
+  });
+
+  it('does not deactivate an unarmed task scope or one retaining a schedule', () => {
+    expect(acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-1', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    })).toBe(true);
+    expect(deactivateWorkerIfTaskScopeDrained('ashford', 'worker-1')).toBe(false);
+
+    markWorkerTaskScopeStarted('ashford', 'worker-1', 'job-1');
+    createScheduledTask('job-1', 'retained job', '* * * * *', Math.floor(Date.now() / 1000) + 60, 'ashford');
+    expect(deactivateWorkerIfTaskScopeDrained('ashford', 'worker-1')).toBe(false);
+    expect(getWorkerRuntime('ashford')?.desired_state).toBe('active');
+  });
+
+  it('re-arms a task-scoped runtime when an inactive worker is explicitly activated', () => {
+    acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-1', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    });
+    markWorkerTaskScopeStarted('ashford', 'worker-1', 'root');
+    expect(deactivateWorkerIfTaskScopeDrained('ashford', 'worker-1')).toBe(true);
+
+    ensureWorkerDesiredState('ashford', 'active');
+    expect(getWorkerRuntime('ashford')).toMatchObject({
+      desired_state: 'active',
+      scope_started_at: null,
+      scope_work_id: null,
+    });
   });
 });
 

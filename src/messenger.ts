@@ -5,7 +5,7 @@ import './crash-guard.js';
 import fs from 'fs';
 import path from 'path';
 
-import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd, resolveInstructionMd, refreshWarRoomRoster } from './agent-config.js';
+import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd, resolveInstructionMd, refreshWarRoomRoster, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
 import { checkPendingMigrations, backfillMainAgent } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { startDashboard } from './dashboard.js';
@@ -23,6 +23,7 @@ import { initScheduler } from './scheduler.js';
 import { getMainProviderConfig, ensureMainAgentConfig } from './provider.js';
 import { setTelegramConnected } from './state.js';
 import { getVenvPython, IS_WINDOWS, killProcess, tmpDir } from './platform.js';
+import { reconcileHeadlessWorkers, shutdownHeadlessWorkers, startWorkerLease, type WorkerLeaseHandle } from './worker-supervisor.js';
 
 /**
  * A messenger transport (Telegram, Signal, …). `bootMessenger()` owns the whole
@@ -99,17 +100,21 @@ function showBanner(): void {
  * in one place, so the main-agent CLAUDE.md resolution + provider config can't
  * drift between transports. Returns { agentId, interactive }.
  */
-function loadAgentIdentity(): { agentId: string; interactive: boolean } {
+function loadAgentIdentity(): { agentId: string; interactive: boolean; runtimeMode: AgentRuntimeMode; lifecycleMode: AgentLifecycleMode } {
   const agentFlagIndex = process.argv.indexOf('--agent');
   const agentId = agentFlagIndex !== -1 ? process.argv[agentFlagIndex + 1] : 'main';
   // Export AGENT_ID to env so child processes (schedule-cli, etc.) inherit it.
   process.env.CLAUDECLAW_AGENT_ID = agentId;
 
   let interactive = true;
+  let runtimeMode: AgentRuntimeMode = 'messenger';
+  let lifecycleMode: AgentLifecycleMode = 'persistent';
 
   if (agentId !== 'main') {
     const agentConfig = loadAgentConfig(agentId);
     interactive = agentConfig.interactive;
+    runtimeMode = agentConfig.runtimeMode;
+    lifecycleMode = agentConfig.lifecycleMode;
     const agentDir = resolveAgentDir(agentId);
     const claudeMdPath = resolveAgentClaudeMd(agentId);
     let systemPrompt: string | undefined;
@@ -126,7 +131,7 @@ function loadAgentIdentity(): { agentId: string; interactive: boolean } {
       systemPrompt,
       mcpServers: agentConfig.mcpServers,
     });
-    logger.info({ agentId, name: agentConfig.name, provider: agentConfig.provider }, 'Running as agent');
+    logger.info({ agentId, name: agentConfig.name, provider: agentConfig.provider, runtimeMode, lifecycleMode }, 'Running as agent');
   } else {
     // Main bot: load CLAUDE.md from CLAUDECLAW_CONFIG/agents/main/, set CWD to
     // that dir so the SDK loads the personal CLAUDE.md (not the repo template).
@@ -156,7 +161,19 @@ function loadAgentIdentity(): { agentId: string; interactive: boolean } {
     }
   }
 
-  return { agentId, interactive };
+  return { agentId, interactive, runtimeMode, lifecycleMode };
+}
+
+/** Mission-only transport. It deliberately owns no token and performs no I/O. */
+export function createHeadlessMessenger(): Messenger {
+  return {
+    kind: 'headless',
+    primaryRecipient: null,
+    dashboardApi: null,
+    async sendToPrimary(): Promise<void> { /* intentionally silent */ },
+    async start(): Promise<void> { logger.info('Headless worker ready'); },
+    async stop(): Promise<void> { /* nothing to close */ },
+  };
 }
 
 /** Start the War Room voice subprocess (main-only), routing errors via sendToPrimary. */
@@ -304,7 +321,8 @@ function startWarRoom(notify: (text: string) => Promise<void>): void {
  * `createMessenger`; everything else is identical across Telegram/Signal.
  */
 export async function bootMessenger(factory: MessengerFactory): Promise<void> {
-  const { agentId, interactive } = loadAgentIdentity();
+  const { agentId, interactive, runtimeMode, lifecycleMode } = loadAgentIdentity();
+  let workerLease: WorkerLeaseHandle | undefined;
 
   const PID_FILE = path.join(STORE_DIR, `${agentId === 'main' ? 'claudeclaw' : `agent-${agentId}`}.pid`);
 
@@ -353,7 +371,7 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
 
     // Transport preflight (token / phone number) BEFORE the lock — fail fast on
     // a misconfiguration, exactly where the old per-entry main() did.
-    factory.preflight(agentId);
+    if (runtimeMode === 'messenger') factory.preflight(agentId);
 
     acquireLock();
 
@@ -367,6 +385,13 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
       process.exit(1);
     }
     logger.info('Database ready');
+
+    if (agentId === 'main') {
+      await reconcileHeadlessWorkers();
+    } else if (runtimeMode === 'headless') {
+      workerLease = startWorkerLease(agentId);
+      logger.info({ agentId, instanceId: workerLease.instanceId }, 'Headless worker lease acquired');
+    }
 
     // Register the in-process dispatch tools (mission/schedule/hive) into the
     // process-global registry so runAgent merges them into eligible turns —
@@ -414,7 +439,7 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
 
     // Build the messenger now — AFTER initDatabase(), because construction reads
     // the DB (Telegram's createBot() → getMemoryMigrationNotice()).
-    const messenger = factory.create(agentId);
+    const messenger = runtimeMode === 'headless' ? createHeadlessMessenger() : factory.create(agentId);
 
     // Dashboard + War Room only run in the main process.
     if (agentId === 'main') {
@@ -424,7 +449,21 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
       if (WARROOM_ENABLED) startWarRoom((text) => messenger.sendToPrimary(text));
     }
 
-    if (messenger.primaryRecipient) {
+    if (messenger.kind === 'headless') {
+      initScheduler(
+        async () => { /* results remain in mission state for handback */ },
+        agentId,
+        workerLease?.instanceId,
+        lifecycleMode,
+        () => {
+          // The scheduler already changed desired_state to inactive in the
+          // transaction that proved the task scope drained. SIGTERM follows
+          // the normal graceful shutdown path and releases the lease.
+          try { process.kill(process.pid, 'SIGTERM'); } catch { process.exit(0); }
+        },
+      );
+      logger.info({ agentId, lifecycleMode }, 'Headless mission scheduler enabled');
+    } else if (messenger.primaryRecipient) {
       initScheduler(async (text) => { await messenger.sendToPrimary(text); }, agentId);
 
       // Proactive OAuth health monitoring — OPT-IN via OAUTH_HEALTH_ENABLED=true.
@@ -438,9 +477,14 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
       logger.warn('No primary recipient configured — scheduler disabled (no destination for results)');
     }
 
+    let shuttingDown = false;
     const shutdown = async () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
       logger.info('Shutting down...');
       setTelegramConnected(false);
+      if (agentId === 'main') await shutdownHeadlessWorkers();
+      workerLease?.stop();
       releaseLock();
       await stopMessengerForShutdown(messenger);
       process.exit(0);

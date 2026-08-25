@@ -171,7 +171,7 @@ describe('task state machine', () => {
       createScheduledTask('t1', 'task', '0 9 * * *', past, 'main');
       markTaskRunning('t1');
 
-      updateTaskAfterRun('t1', futureNextRun, 'Timed out after 10 minutes', 'timeout');
+      updateTaskAfterRun('t1', futureNextRun, 'Timed out after 15 minutes without provider activity', 'timeout');
 
       const tasks = getAllScheduledTasks('main');
       expect(tasks[0].status).toBe('active');

@@ -240,6 +240,12 @@ export const AGENT_IDLE_TIMEOUT_MS = parseTimeoutMs(
 export const AGENT_MAX_RUNTIME_MS = parseTimeoutMs(
   'AGENT_MAX_RUNTIME_MS', process.env.AGENT_MAX_RUNTIME_MS || envConfig.AGENT_MAX_RUNTIME_MS || '3600000',
 );
+export const SCHEDULER_IDLE_TIMEOUT_MS = parseTimeoutMs(
+  'SCHEDULER_IDLE_TIMEOUT_MS', process.env.SCHEDULER_IDLE_TIMEOUT_MS || envConfig.SCHEDULER_IDLE_TIMEOUT_MS || '900000',
+);
+export const SCHEDULER_MAX_RUNTIME_MS = parseTimeoutMs(
+  'SCHEDULER_MAX_RUNTIME_MS', process.env.SCHEDULER_MAX_RUNTIME_MS || envConfig.SCHEDULER_MAX_RUNTIME_MS || '1800000',
+);
 
 // Maximum number of agentic turns (tool-use rounds) per query.
 // Prevents runaway loops when external services fail (e.g. stale cookies causing

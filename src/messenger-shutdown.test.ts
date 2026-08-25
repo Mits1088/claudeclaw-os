@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 
-import { stopMessengerForShutdown } from './messenger.js';
+import { createHeadlessMessenger, stopMessengerForShutdown } from './messenger.js';
 
 describe('stopMessengerForShutdown', () => {
   it('waits for a successful messenger stop', async () => {
@@ -15,5 +15,17 @@ describe('stopMessengerForShutdown', () => {
 
     await expect(stopMessengerForShutdown({ kind: 'telegram', stop })).resolves.toBeUndefined();
     expect(stop).toHaveBeenCalledOnce();
+  });
+});
+
+describe('createHeadlessMessenger', () => {
+  it('is a silent transport with no recipient or network lifecycle', async () => {
+    const messenger = createHeadlessMessenger();
+    expect(messenger.kind).toBe('headless');
+    expect(messenger.primaryRecipient).toBeNull();
+    expect(messenger.dashboardApi).toBeNull();
+    await expect(messenger.sendToPrimary('ignored')).resolves.toBeUndefined();
+    await expect(messenger.start(true)).resolves.toBeUndefined();
+    await expect(messenger.stop()).resolves.toBeUndefined();
   });
 });

@@ -86,6 +86,68 @@ describe('loadAgentConfig interactive flag', () => {
   });
 });
 
+describe('loadAgentConfig runtime mode', () => {
+  it('loads a headless worker without a Telegram token', async () => {
+    writeAgentYaml('worker', {
+      name: 'Worker',
+      description: 'mission worker',
+      runtime: { mode: 'headless' },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    const config = loadAgentConfig('worker');
+    expect(config.runtimeMode).toBe('headless');
+    expect(config.lifecycleMode).toBe('persistent');
+    expect(config.botTokenEnv).toBe('');
+    expect(config.botToken).toBe('');
+  });
+
+  it('loads an explicitly task-scoped headless worker', async () => {
+    writeAgentYaml('temporary-worker', {
+      name: 'Temporary Worker',
+      description: 'one bounded task tree',
+      runtime: { mode: 'headless' },
+      lifecycle: { mode: 'task-scoped' },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    const config = loadAgentConfig('temporary-worker');
+    expect(config.runtimeMode).toBe('headless');
+    expect(config.lifecycleMode).toBe('task-scoped');
+  });
+
+  it('defaults existing agents to messenger mode', async () => {
+    writeAgentYaml('legacy', { name: 'Legacy', telegram_bot_token_env: 'TEST_BOT_TOKEN' });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('legacy').runtimeMode).toBe('messenger');
+    expect(loadAgentConfig('legacy').lifecycleMode).toBe('persistent');
+  });
+
+  it('rejects an unknown runtime mode', async () => {
+    writeAgentYaml('badmode', { name: 'Bad', runtime: { mode: 'carrier-pigeon' } });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(() => loadAgentConfig('badmode')).toThrow(/invalid runtime\.mode/);
+  });
+
+  it('rejects an unknown lifecycle mode', async () => {
+    writeAgentYaml('badlife', {
+      name: 'Bad',
+      runtime: { mode: 'headless' },
+      lifecycle: { mode: 'surprise-me' },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(() => loadAgentConfig('badlife')).toThrow(/invalid lifecycle\.mode/);
+  });
+
+  it('rejects task-scoped lifecycle on a messenger agent', async () => {
+    writeAgentYaml('chat-worker', {
+      name: 'Chat Worker',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      lifecycle: { mode: 'task-scoped' },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(() => loadAgentConfig('chat-worker')).toThrow(/only with runtime\.mode 'headless'/);
+  });
+});
+
 describe('setAgentDescription', () => {
   it('updates the description field in agent.yaml', async () => {
     const yamlPath = writeAgentYaml('raka', {

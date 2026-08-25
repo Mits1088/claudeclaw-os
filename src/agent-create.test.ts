@@ -86,3 +86,49 @@ describe('createAgent uniqueness guard', () => {
     expect(createdDirExists('freshid')).toBe(false);
   });
 });
+
+describe('createAgent headless runtime', () => {
+  it('creates a worker without validating or storing a Telegram token', async () => {
+    const { createAgent } = await import('./agent-create.js');
+    const fetchSpy = vi.spyOn(globalThis, 'fetch');
+    const result = await createAgent({
+      id: 'worker',
+      name: 'Worker',
+      description: 'mission worker',
+      runtimeMode: 'headless',
+    });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(result.envKey).toBeNull();
+    expect(result.botInfo).toBeNull();
+    const raw = yaml.load(fs.readFileSync(path.join(result.agentDir, 'agent.yaml'), 'utf-8')) as Record<string, unknown>;
+    expect(raw.runtime).toEqual({ mode: 'headless' });
+    expect(raw.lifecycle).toEqual({ mode: 'persistent' });
+    expect(raw.telegram_bot_token_env).toBeUndefined();
+  });
+
+  it('persists task-scoped lifecycle for an explicitly temporary worker', async () => {
+    const { createAgent } = await import('./agent-create.js');
+    const result = await createAgent({
+      id: 'temporary-worker',
+      name: 'Temporary Worker',
+      description: 'one bounded task tree',
+      runtimeMode: 'headless',
+      lifecycleMode: 'task-scoped',
+    });
+
+    const raw = yaml.load(fs.readFileSync(path.join(result.agentDir, 'agent.yaml'), 'utf-8')) as Record<string, unknown>;
+    expect(raw.lifecycle).toEqual({ mode: 'task-scoped' });
+  });
+
+  it('rejects task-scoped lifecycle for a messenger agent', async () => {
+    const { createAgent } = await import('./agent-create.js');
+    await expect(createAgent({
+      id: 'bad-scope',
+      name: 'Bad Scope',
+      description: 'invalid lifecycle combination',
+      runtimeMode: 'messenger',
+      lifecycleMode: 'task-scoped',
+    })).rejects.toThrow(/requires runtime mode 'headless'/);
+  });
+});

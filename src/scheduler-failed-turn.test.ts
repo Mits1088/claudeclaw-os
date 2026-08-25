@@ -13,11 +13,14 @@ const state = vi.hoisted(() => ({
   mission: null as Record<string, unknown> | null,
   agentResult: { text: 'ok', newSessionId: undefined, usage: null } as Record<string, unknown>,
   enqueued: [] as Array<() => Promise<void>>,
+  missionCompleted: false,
 }));
 
 vi.mock('./config.js', () => ({
   AGENT_ID: 'main',
   ALLOWED_CHAT_ID: 'chat-1',
+  SCHEDULER_IDLE_TIMEOUT_MS: 900_000,
+  SCHEDULER_MAX_RUNTIME_MS: 1_800_000,
   agentMcpAllowlist: [],
   agentDefaultModel: undefined,
   agentProvider: undefined,
@@ -47,15 +50,19 @@ vi.mock('./db.js', () => ({
     state.mission = null;
     return m;
   }),
-  completeMissionTask: vi.fn(),
+  completeMissionTask: vi.fn(() => { state.missionCompleted = true; }),
   maybeReleaseJoinForMission: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
+  failStuckMissionTasks: vi.fn(() => 0),
   getMissionTask: vi.fn(() => null),
   areAllGroupChildrenTerminal: vi.fn(() => false),
   getGroupChildren: vi.fn(() => []),
   getJoinMission: vi.fn(() => null),
   releaseJoinMission: vi.fn(() => false),
   updateMissionPrompt: vi.fn(),
+  isWorkerLeaseCurrent: vi.fn(() => true),
+  markWorkerTaskScopeStarted: vi.fn(() => true),
+  deactivateWorkerIfTaskScopeDrained: vi.fn(() => state.missionCompleted),
 }));
 
 vi.mock('./bot.js', () => ({
@@ -79,9 +86,12 @@ vi.mock('./agent.js', () => ({
   runAgent: vi.fn(async () => state.agentResult),
 }));
 
-async function runSchedulerCycle(send: (text: string) => Promise<void>) {
+async function runSchedulerCycle(
+  send: (text: string) => Promise<void>,
+  worker?: { instanceId: string; lifecycle: 'persistent' | 'task-scoped'; onDrained?: () => void },
+) {
   const { initScheduler } = await import('./scheduler.js');
-  initScheduler(send as never, 'main');
+  initScheduler(send as never, 'main', worker?.instanceId, worker?.lifecycle, worker?.onDrained);
   await vi.runOnlyPendingTimersAsync();
   for (let i = 0; i < 10; i++) await Promise.resolve();
   for (const fn of state.enqueued) await fn();
@@ -94,6 +104,7 @@ describe('scheduler failed-turn routing', () => {
     state.dueTasks = [];
     state.mission = null;
     state.enqueued.length = 0;
+    state.missionCompleted = false;
   });
 
   afterEach(() => {
@@ -199,5 +210,65 @@ describe('scheduler failed-turn routing', () => {
     expect(send).toHaveBeenNthCalledWith(1, '🎯 Mission task running: "Report Y"\nTask ID: m2');
     expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith('m2', 'all good', 'completed');
     expect(send).toHaveBeenCalledWith('all good');
+  });
+
+  it('arms a task-scoped worker and requests shutdown only after its mission completes', async () => {
+    state.mission = {
+      id: 'scope-root',
+      title: 'One bounded task',
+      prompt: 'finish this task',
+      assigned_agent: 'temporary',
+      created_by: 'main',
+      role: 'task',
+      continuation_limit: 1,
+    };
+    state.agentResult = { text: 'done', newSessionId: undefined, usage: null };
+    const send = vi.fn(async () => {});
+    const onDrained = vi.fn();
+
+    await runSchedulerCycle(send, {
+      instanceId: 'worker-instance',
+      lifecycle: 'task-scoped',
+      onDrained,
+    });
+
+    const db = await import('./db.js');
+    expect(vi.mocked(db.markWorkerTaskScopeStarted)).toHaveBeenCalledWith('main', 'worker-instance', 'scope-root');
+    expect(vi.mocked(db.deactivateWorkerIfTaskScopeDrained)).toHaveBeenCalled();
+    expect(onDrained).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['idle_timeout', 'Timed out after 15 minutes without provider activity'],
+    ['max_runtime', 'Stopped after reaching the 30-minute maximum runtime'],
+  ] as const)('records the scheduler watchdog reason for a %s mission', async (abortReason, expected) => {
+    state.mission = {
+      id: 'm-timeout',
+      title: 'Long worker task',
+      prompt: 'go',
+      role: 'task',
+      group_id: null,
+      created_by: 'main',
+      assigned_agent: 'research',
+      status: 'running',
+    };
+    state.agentResult = {
+      text: null,
+      newSessionId: undefined,
+      usage: null,
+      aborted: true,
+      abortReason,
+    };
+    const send = vi.fn(async () => {});
+
+    await runSchedulerCycle(send);
+
+    expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith(
+      'm-timeout',
+      null,
+      'failed',
+      expected,
+    );
+    expect(send).toHaveBeenCalledWith(expect.stringContaining(expected));
   });
 });

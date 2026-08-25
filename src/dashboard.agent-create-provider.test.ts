@@ -29,7 +29,7 @@ vi.mock('child_process', async () => {
 });
 
 const state = vi.hoisted(() => ({
-  createCalls: [] as Array<{ id: string; provider?: { type?: string; model?: string } }>,
+  createCalls: [] as Array<{ id: string; runtimeMode?: string; lifecycleMode?: string; botToken?: string; provider?: { type?: string; model?: string } }>,
 }));
 
 vi.mock('./agent-create.js', async () => {
@@ -42,7 +42,7 @@ vi.mock('./agent-create.js', async () => {
       ok: true,
       botInfo: { id: 1, is_bot: true, first_name: 'Fake', username: 'fake_bot' },
     })),
-    createAgent: vi.fn(async (opts: { id: string; provider?: { type?: string; model?: string } }) => {
+    createAgent: vi.fn(async (opts: { id: string; runtimeMode?: string; lifecycleMode?: string; botToken?: string; provider?: { type?: string; model?: string } }) => {
       state.createCalls.push(opts);
       return {
         agentId: opts.id,
@@ -93,6 +93,43 @@ async function create(body: Record<string, unknown>) {
 const BASE = { name: 'Seam Agent', description: 'provider boundary seam', botToken: '123:fake' };
 
 describe('the provider that reaches createAgent()', () => {
+  it('accepts a headless worker without a bot token', async () => {
+    const res = await create({ name: 'Worker', description: 'mission worker', id: 'seam-headless', runtimeMode: 'headless' });
+
+    expect(res.status).toBe(201);
+    expect(state.createCalls[0]).toMatchObject({ runtimeMode: 'headless' });
+    expect(state.createCalls[0].botToken).toBeUndefined();
+  });
+
+  it('passes an explicit task-scoped lifecycle to headless creation', async () => {
+    const res = await create({
+      name: 'Temporary Worker',
+      description: 'one bounded task tree',
+      id: 'seam-task-scoped',
+      runtimeMode: 'headless',
+      lifecycleMode: 'task-scoped',
+    });
+
+    expect(res.status).toBe(201);
+    expect(state.createCalls[0]).toMatchObject({ runtimeMode: 'headless', lifecycleMode: 'task-scoped' });
+  });
+
+  it('rejects task-scoped lifecycle for messenger creation', async () => {
+    const res = await create({ ...BASE, id: 'seam-bad-lifecycle', lifecycleMode: 'task-scoped' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/requires headless runtime/);
+    expect(state.createCalls).toHaveLength(0);
+  });
+
+  it('still requires a bot token in messenger mode', async () => {
+    const res = await create({ name: 'Messenger', description: 'chat agent', id: 'seam-messenger' });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('botToken required');
+    expect(state.createCalls).toHaveLength(0);
+  });
+
   it('passes the canonical acp-codex through unchanged', async () => {
     const res = await create({ ...BASE, id: 'seam-acp-codex', provider: { type: 'acp-codex' } });
 

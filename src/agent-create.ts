@@ -6,11 +6,12 @@ import { execSync, spawn } from 'child_process';
 import yaml from 'js-yaml';
 
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
-import { ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster, findAgentIdentityCollision } from './agent-config.js';
+import { ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster, findAgentIdentityCollision, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
 import { refreshAgentRegistry } from './orchestrator.js';
 import { atomicEnvWrite } from './env-write.js';
 import { logger } from './logger.js';
-import { IS_MACOS, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern } from './platform.js';
+import { IS_MACOS, killProcess, isProcessAlive, claudeCodeHandoff, findProcessesByPattern, listAgentProcesses } from './platform.js';
+import { deleteWorkerRuntime, ensureDatabase, ensureWorkerDesiredState, getAgentDeletionBlockers, getWorkerRuntime, getWorkerSupervisor, isWorkerLeaseCurrent } from './db.js';
 import {
   DEFAULT_CLAUDE_MODEL,
   ProviderConfig,
@@ -123,15 +124,17 @@ export interface CreateAgentOpts {
   model?: string;
   provider?: ProviderConfig;
   template?: string;
-  botToken: string;
+  botToken?: string;
+  runtimeMode?: AgentRuntimeMode;
+  lifecycleMode?: AgentLifecycleMode;
 }
 
 export interface CreateAgentResult {
   agentId: string;
   agentDir: string;
-  envKey: string;
+  envKey: string | null;
   plistPath: string | null;
-  botInfo: BotInfo;
+  botInfo: BotInfo | null;
 }
 
 // ── Auto-color palette for new agents ────────────────────────────────
@@ -145,6 +148,33 @@ const AGENT_COLOR_PALETTE = [
 // ── Validation ───────────────────────────────────────────────────────
 
 const VALID_ID_RE = /^[a-z][a-z0-9_-]{0,29}$/;
+
+function isHeadlessAgent(agentId: string): boolean {
+  try {
+    return loadAgentConfig(agentId).runtimeMode === 'headless';
+  } catch {
+    return false;
+  }
+}
+
+const PROCESS_STOP_GRACE_MS = 1_500;
+const PROCESS_STOP_POLL_MS = 25;
+
+function waitForProcessExit(pid: number, timeoutMs: number): boolean {
+  const deadline = Date.now() + timeoutMs;
+  while (isProcessAlive(pid) && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, PROCESS_STOP_POLL_MS);
+  }
+  return !isProcessAlive(pid);
+}
+
+function stopAndConfirmProcess(pid: number): boolean {
+  if (!isProcessAlive(pid)) return true;
+  killProcess(pid);
+  if (waitForProcessExit(pid, PROCESS_STOP_GRACE_MS)) return true;
+  killProcess(pid, true);
+  return waitForProcessExit(pid, PROCESS_STOP_GRACE_MS);
+}
 
 export function validateAgentId(id: string): { ok: boolean; error?: string } {
   if (!id) return { ok: false, error: 'Agent ID is required' };
@@ -234,7 +264,21 @@ export function listTemplates(): AgentTemplate[] {
 // ── Create ───────────────────────────────────────────────────────────
 
 export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentResult> {
-  const { id, name, description, model, provider, template, botToken } = opts;
+  const {
+    id,
+    name,
+    description,
+    model,
+    provider,
+    template,
+    botToken,
+    runtimeMode = 'messenger',
+    lifecycleMode = 'persistent',
+  } = opts;
+
+  if (runtimeMode !== 'headless' && lifecycleMode === 'task-scoped') {
+    throw new Error(`Task-scoped lifecycle requires runtime mode 'headless'`);
+  }
 
   // Validate ID
   const idCheck = validateAgentId(id);
@@ -258,11 +302,15 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
   if (existing.length >= 20) throw new Error('Maximum of 20 agents reached. Delete unused agents first.');
 
   // Validate token
-  const tokenCheck = await validateBotToken(botToken);
-  if (!tokenCheck.ok || !tokenCheck.botInfo) throw new Error(tokenCheck.error || 'Token validation failed');
+  const tokenCheck = runtimeMode === 'messenger'
+    ? await validateBotToken(botToken || '')
+    : { ok: true as const, botInfo: undefined };
+  if (runtimeMode === 'messenger' && (!tokenCheck.ok || !tokenCheck.botInfo)) {
+    throw new Error(tokenCheck.error || 'Token validation failed');
+  }
 
   // Check token isn't already in use by another agent
-  for (const existingId of existing) {
+  for (const existingId of runtimeMode === 'messenger' ? existing : []) {
     try {
       const existingConfig = loadAgentConfig(existingId);
       if (existingConfig.botToken === botToken) {
@@ -316,12 +364,14 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
   }
 
   // Create agent.yaml
-  const envKey = `${id.toUpperCase().replace(/-/g, '_')}_BOT_TOKEN`;
+  const envKey = runtimeMode === 'messenger' ? `${id.toUpperCase().replace(/-/g, '_')}_BOT_TOKEN` : null;
   const agentYaml: Record<string, unknown> = {
     name,
     description,
-    telegram_bot_token_env: envKey,
+    runtime: { mode: runtimeMode },
   };
+  if (runtimeMode === 'headless') agentYaml.lifecycle = { mode: lifecycleMode };
+  if (envKey) agentYaml.telegram_bot_token_env = envKey;
   const providerConfig = provider
     ? normalizeProviderConfig(provider, model)
     : model
@@ -338,13 +388,15 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
   );
 
   // Write bot token to .env
-  const envPath = path.join(PROJECT_ROOT, '.env');
-  writeBotTokenToEnv(envPath, envKey, botToken, id);
+  if (envKey && botToken) {
+    const envPath = path.join(PROJECT_ROOT, '.env');
+    writeBotTokenToEnv(envPath, envKey, botToken, id);
+  }
 
   // Generate launchd plist (or systemd unit)
   const plistPath = generateServiceConfig(id);
 
-  logger.info({ agentId: id, agentDir, envKey, bot: tokenCheck.botInfo.username }, 'Agent created');
+  logger.info({ agentId: id, agentDir, envKey, bot: tokenCheck.botInfo?.username, runtimeMode, lifecycleMode }, 'Agent created');
 
   // Propagate the new agent into all delegation surfaces without a bot
   // restart:
@@ -362,7 +414,7 @@ export async function createAgent(opts: CreateAgentOpts): Promise<CreateAgentRes
     agentDir,
     envKey,
     plistPath,
-    botInfo: tokenCheck.botInfo,
+    botInfo: tokenCheck.botInfo ?? null,
   };
 }
 
@@ -504,6 +556,10 @@ export function activateAgent(agentId: string): ActivationResult {
     return { ok: false, error: `Invalid agent ID format: ${agentId}` };
   }
   try {
+    if (isHeadlessAgent(agentId)) {
+      ensureDatabase();
+      ensureWorkerDesiredState(agentId, 'active');
+    }
     if (IS_MACOS) return activateLaunchd(agentId);
     // Everything else (Linux, Windows) spawns a detached child. This needs no
     // service manager and no privileges, so it works the same on a desktop and
@@ -607,11 +663,24 @@ function activateDetached(agentId: string): ActivationResult {
   const out = fs.openSync(logFile, 'a');
 
   try {
+    let workerEnv: Record<string, string> = {};
+    if (isHeadlessAgent(agentId)) {
+      ensureDatabase();
+      const supervisor = getWorkerSupervisor();
+      if (!supervisor) {
+        return { ok: false, error: 'Headless worker supervisor is not running. Start the main agent first.' };
+      }
+      workerEnv = {
+        CLAUDECLAW_WORKER_INSTANCE_ID: crypto.randomUUID(),
+        CLAUDECLAW_WORKER_SUPERVISOR_EPOCH: supervisor.epoch,
+        CLAUDECLAW_WORKER_BUILD_ID: supervisor.runtime_build_id,
+      };
+    }
     const child = spawn(process.execPath, [entry, '--agent', agentId], {
       cwd: PROJECT_ROOT,
       detached: true,
       stdio: ['ignore', out, out],
-      env: { ...process.env, NODE_ENV: 'production' },
+      env: { ...process.env, NODE_ENV: 'production', ...workerEnv },
       windowsHide: true,
     });
     child.unref();
@@ -642,6 +711,42 @@ export function deactivateAgent(agentId: string): { ok: boolean; error?: string 
     return { ok: false, error: `Invalid agent ID format: ${agentId}` };
   }
   try {
+    const headless = isHeadlessAgent(agentId);
+    const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
+    const trustedWorkerPids = new Set<number>();
+    let pidFilePid: number | null = null;
+
+    if (fs.existsSync(pidFile)) {
+      const parsed = Number.parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
+      if (Number.isFinite(parsed) && parsed > 0) pidFilePid = parsed;
+    }
+
+    if (headless) {
+      ensureDatabase();
+      const runtime = getWorkerRuntime(agentId);
+      if (
+        runtime?.pid
+        && runtime.instance_id
+        && isWorkerLeaseCurrent(agentId, runtime.instance_id)
+      ) {
+        trustedWorkerPids.add(runtime.pid);
+      }
+      for (const processInfo of listAgentProcesses(PROJECT_ROOT)) {
+        if (processInfo.agentId === agentId) trustedWorkerPids.add(processInfo.pid);
+      }
+
+      // Revoke the lease and clear process metadata in one DB statement before
+      // signaling the process. It cannot claim more work while shutting down.
+      ensureWorkerDesiredState(agentId, 'inactive');
+
+      if (pidFilePid && isProcessAlive(pidFilePid) && !trustedWorkerPids.has(pidFilePid)) {
+        return {
+          ok: false,
+          error: `Refusing to stop unverified PID ${pidFilePid} from ${pidFile}; worker is fenced but requires manual cleanup`,
+        };
+      }
+    }
+
     if (IS_MACOS) {
       const label = `com.claudeclaw.${agentId}`;
       const destPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
@@ -653,13 +758,18 @@ export function deactivateAgent(agentId: string): { ok: boolean; error?: string 
     // On Linux and Windows there's no service to unregister. The shared kill
     // logic below stops the detached child via its PID file.
 
-    // Kill the process if still running (cross-platform)
-    const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
-    if (fs.existsSync(pidFile)) {
-      const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);
-      if (!isNaN(pid)) killProcess(pid);
-      try { fs.unlinkSync(pidFile); } catch { /* ok */ }
+    const pids = headless
+      ? [...trustedWorkerPids]
+      : (pidFilePid ? [pidFilePid] : []);
+    for (const pid of pids) {
+      if (!stopAndConfirmProcess(pid)) {
+        return {
+          ok: false,
+          error: `Agent ${agentId} process ${pid} did not exit after graceful and forced termination`,
+        };
+      }
     }
+    if (fs.existsSync(pidFile)) fs.unlinkSync(pidFile);
 
     logger.info({ agentId }, 'Agent deactivated');
     return { ok: true };
@@ -674,12 +784,30 @@ export function deleteAgent(agentId: string): { ok: boolean; error?: string } {
   if (!VALID_ID_RE.test(agentId)) {
     return { ok: false, error: `Invalid agent ID format: ${agentId}` };
   }
-  // Deactivate first
-  deactivateAgent(agentId);
-
   const envKey = `${agentId.toUpperCase().replace(/-/g, '_')}_BOT_TOKEN`;
 
   try {
+    ensureDatabase();
+    const blockers = getAgentDeletionBlockers(agentId);
+    if (blockers.open_missions > 0 || blockers.retained_schedules > 0) {
+      const responsibilities = [
+        blockers.open_missions > 0 ? `${blockers.open_missions} open mission(s)` : null,
+        blockers.retained_schedules > 0 ? `${blockers.retained_schedules} retained schedule(s)` : null,
+      ].filter(Boolean).join(' and ');
+      return {
+        ok: false,
+        error: `Cannot delete agent ${agentId} while it owns ${responsibilities}; complete, cancel, reassign, transfer, or delete them first`,
+      };
+    }
+
+    const deactivation = deactivateAgent(agentId);
+    if (!deactivation.ok) {
+      return {
+        ok: false,
+        error: `Cannot delete agent ${agentId}: ${deactivation.error ?? 'deactivation failed'}`,
+      };
+    }
+
     // Remove agent directory (both possible locations)
     for (const baseDir of [
       path.join(CLAUDECLAW_CONFIG, 'agents'),
@@ -693,6 +821,7 @@ export function deleteAgent(agentId: string): { ok: boolean; error?: string } {
 
     // Remove token from .env
     removeBotTokenFromEnv(path.join(PROJECT_ROOT, '.env'), envKey, agentId);
+    deleteWorkerRuntime(agentId);
 
     // Remove log files (both the legacy in-project location and the new
     // ~/Library/Logs/claudeclaw location written by activateLaunchd).
@@ -774,6 +903,15 @@ export function restartAgent(agentId: string): { ok: boolean; error?: string } {
 }
 
 export function isAgentRunning(agentId: string): boolean {
+  if (isHeadlessAgent(agentId)) {
+    try {
+      ensureDatabase();
+      const state = getWorkerRuntime(agentId);
+      return Boolean(state?.instance_id && isWorkerLeaseCurrent(agentId, state.instance_id));
+    } catch {
+      return false;
+    }
+  }
   const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
   if (!fs.existsSync(pidFile)) return false;
   try {

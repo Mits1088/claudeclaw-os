@@ -24,7 +24,9 @@
  *   --description What this agent does (required)
  *   --model       Model override (default: claude-sonnet-4-6)
  *   --template    Template to copy from (default: _template)
- *   --token       Telegram bot token from BotFather (required)
+ *   --token       Telegram bot token from BotFather (required for messenger mode)
+ *   --runtime-mode messenger or headless (default: messenger)
+ *   --lifecycle    persistent or task-scoped (headless only; default: persistent)
  *   --activate    Install launchd/systemd service and start immediately
  *   --validate    Only validate the token, don't create anything
  *   --suggest     Only print suggested bot names for the given --id
@@ -102,9 +104,23 @@ async function main(): Promise<void> {
   const name = args.name as string;
   const description = args.description as string;
   const token = args.token as string;
+  const runtimeMode = (args['runtime-mode'] as string) || 'messenger';
+  const lifecycleMode = (args.lifecycle as string) || 'persistent';
 
-  if (!id || !name || !description || !token) {
+  if (!id || !name || !description || (runtimeMode === 'messenger' && !token)) {
     console.error('Missing required flags. Use --help for usage.');
+    process.exit(1);
+  }
+  if (runtimeMode !== 'messenger' && runtimeMode !== 'headless') {
+    console.error('--runtime-mode must be messenger or headless');
+    process.exit(1);
+  }
+  if (lifecycleMode !== 'persistent' && lifecycleMode !== 'task-scoped') {
+    console.error('--lifecycle must be persistent or task-scoped');
+    process.exit(1);
+  }
+  if (runtimeMode !== 'headless' && lifecycleMode === 'task-scoped') {
+    console.error('--lifecycle task-scoped requires --runtime-mode headless');
     process.exit(1);
   }
 
@@ -125,12 +141,16 @@ async function main(): Promise<void> {
       model: (args.model as string) || undefined,
       template: (args.template as string) || undefined,
       botToken: token,
+      runtimeMode,
+      lifecycleMode,
     });
 
     console.log(`Agent created successfully.`);
     console.log(`  Directory: ${result.agentDir}`);
-    console.log(`  Env key:   ${result.envKey}`);
-    console.log(`  Bot:       @${result.botInfo.username}`);
+    console.log(`  Runtime:   ${runtimeMode}`);
+    if (runtimeMode === 'headless') console.log(`  Lifecycle: ${lifecycleMode}`);
+    if (result.envKey) console.log(`  Env key:   ${result.envKey}`);
+    if (result.botInfo) console.log(`  Bot:       @${result.botInfo.username}`);
     if (result.plistPath) {
       console.log(`  Service:   ${result.plistPath}`);
     }

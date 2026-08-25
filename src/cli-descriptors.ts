@@ -27,9 +27,9 @@ export const agentCreateDescriptor: CliDescriptor = {
   commands: [
     {
       usage:
-        'agent-create-cli --id ID --name NAME --description DESC --token TOKEN [--model MODEL] [--template TEMPLATE] [--activate]',
+        'agent-create-cli --id ID --name NAME --description DESC [--runtime-mode messenger|headless] [--lifecycle persistent|task-scoped] [--token TOKEN] [--model MODEL] [--template TEMPLATE] [--activate]',
       description:
-        'Create an agent. --model defaults to claude-sonnet-4-6, --template to _template. --activate installs the launchd/systemd service and starts it immediately.',
+        'Create an agent. Messenger mode requires --token; headless mode does not. Headless lifecycle defaults to persistent; task-scoped workers drain and deactivate after their work completes.',
     },
     {
       usage: '--validate --token TOKEN',
@@ -45,8 +45,10 @@ export const agentCreateDescriptor: CliDescriptor = {
     },
   ],
   notes: [
-    '--id must be lowercase with no spaces; --name, --description, and --token are required for creation.',
+    '--id must be lowercase with no spaces; --name and --description are required for creation.',
     '--token is a Telegram bot token from @BotFather.',
+    'Creating or activating a new headless worker identity requires explicit user authorization. Do not infer authorization from a request for delegation or parallelism.',
+    'Task-scoped workers deactivate automatically after their work drains, but agent identity and history are never deleted automatically.',
   ],
 };
 

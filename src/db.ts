@@ -261,6 +261,30 @@ function createSchema(database: Database.Database): void {
       cancelled_at    INTEGER
     );
 
+    CREATE TABLE IF NOT EXISTS worker_supervisor (
+      singleton_id     INTEGER PRIMARY KEY CHECK (singleton_id = 1),
+      epoch            TEXT NOT NULL,
+      runtime_build_id TEXT NOT NULL,
+      started_at       INTEGER NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS worker_runtime (
+      agent_id          TEXT PRIMARY KEY,
+      desired_state     TEXT NOT NULL DEFAULT 'inactive'
+                        CHECK (desired_state IN ('active', 'inactive')),
+      instance_id       TEXT,
+      supervisor_epoch  TEXT,
+      pid               INTEGER,
+      process_started_at INTEGER,
+      heartbeat_at      INTEGER,
+      runtime_build_id  TEXT,
+      scope_started_at  INTEGER,
+      scope_work_id     TEXT
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_worker_runtime_lease
+      ON worker_runtime(supervisor_epoch, heartbeat_at);
+
     CREATE TABLE IF NOT EXISTS meet_sessions (
       id              TEXT PRIMARY KEY,         -- session id from the provider's join response
       agent_id        TEXT NOT NULL,            -- which agent is in the meeting
@@ -812,6 +836,12 @@ function runMigrations(database: Database.Database): void {
   }
   database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_mission_continuation_key
     ON mission_tasks(continuation_key) WHERE continuation_key IS NOT NULL`);
+
+  // Task-scoped headless workers are armed by their first claimed mission or
+  // scheduled job. Persisting that fact prevents a main-process restart from
+  // turning a drained temporary worker back into an indefinitely-idle worker.
+  addColumnIfMissing(database, 'worker_runtime', 'scope_started_at', 'INTEGER');
+  addColumnIfMissing(database, 'worker_runtime', 'scope_work_id', 'TEXT');
 
   // Live Meetings: add provider column so we can track which platform
   // each session used (pika avatar vs recall voice-only). Default 'pika'
@@ -2536,11 +2566,12 @@ function withBusyRetry<T>(fn: () => T, attempts = 4): T {
   }
 }
 
-export function claimNextMissionTask(agentId: string): MissionTask | null {
+export function claimNextMissionTask(agentId: string, workerInstanceId?: string): MissionTask | null {
   // IMMEDIATE so the write lock is taken up front — a DEFERRED transaction takes a
   // read lock on the SELECT then upgrades on the UPDATE, and SQLite returns
   // SQLITE_BUSY on the upgrade WITHOUT honoring busy_timeout (issue #155).
   const txn = db.transaction(() => {
+    if (workerInstanceId && !isWorkerLeaseCurrent(agentId, workerInstanceId)) return null;
     // One-running-per-agent guard: don't claim while this agent already has a task
     // executing. Tasks are marked 'running' at claim/enqueue time and execution is
     // serialized per chat by the message queue, so without this guard a later tick
@@ -2568,6 +2599,206 @@ export function claimNextMissionTask(agentId: string): MissionTask | null {
       `UPDATE mission_tasks SET status = 'running', started_at = ? WHERE id = ?`,
     ).run(startedAt, task.id);
     return { ...task, status: 'running' as const, started_at: startedAt };
+  });
+  return withBusyRetry(() => txn.immediate());
+}
+
+export interface WorkerRuntimeState {
+  agent_id: string;
+  desired_state: 'active' | 'inactive';
+  instance_id: string | null;
+  supervisor_epoch: string | null;
+  pid: number | null;
+  process_started_at: number | null;
+  heartbeat_at: number | null;
+  runtime_build_id: string | null;
+  scope_started_at: number | null;
+  scope_work_id: string | null;
+}
+
+const WORKER_LEASE_MAX_AGE_SEC = 45;
+
+export function beginWorkerSupervisorEpoch(epoch: string, runtimeBuildId: string): void {
+  const now = Math.floor(Date.now() / 1000);
+  db.transaction(() => {
+    db.prepare(
+      `INSERT INTO worker_supervisor (singleton_id, epoch, runtime_build_id, started_at)
+       VALUES (1, ?, ?, ?)
+       ON CONFLICT(singleton_id) DO UPDATE SET
+         epoch = excluded.epoch,
+         runtime_build_id = excluded.runtime_build_id,
+         started_at = excluded.started_at`,
+    ).run(epoch, runtimeBuildId, now);
+    db.prepare(
+      `UPDATE worker_runtime SET instance_id = NULL, supervisor_epoch = NULL,
+       pid = NULL, process_started_at = NULL, heartbeat_at = NULL,
+       runtime_build_id = NULL`,
+    ).run();
+  })();
+}
+
+export function getWorkerSupervisor(): { epoch: string; runtime_build_id: string; started_at: number } | null {
+  return (db.prepare(
+    `SELECT epoch, runtime_build_id, started_at FROM worker_supervisor WHERE singleton_id = 1`,
+  ).get() as { epoch: string; runtime_build_id: string; started_at: number } | undefined) ?? null;
+}
+
+export function ensureWorkerDesiredState(agentId: string, desired: 'active' | 'inactive'): void {
+  db.prepare(
+    `INSERT INTO worker_runtime (agent_id, desired_state) VALUES (?, ?)
+     ON CONFLICT(agent_id) DO UPDATE SET
+       desired_state = excluded.desired_state,
+       instance_id = CASE WHEN excluded.desired_state = 'inactive' THEN NULL ELSE worker_runtime.instance_id END,
+       supervisor_epoch = CASE WHEN excluded.desired_state = 'inactive' THEN NULL ELSE worker_runtime.supervisor_epoch END,
+       pid = CASE WHEN excluded.desired_state = 'inactive' THEN NULL ELSE worker_runtime.pid END,
+       process_started_at = CASE WHEN excluded.desired_state = 'inactive' THEN NULL ELSE worker_runtime.process_started_at END,
+       heartbeat_at = CASE WHEN excluded.desired_state = 'inactive' THEN NULL ELSE worker_runtime.heartbeat_at END,
+       runtime_build_id = CASE WHEN excluded.desired_state = 'inactive' THEN NULL ELSE worker_runtime.runtime_build_id END,
+       scope_started_at = CASE
+         WHEN worker_runtime.desired_state = 'inactive' AND excluded.desired_state = 'active' THEN NULL
+         ELSE worker_runtime.scope_started_at
+       END,
+       scope_work_id = CASE
+         WHEN worker_runtime.desired_state = 'inactive' AND excluded.desired_state = 'active' THEN NULL
+         ELSE worker_runtime.scope_work_id
+       END`,
+  ).run(agentId, desired);
+}
+
+export function getWorkerRuntime(agentId: string): WorkerRuntimeState | null {
+  return (db.prepare(`SELECT * FROM worker_runtime WHERE agent_id = ?`).get(agentId) as WorkerRuntimeState | undefined) ?? null;
+}
+
+export function listWorkerRuntime(): WorkerRuntimeState[] {
+  return db.prepare(`SELECT * FROM worker_runtime ORDER BY agent_id`).all() as WorkerRuntimeState[];
+}
+
+export function deleteWorkerRuntime(agentId: string): void {
+  db.prepare(`DELETE FROM worker_runtime WHERE agent_id = ?`).run(agentId);
+}
+
+export function acquireWorkerLease(input: {
+  agentId: string;
+  instanceId: string;
+  supervisorEpoch: string;
+  pid: number;
+  processStartedAt: number;
+  runtimeBuildId: string;
+}): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `UPDATE worker_runtime
+     SET instance_id = ?, supervisor_epoch = ?, pid = ?, process_started_at = ?,
+         heartbeat_at = ?, runtime_build_id = ?
+     WHERE agent_id = ? AND desired_state = 'active'
+       AND ? = (SELECT epoch FROM worker_supervisor WHERE singleton_id = 1)
+       AND ? = (SELECT runtime_build_id FROM worker_supervisor WHERE singleton_id = 1)`,
+  ).run(
+    input.instanceId,
+    input.supervisorEpoch,
+    input.pid,
+    input.processStartedAt,
+    now,
+    input.runtimeBuildId,
+    input.agentId,
+    input.supervisorEpoch,
+    input.runtimeBuildId,
+  );
+  return result.changes === 1;
+}
+
+export function heartbeatWorkerLease(agentId: string, instanceId: string): boolean {
+  const result = db.prepare(
+    `UPDATE worker_runtime SET heartbeat_at = ?
+     WHERE agent_id = ? AND instance_id = ? AND desired_state = 'active'
+       AND supervisor_epoch = (SELECT epoch FROM worker_supervisor WHERE singleton_id = 1)`,
+  ).run(Math.floor(Date.now() / 1000), agentId, instanceId);
+  return result.changes === 1;
+}
+
+export function releaseWorkerLease(agentId: string, instanceId: string): void {
+  db.prepare(
+    `UPDATE worker_runtime SET instance_id = NULL, supervisor_epoch = NULL,
+       pid = NULL, process_started_at = NULL, heartbeat_at = NULL,
+       runtime_build_id = NULL WHERE agent_id = ? AND instance_id = ?`,
+  ).run(agentId, instanceId);
+}
+
+export interface AgentDeletionBlockers {
+  open_missions: number;
+  retained_schedules: number;
+}
+
+/**
+ * Return durable responsibilities that would be orphaned if an agent were
+ * deleted. A mission created by the agent also counts because its gather or
+ * handback still routes through that creator.
+ */
+export function getAgentDeletionBlockers(agentId: string): AgentDeletionBlockers {
+  const openMissions = db.prepare(
+    `SELECT COUNT(*) AS count FROM mission_tasks
+     WHERE (assigned_agent = ? OR created_by = ?)
+       AND status NOT IN ('completed', 'failed', 'cancelled')`,
+  ).get(agentId, agentId) as { count: number };
+  const retainedSchedules = db.prepare(
+    `SELECT COUNT(*) AS count FROM scheduled_tasks
+     WHERE agent_id = ? AND status IN ('active', 'running', 'paused')`,
+  ).get(agentId) as { count: number };
+  return {
+    open_missions: openMissions.count,
+    retained_schedules: retainedSchedules.count,
+  };
+}
+
+export function isWorkerLeaseCurrent(agentId: string, instanceId: string, nowSec = Math.floor(Date.now() / 1000)): boolean {
+  const row = db.prepare(
+    `SELECT 1 FROM worker_runtime wr
+     JOIN worker_supervisor ws ON ws.singleton_id = 1
+     WHERE wr.agent_id = ? AND wr.instance_id = ? AND wr.desired_state = 'active'
+       AND wr.supervisor_epoch = ws.epoch
+       AND wr.runtime_build_id = ws.runtime_build_id
+       AND wr.heartbeat_at >= ?`,
+  ).get(agentId, instanceId, nowSec - WORKER_LEASE_MAX_AGE_SEC);
+  return Boolean(row);
+}
+
+/** Persist the first unit of work handled by a task-scoped worker instance. */
+export function markWorkerTaskScopeStarted(agentId: string, instanceId: string, workId: string): boolean {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `UPDATE worker_runtime
+     SET scope_started_at = COALESCE(scope_started_at, ?),
+         scope_work_id = COALESCE(scope_work_id, ?)
+     WHERE agent_id = ? AND instance_id = ? AND desired_state = 'active'
+       AND supervisor_epoch = (SELECT epoch FROM worker_supervisor WHERE singleton_id = 1)
+       AND runtime_build_id = (SELECT runtime_build_id FROM worker_supervisor WHERE singleton_id = 1)`,
+  ).run(now, workId, agentId, instanceId);
+  return result.changes === 1;
+}
+
+/**
+ * Atomically deactivate an armed task-scoped worker only after its work has
+ * drained. Work includes missions assigned to the worker, missions it created
+ * for other agents (including gathers/handbacks), and any retained schedule.
+ * The IMMEDIATE transaction prevents a concurrent mission creation from
+ * landing between the empty check and desired-state transition.
+ */
+export function deactivateWorkerIfTaskScopeDrained(agentId: string, instanceId: string): boolean {
+  const txn = db.transaction(() => {
+    const runtime = db.prepare(
+      `SELECT scope_started_at FROM worker_runtime
+       WHERE agent_id = ? AND instance_id = ? AND desired_state = 'active'`,
+    ).get(agentId, instanceId) as { scope_started_at: number | null } | undefined;
+    if (!runtime?.scope_started_at || !isWorkerLeaseCurrent(agentId, instanceId)) return false;
+
+    const blockers = getAgentDeletionBlockers(agentId);
+    if (blockers.open_missions > 0 || blockers.retained_schedules > 0) return false;
+
+    const result = db.prepare(
+      `UPDATE worker_runtime SET desired_state = 'inactive'
+       WHERE agent_id = ? AND instance_id = ? AND desired_state = 'active'`,
+    ).run(agentId, instanceId);
+    return result.changes === 1;
   });
   return withBusyRetry(() => txn.immediate());
 }
@@ -2694,6 +2925,15 @@ export function resetStuckMissionTasks(agentId: string): number {
   const result = db.prepare(
     `UPDATE mission_tasks SET status = 'queued', started_at = NULL WHERE status = 'running' AND assigned_agent = ?`,
   ).run(agentId);
+  return result.changes;
+}
+
+export function failStuckMissionTasks(agentId: string, error: string): number {
+  const now = Math.floor(Date.now() / 1000);
+  const result = db.prepare(
+    `UPDATE mission_tasks SET status = 'failed', error = ?, completed_at = ?
+     WHERE status = 'running' AND assigned_agent = ?`,
+  ).run(error, now, agentId);
   return result.changes;
 }
 
