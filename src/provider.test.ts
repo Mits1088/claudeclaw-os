@@ -12,6 +12,7 @@ vi.mock('child_process', () => ({
 
 vi.mock('./config.js', () => ({
   STORE_DIR: '/tmp/test',
+  CODEX_TRANSPORT: 'sdk',
   DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
   CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
   CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',

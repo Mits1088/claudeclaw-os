@@ -1537,6 +1537,12 @@ describe('the launch fingerprint', () => {
     expect(newKey).not.toContain('sk-new');
   });
 
+  it('rotates when the prepared Windows sandbox setup changes', () => {
+    const before = CodexAppServerManager.fingerprintOf(base({ sandboxIdentity: 'elevated:one' }));
+    const after = CodexAppServerManager.fingerprintOf(base({ sandboxIdentity: 'elevated:two' }));
+    expect(after).not.toBe(before);
+  });
+
   it('reads an empty credential as no credential', () => {
     // Absent and empty authenticate the same nothing, so they must not read as two
     // different launch environments and rotate the process between them.
@@ -1689,7 +1695,7 @@ describe('the launch fingerprint', () => {
     // after an upgrade and the child would never rotate.
     const identity = executableIdentity();
     expect(identity.launcher).toMatch(/@openai[\\/]codex[\\/]bin[\\/]codex\.js$/);
-    expect(identity.codexVersion).toBe('0.144.6'); // the pin the schema check ran against
+    expect(identity.codexVersion).toBe('0.149.1'); // the pin the schema check ran against
     expect(identity.launcherBytes).toBeGreaterThan(0);
     expect(identity.node).toBe(process.execPath);
     expect(identity.error).toBeUndefined();

@@ -21,6 +21,7 @@ import {
   parseMcpServerStatusPage,
   parseThreadItem,
   parseToolUserInputRequest,
+  parseWindowsSandboxReadiness,
   refusedServerRequestReason,
 } from './codex-app-server-protocol.js';
 import { verifyEffectivePolicy } from './codex-app-server-policy-verify.js';
@@ -46,6 +47,20 @@ const PROBE_RESULT = {
   reasoningEffort: 'high',
   multiAgentMode: 'explicitRequestOnly',
 };
+
+describe('Windows sandbox readiness', () => {
+  it.each(['ready', 'notConfigured', 'updateRequired'] as const)('accepts %s', (status) => {
+    expect(parseWindowsSandboxReadiness({ status })).toEqual({ status });
+  });
+
+  it.each([undefined, null, 'not-ready', 'unelevated'])('rejects unknown status %s', (status) => {
+    expect(() => parseWindowsSandboxReadiness({ status })).toThrow(/unknown status/);
+  });
+
+  it('rejects a non-object response', () => {
+    expect(() => parseWindowsSandboxReadiness(null)).toThrow(/result is not an object/);
+  });
+});
 
 describe('parses the real pinned-binary response', () => {
   it('accepts the probe result and keeps only the consumed fields', () => {

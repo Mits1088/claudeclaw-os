@@ -124,7 +124,7 @@ async function main() {
     // check (bundled SDK + platform binary + auth) rather than the ACP
     // command-exists path, which would always report "not found".
     const availability = checkProviderAvailability(provider);
-    if (availability.ok) ok(`Agent provider: ${providerLabel}`);
+    if (availability.ok) ok(`Agent provider: ${providerLabel} — ${availability.setupHint ?? ''}`);
     else fail(`Agent provider: ${availability.error ?? 'OpenAI not available'}`);
   } else if (provider.type === 'anthropic-compatible') {
     // Credential and endpoint live in .env, which is per-machine and NOT

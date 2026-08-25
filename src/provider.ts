@@ -11,7 +11,7 @@ import {
   getCompatConfig,
   redactSecret,
 } from './anthropic-compat-env.js';
-import { STORE_DIR, DEFAULT_CLAUDE_MODEL, getClaudeclawConfig, PROJECT_ROOT } from './config.js';
+import { CODEX_TRANSPORT, STORE_DIR, DEFAULT_CLAUDE_MODEL, getClaudeclawConfig, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
 
 /**
@@ -506,26 +506,31 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
       return { ok: true };
     }
     case 'openai': {
-      // Native Codex SDK provider — the runtime binary ships with the bundled
-      // @openai/codex-sdk package (no PATH dependency). Auth comes from either
+      // Native Codex provider. App Server is the contained opt-in while its Windows
+      // cancellation gate remains open; the SDK stays installed as the default rollback.
+      // Auth comes from either
       // `codex login` state (~/.codex/auth.json, ChatGPT subscription) or an
       // OPENAI_API_KEY for API billing.
       const req = createRequire(import.meta.url);
-      const sdkMissing = {
+      const transportPackage = CODEX_TRANSPORT === 'app-server' ? '@openai/codex' : '@openai/codex-sdk';
+      const transportResolutionTarget = CODEX_TRANSPORT === 'app-server'
+        ? '@openai/codex/package.json'
+        : '@openai/codex-sdk';
+      const runtimeMissing = {
         ok: false as const,
-        error: '@openai/codex-sdk is not installed.',
+        error: `${transportPackage} is not installed.`,
         installCommand: 'npm install',
-        setupHint: 'Run `npm install` to pull the bundled Codex SDK, then authenticate with `codex login` or set OPENAI_API_KEY in .env.',
+        setupHint: 'Run `npm install` to restore the pinned Codex runtime, then authenticate with `codex login` or set OPENAI_API_KEY in .env.',
         docsUrl: 'https://github.com/openai/codex',
       };
       try {
-        req.resolve('@openai/codex-sdk');
+        req.resolve(transportResolutionTarget);
       } catch (err) {
         // The SDK is ESM-only (no `require` condition in its exports map), so
         // require.resolve throws ERR_PACKAGE_PATH_NOT_EXPORTED even when the
         // package IS installed — the exports map was found and parsed, which
         // is proof of presence. Only a genuine module-not-found is a failure.
-        if ((err as NodeJS.ErrnoException)?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') return sdkMissing;
+        if ((err as NodeJS.ErrnoException)?.code !== 'ERR_PACKAGE_PATH_NOT_EXPORTED') return runtimeMissing;
       }
       // The JS SDK is a thin wrapper around a platform-specific native binary
       // shipped as an OPTIONAL dependency (@openai/codex-<platform>-<arch>). If
@@ -557,17 +562,36 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
           docsUrl: 'https://github.com/openai/codex',
         };
       }
+      const transportHint = CODEX_TRANSPORT === 'app-server'
+        ? 'Transport: App Server; effective sandbox and approval policy are verified before every turn.'
+        : 'Transport: SDK rollback; effective sandbox policy is not observable.';
+      const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
+      if (CODEX_TRANSPORT === 'app-server' && process.platform === 'win32') {
+        // Setup is approved in the operator home, then mirrored into ClaudeClaw's
+        // isolated home at launch. The service itself may inherit that isolated
+        // CODEX_HOME, so never use it as proof of operator setup here.
+        const sandboxSourceHome = path.join(os.homedir(), '.codex');
+        const marker = path.join(sandboxSourceHome, '.sandbox', 'setup_marker.json');
+        const users = path.join(sandboxSourceHome, '.sandbox-secrets', 'sandbox_users.json');
+        if (!fs.existsSync(marker) || !fs.existsSync(users)) {
+          return {
+            ok: false,
+            error: 'The elevated Codex Windows sandbox is not configured.',
+            setupHint: 'Run `codex` once from an elevated terminal, complete Windows sandbox setup, then restart ClaudeClaw.',
+            docsUrl: 'https://developers.openai.com/codex/windows',
+          };
+        }
+      }
       // An API key is definitive (must be a non-empty string).
       const nonEmpty = (v: unknown): v is string => typeof v === 'string' && v.trim().length > 0;
-      if (nonEmpty(process.env.OPENAI_API_KEY)) return { ok: true };
-      if (nonEmpty(readEnvFile(['OPENAI_API_KEY']).OPENAI_API_KEY)) return { ok: true };
+      if (nonEmpty(process.env.OPENAI_API_KEY)) return { ok: true, setupHint: transportHint };
+      if (nonEmpty(readEnvFile(['OPENAI_API_KEY']).OPENAI_API_KEY)) return { ok: true, setupHint: transportHint };
       // Otherwise require a parseable auth.json with a genuinely non-empty
       // token — a bare {}, {"tokens":{}}, or empty-string field must NOT read as
       // authenticated (the turn would then fail at call time). We don't shell
       // out to `codex login status` here: preflight must stay fast and
       // non-blocking, and a stale-but-present token still surfaces an actionable
       // auth error at call time via the adapter.
-      const codexHome = process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
       const authPath = path.join(codexHome, 'auth.json');
       if (fs.existsSync(authPath)) {
         try {
@@ -576,7 +600,7 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
           const hasApiKey = nonEmpty(raw.OPENAI_API_KEY);
           const hasChatgptToken = !!tokens && (nonEmpty(tokens.access_token) || nonEmpty(tokens.id_token) || nonEmpty(tokens.refresh_token));
           const hasTopLevelToken = nonEmpty(raw.access_token) || nonEmpty(raw.id_token) || nonEmpty(raw.refresh_token);
-          if (hasApiKey || hasChatgptToken || hasTopLevelToken) return { ok: true };
+          if (hasApiKey || hasChatgptToken || hasTopLevelToken) return { ok: true, setupHint: transportHint };
         } catch { /* unreadable/malformed → treat as unauthenticated */ }
       }
       return {

@@ -80,8 +80,14 @@ export interface ManagerOptions {
    */
   authIdentity?: string;
   /**
-   * Bring the isolated home's credentials into the state `authIdentity` names, immediately
-   * before this manager's child is built.
+   * Non-secret identity of the native Windows sandbox setup mirrored into the
+   * isolated home. A changed setup version or credential pair rotates the warm
+   * child before the new state is installed.
+   */
+  sandboxIdentity?: string;
+  /**
+   * Bring the isolated home's credentials and sandbox metadata into the states
+   * named by the launch identities, immediately before this manager's child is built.
    *
    * A hook rather than something the manager does itself, so the manager keeps knowing
    * nothing about config or credential storage. The TIMING is the point: `shared()` has
@@ -156,7 +162,7 @@ const UNKILLABLE_CHILD_REFUSAL =
  * structure change that happened to hash to the same value as an older one would reuse a
  * child launched under inputs nobody checked.
  */
-const LAUNCH_FINGERPRINT_VERSION = 4;
+const LAUNCH_FINGERPRINT_VERSION = 5;
 
 /**
  * Environment values that decide WHO the child authenticates as.
@@ -270,6 +276,8 @@ interface LaunchInputs {
   authMode: string;
   /** Non-secret identity of the file-backed credential state; '' when unmanaged. */
   authIdentity: string;
+  /** Non-secret identity of the native sandbox setup state; '' when unmanaged. */
+  sandboxIdentity: string;
   /** Credential key → SHA-256 of its value, or '' when the key is absent. */
   credentials: Record<string, string>;
   environment: Record<string, string>;
@@ -363,6 +371,7 @@ function changedLaunchGroups(before: LaunchInputs, after: LaunchInputs): string[
   if (JSON.stringify(before.executable) !== JSON.stringify(after.executable)) changed.push('executable');
   if (before.authMode !== after.authMode) changed.push('authMode');
   if (before.authIdentity !== after.authIdentity) changed.push('authIdentity');
+  if (before.sandboxIdentity !== after.sandboxIdentity) changed.push('sandboxIdentity');
   for (const key of LAUNCH_SECRET_ENV_KEYS) {
     if (before.credentials[key] !== after.credentials[key]) changed.push(`credential:${key}`);
   }
@@ -772,6 +781,7 @@ export class CodexAppServerManager {
       // Already a non-secret mode-plus-digest when present; '' when the caller does not
       // manage file-backed credentials at all.
       authIdentity: options.authIdentity ?? '',
+      sandboxIdentity: options.sandboxIdentity ?? '',
       credentials,
       environment,
     };

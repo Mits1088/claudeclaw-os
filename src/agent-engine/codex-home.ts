@@ -21,7 +21,7 @@ import { logger } from '../logger.js';
  * the mutation happens later, once the outgoing child has exited and before the replacement
  * starts. The SDK path spawns per turn and simply runs the two back to back.
  *
- * ## Pinned 0.144.6 credential storage
+ * ## Pinned 0.149.1 credential storage
  *
  * The binary exposes `auth_credentials_store_mode` over `AutoAuthStorage` /
  * `keyring_storage` / `file_storage`, and in the Auto default it reads the OS keyring
@@ -45,6 +45,157 @@ export class CodexAuthPreparationError extends Error {
     super(message);
     this.name = 'CodexAuthPreparationError';
   }
+}
+
+/**
+ * The elevated Windows sandbox state could not be prepared for ClaudeClaw's
+ * isolated CODEX_HOME. Kept separate from authentication failures so callers can
+ * report the right recovery action without suggesting another login.
+ */
+export class CodexWindowsSandboxPreparationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'CodexWindowsSandboxPreparationError';
+  }
+}
+
+const WINDOWS_SANDBOX_CONFIG = '[windows]\nsandbox = "elevated"\nsandbox_private_desktop = true\n';
+const WINDOWS_SANDBOX_MARKER = path.join('.sandbox', 'setup_marker.json');
+const WINDOWS_SANDBOX_USERS = path.join('.sandbox-secrets', 'sandbox_users.json');
+
+export interface CodexWindowsSandboxPlan {
+  platform: NodeJS.Platform;
+  mode: 'not-applicable' | 'elevated';
+  ready: boolean;
+  sourceHome: string | null;
+  destinationHome: string;
+  markerSource: string | null;
+  usersSource: string | null;
+  /** Digest of the source pair. Never the decrypted sandbox credentials. */
+  digest: string;
+  /** Non-secret launch fingerprint component. */
+  identity: string;
+}
+
+/**
+ * Describe the elevated Windows sandbox state the isolated home must receive.
+ *
+ * Codex stores its elevated sandbox setup marker and DPAPI-protected sandbox-user
+ * credentials under CODEX_HOME. ClaudeClaw deliberately uses a different home so
+ * the operator's config, MCP servers, plugins, and instruction files cannot bleed
+ * into a turn. Re-running elevated setup in every isolated home is unsafe because
+ * the Windows sandbox account names are machine-wide and a new setup can rotate
+ * credentials another Codex installation is still using. Mirroring only these two
+ * setup artifacts preserves isolation while reusing the already-approved machine
+ * boundary.
+ */
+export function detectCodexWindowsSandbox(
+  destinationHome: string,
+  platform: NodeJS.Platform = process.platform,
+  sourceHome?: string,
+): CodexWindowsSandboxPlan {
+  if (platform !== 'win32') {
+    return {
+      platform,
+      mode: 'not-applicable',
+      ready: true,
+      sourceHome: null,
+      destinationHome,
+      markerSource: null,
+      usersSource: null,
+      digest: '',
+      identity: 'not-applicable',
+    };
+  }
+
+  const configuredSource = sourceHome ?? operatorCodexHome();
+  // The ClaudeClaw service may inherit the very isolated CODEX_HOME it gives its
+  // child. Only an implicit self-reference falls back to the conventional operator
+  // home. An explicit source remains authoritative and is never rewritten.
+  const resolvedSource = sourceHome === undefined
+    && path.resolve(configuredSource) === path.resolve(destinationHome)
+    ? path.join(os.homedir(), '.codex')
+    : configuredSource;
+  const markerSource = path.join(resolvedSource, WINDOWS_SANDBOX_MARKER);
+  const usersSource = path.join(resolvedSource, WINDOWS_SANDBOX_USERS);
+  const marker = readSandboxArtifact(markerSource);
+  const users = readSandboxArtifact(usersSource);
+  if (!marker || !users) {
+    return {
+      platform,
+      mode: 'elevated',
+      ready: false,
+      sourceHome: resolvedSource,
+      destinationHome,
+      markerSource: marker ? markerSource : null,
+      usersSource: users ? usersSource : null,
+      digest: '',
+      identity: 'elevated:unconfigured',
+    };
+  }
+
+  const digest = crypto.createHash('sha256')
+    .update(marker)
+    .update('\0')
+    .update(users)
+    .digest('hex');
+  return {
+    platform,
+    mode: 'elevated',
+    ready: true,
+    sourceHome: resolvedSource,
+    destinationHome,
+    markerSource,
+    usersSource,
+    digest,
+    identity: `elevated:${digest}`,
+  };
+}
+
+/**
+ * Install the minimal, versioned Windows sandbox state immediately before a Codex
+ * child starts. The users file lands before the readiness marker so a partial copy
+ * cannot advertise a complete setup. The isolated config is deterministic and owns
+ * only the native sandbox choice; all turn authority still travels in App Server
+ * requests and is verified from the response.
+ */
+export function applyCodexWindowsSandbox(plan: CodexWindowsSandboxPlan): void {
+  if (plan.platform !== 'win32' || plan.mode === 'not-applicable') return;
+
+  // Never rewrite an operator-owned config. This only occurs when an operator has
+  // explicitly pointed CODEX_HOME at ClaudeClaw's isolated home; the setup artifacts
+  // are already in place and effective-policy verification remains the final gate.
+  if (path.resolve(plan.sourceHome ?? '') === path.resolve(plan.destinationHome)) return;
+
+  writeSandboxArtifactAtomically(
+    path.join(plan.destinationHome, 'config.toml'),
+    Buffer.from(WINDOWS_SANDBOX_CONFIG, 'utf8'),
+  );
+
+  if (!plan.ready || !plan.markerSource || !plan.usersSource) return;
+  const marker = readRequiredSandboxArtifact(plan.markerSource);
+  const users = readRequiredSandboxArtifact(plan.usersSource);
+  const digest = crypto.createHash('sha256')
+    .update(marker)
+    .update('\0')
+    .update(users)
+    .digest('hex');
+  if (digest !== plan.digest) {
+    throw new CodexWindowsSandboxPreparationError(
+      'The operator Codex Windows sandbox setup changed while ClaudeClaw was preparing its isolated home; '
+      + 'send the message again to use the current setup.',
+    );
+  }
+
+  writeSandboxArtifactAtomically(
+    path.join(plan.destinationHome, WINDOWS_SANDBOX_USERS),
+    users,
+  );
+  writeSandboxArtifactAtomically(
+    path.join(plan.destinationHome, WINDOWS_SANDBOX_MARKER),
+    marker,
+  );
+  logger.info({ mode: 'elevated' }, 'codex_windows_sandbox_state_mirrored');
 }
 
 /** How the isolated home will be authenticated — limited to what can be observed. */
@@ -100,9 +251,10 @@ export function operatorCodexHome(): string {
  *
  * The point is that the Codex child must NOT load the operator's global
  * `~/.codex/config.toml`, whose MCP servers and sandbox/network settings would otherwise
- * bleed into every turn past ClaudeClaw's own allowlist and policy. The isolated home has
- * no `config.toml` at all — absence means defaults, and ClaudeClaw supplies its own
- * settings per thread — so nothing from the user config is inherited.
+ * bleed into every turn past ClaudeClaw's own allowlist and policy. On native Windows,
+ * ClaudeClaw writes a minimal deterministic `config.toml` containing only the elevated
+ * sandbox choice; elsewhere the file is absent. Per-thread settings still travel in the
+ * request, so nothing from the operator config is inherited.
  *
  * It must also live OUTSIDE every writable root. Canonicalized before the comparison so a
  * symlinked `configDir` cannot smuggle the home back inside the workspace: if it resolved
@@ -284,6 +436,53 @@ function writeAtomically(dest: string, contents: Buffer): void {
     throw new CodexAuthPreparationError(
       `Could not install the Codex credential at ${dest} (${reason(err)}). `
       + `Check that ${path.dirname(dest)} is writable, then retry.`,
+    );
+  }
+}
+
+function readSandboxArtifact(file: string): Buffer | null {
+  try {
+    const stat = fs.statSync(file);
+    if (!stat.isFile()) return null;
+    return fs.readFileSync(file);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException | undefined)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return null;
+    throw new CodexWindowsSandboxPreparationError(
+      `Could not read Codex Windows sandbox setup state at ${file} (${reason(err)}). `
+      + 'ClaudeClaw will not guess whether the elevated boundary is ready; fix the permissions, then retry.',
+    );
+  }
+}
+
+function readRequiredSandboxArtifact(file: string): Buffer {
+  const contents = readSandboxArtifact(file);
+  if (contents) return contents;
+  throw new CodexWindowsSandboxPreparationError(
+    `Codex Windows sandbox setup state disappeared from ${file} while ClaudeClaw was preparing its isolated home; retry.`,
+  );
+}
+
+function writeSandboxArtifactAtomically(dest: string, contents: Buffer): void {
+  let current: Buffer | null;
+  try {
+    current = readSandboxArtifact(dest);
+  } catch (err) {
+    if (err instanceof CodexWindowsSandboxPreparationError) throw err;
+    current = null;
+  }
+  if (current?.equals(contents)) return;
+
+  fs.mkdirSync(path.dirname(dest), { recursive: true, mode: 0o700 });
+  const tmp = `${dest}.${process.pid}.tmp`;
+  try {
+    fs.writeFileSync(tmp, contents, { mode: 0o600 });
+    fs.renameSync(tmp, dest);
+  } catch (err) {
+    try { fs.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    throw new CodexWindowsSandboxPreparationError(
+      `Could not install Codex Windows sandbox setup state at ${dest} (${reason(err)}). `
+      + 'ClaudeClaw will not start a native Windows turn without the elevated boundary.',
     );
   }
 }

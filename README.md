@@ -524,7 +524,7 @@ Design, measurements and the terms-of-service discussion:
 
 ### OpenAI (native Codex)
 
-First-class OpenAI/GPT provider on the official Codex runtime. `CODEX_TRANSPORT=app-server` uses one warm App Server process for incremental text streaming, turn-scoped cancellation, and effective-policy verification. `CODEX_TRANSPORT=sdk` uses the temporary SDK rollback path. The Codex runtime owns the full agentic loop (shell, file edits, MCP servers, web search, session resume), so this is a real multi-turn agent, not the experimental Codex ACP adapter.
+First-class OpenAI/GPT provider on the official Codex runtime. `CODEX_TRANSPORT=app-server` opts into one warm process for incremental text streaming, turn-scoped cancellation, and effective-policy verification. The SDK remains the default rollback posture until native-Windows sandboxed process-tree cancellation passes the containment gate. The Codex runtime owns the full agentic loop (shell, file edits, MCP servers, web search, session resume), so this is a real multi-turn agent, not the experimental Codex ACP adapter.
 
 **Setup (one-time), no feature flag:**
 
@@ -533,7 +533,7 @@ First-class OpenAI/GPT provider on the official Codex runtime. `CODEX_TRANSPORT=
    - **ChatGPT subscription:** `codex login` on the host (`npm i -g @openai/codex` first if needed). Flat-rate, no per-token billing.
 2. Dashboard: **Settings → Provider = OpenAI**, pick a model, **Save provider**.
 
-`CODEX_HOME` is auto-isolated per turn (under `~/.claudeclaw`, outside the project) so your global `~/.codex/config.toml` never bleeds in — **don't set it yourself.** Auth carries over from `~/.codex/auth.json` automatically.
+`CODEX_HOME` is auto-isolated per installation (under `~/.claudeclaw`, outside the project) so your global `~/.codex/config.toml` never bleeds in — **don't set it yourself.** Auth carries over from `~/.codex/auth.json` automatically. On native Windows, run `codex` once from an elevated terminal so Codex can establish its elevated sandbox. ClaudeClaw mirrors only that machine-approved setup state into the isolated home and refuses a turn unless App Server reports it ready.
 
 > **Security — untrusted input.** The read-only sandbox still lets the model *read* local files, so a prompt-injected message could try to echo on-disk credentials. Mitigations: outbound exfiltration guard redacts key/JWT-shaped strings, secrets are stripped from the model's shell env, MCP servers drop on read-only turns, network is off unless a turn is deliberately full-access, and `CODEX_HOME` is isolated. For a public bot, prefer **API-key auth with a scoped, rotatable key.**
 

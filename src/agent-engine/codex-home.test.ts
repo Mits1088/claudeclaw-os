@@ -17,8 +17,11 @@ vi.mock('../logger.js', () => ({
 import { logger } from '../logger.js';
 import {
   CodexAuthPreparationError,
+  CodexWindowsSandboxPreparationError,
   applyCodexAuth,
+  applyCodexWindowsSandbox,
   detectCodexAuth,
+  detectCodexWindowsSandbox,
   ensureIsolatedCodexHome,
   operatorCodexHome,
 } from './codex-home.js';
@@ -70,6 +73,15 @@ function writeOperatorLogin(token = TOKEN, mtimeMs?: number): string {
   return file;
 }
 
+function writeOperatorWindowsSandbox(marker = '{"version":5}', users = 'dpapi-protected-users'): void {
+  const markerPath = path.join(operatorHome, '.sandbox', 'setup_marker.json');
+  const usersPath = path.join(operatorHome, '.sandbox-secrets', 'sandbox_users.json');
+  fs.mkdirSync(path.dirname(markerPath), { recursive: true });
+  fs.mkdirSync(path.dirname(usersPath), { recursive: true });
+  fs.writeFileSync(markerPath, marker);
+  fs.writeFileSync(usersPath, users);
+}
+
 /** Everything the logger was handed this test, flattened to one searchable string. */
 function loggedText(): string {
   const mocks = [logger.info, logger.warn, logger.error, logger.debug] as unknown as Array<{ mock: { calls: unknown[][] } }>;
@@ -106,6 +118,81 @@ describe('the isolated codex home', () => {
     try { ensureIsolatedCodexHome(path.join(cwd, 'nested'), projectRoot, cwd); } catch (err) { caught = err; }
     expect(caught).toBeInstanceOf(Error);
     expect(caught).not.toBeInstanceOf(CodexAuthPreparationError);
+  });
+});
+
+describe('elevated Windows sandbox state', () => {
+  it('is a no-op away from native Windows', () => {
+    const { home } = isolated();
+    const plan = detectCodexWindowsSandbox(home, 'linux', operatorHome);
+
+    expect(plan).toMatchObject({ mode: 'not-applicable', ready: true, identity: 'not-applicable' });
+    applyCodexWindowsSandbox(plan);
+    expect(fs.existsSync(path.join(home, 'config.toml'))).toBe(false);
+  });
+
+  it('reports an unconfigured boundary without inventing setup state', () => {
+    const { home } = isolated();
+    const plan = detectCodexWindowsSandbox(home, 'win32', operatorHome);
+
+    expect(plan).toMatchObject({ mode: 'elevated', ready: false, identity: 'elevated:unconfigured' });
+    applyCodexWindowsSandbox(plan);
+    expect(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).toContain('sandbox = "elevated"');
+    expect(fs.existsSync(path.join(home, '.sandbox', 'setup_marker.json'))).toBe(false);
+  });
+
+  it('mirrors only the approved setup marker and protected sandbox-user state', () => {
+    writeOperatorWindowsSandbox();
+    const { home } = isolated();
+    const plan = detectCodexWindowsSandbox(home, 'win32', operatorHome);
+
+    expect(plan.ready).toBe(true);
+    expect(plan.identity).toMatch(/^elevated:[a-f0-9]{64}$/);
+    expect(plan.identity).not.toContain('dpapi-protected-users');
+    applyCodexWindowsSandbox(plan);
+
+    expect(fs.readFileSync(path.join(home, '.sandbox', 'setup_marker.json'), 'utf8')).toBe('{"version":5}');
+    expect(fs.readFileSync(path.join(home, '.sandbox-secrets', 'sandbox_users.json'), 'utf8')).toBe('dpapi-protected-users');
+    expect(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).toBe(
+      '[windows]\nsandbox = "elevated"\nsandbox_private_desktop = true\n',
+    );
+    expect(fs.readdirSync(home).sort()).toEqual(['.sandbox', '.sandbox-secrets', 'config.toml']);
+  });
+
+  it('fails closed when the source changes between detection and launch preparation', () => {
+    writeOperatorWindowsSandbox();
+    const { home } = isolated();
+    const plan = detectCodexWindowsSandbox(home, 'win32', operatorHome);
+    fs.writeFileSync(path.join(operatorHome, '.sandbox', 'setup_marker.json'), '{"version":6}');
+
+    expect(() => applyCodexWindowsSandbox(plan)).toThrow(CodexWindowsSandboxPreparationError);
+    expect(fs.existsSync(path.join(home, '.sandbox', 'setup_marker.json'))).toBe(false);
+  });
+
+  it('does not copy setup artifacts onto themselves', () => {
+    writeOperatorWindowsSandbox();
+    fs.writeFileSync(path.join(operatorHome, 'config.toml'), '# operator-owned\n');
+    const plan = detectCodexWindowsSandbox(operatorHome, 'win32', operatorHome);
+
+    applyCodexWindowsSandbox(plan);
+    expect(fs.readFileSync(path.join(operatorHome, '.sandbox-secrets', 'sandbox_users.json'), 'utf8'))
+      .toBe('dpapi-protected-users');
+    expect(fs.readFileSync(path.join(operatorHome, 'config.toml'), 'utf8')).toBe('# operator-owned\n');
+  });
+
+  it('does not mistake an implicitly inherited isolated CODEX_HOME for sandbox setup source', () => {
+    const { home } = isolated();
+    process.env.CODEX_HOME = home;
+    const conventionalHome = path.join(root, '.codex');
+    vi.spyOn(os, 'homedir').mockReturnValue(root);
+    const marker = path.join(conventionalHome, '.sandbox', 'setup_marker.json');
+    const users = path.join(conventionalHome, '.sandbox-secrets', 'sandbox_users.json');
+    fs.mkdirSync(path.dirname(marker), { recursive: true });
+    fs.mkdirSync(path.dirname(users), { recursive: true });
+    fs.writeFileSync(marker, '{"version":5}');
+    fs.writeFileSync(users, 'protected');
+
+    expect(detectCodexWindowsSandbox(home, 'win32').sourceHome).toBe(conventionalHome);
   });
 });
 

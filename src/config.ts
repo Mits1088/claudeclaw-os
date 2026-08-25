@@ -460,10 +460,9 @@ export const DISPATCH_ALLOW_HIVE_READ =
   (process.env.DISPATCH_ALLOW_HIVE_READ || envConfig.DISPATCH_ALLOW_HIVE_READ || 'false').toLowerCase() === 'true';
 
 // ── Codex write access (danger-full-access opt-in) ──────────────────
-// On the current native Windows host, Codex exec applies read-only instead of the
-// requested `-s workspace-write` ("rejected by user approval settings"), so the
-// safe middle sandbox is effectively unavailable there — only read-only or
-// danger-full-access are honored. When this is set, a Codex/openai turn that would
+// The opt-in App Server path uses Codex's elevated native-Windows sandbox for
+// normal workspace-write turns. The SDK default retains its older Windows posture.
+// When this is set, a Codex/openai turn that would
 // otherwise resolve to workspace-write instead resolves to 'danger-full-access',
 // which `-s danger-full-access` DOES honor (verified writing on this host).
 // Default OFF: this drops the OS sandbox + network confinement (parity with
@@ -477,8 +476,8 @@ export const CODEX_DANGER_WRITE =
 // 'sdk' (default) drives `codex exec` once per turn via @openai/codex-sdk.
 // 'app-server' keeps ONE warm `codex app-server` child per agent process and
 // verifies the effective sandbox/approval policy before every turn — the
-// visibility the SDK path cannot provide. The SDK stays the default until the
-// App Server path has soaked; it remains the documented rollback after that.
+// visibility the SDK path cannot provide. The App Server default switch remains
+// gated on native-Windows sandboxed process-tree cancellation.
 // Unrelated to the experimental `acp-codex` provider, which reaches Codex
 // through the codex-acp ACP adapter instead.
 export const CODEX_TRANSPORT =

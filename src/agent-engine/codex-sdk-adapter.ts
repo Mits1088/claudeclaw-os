@@ -298,8 +298,10 @@ function usageFromTurn(model: string, u: Usage, durationMs: number): AgentEngine
   usage.inputTokens = Math.max(0, (u.input_tokens ?? 0) - cached);
   usage.outputTokens = u.output_tokens ?? 0;
   usage.cacheReadInputTokens = cached;
+  usage.cacheCreationInputTokens = Math.max(0, u.cache_write_input_tokens ?? 0);
   usage.lastCallInputTokens = usage.inputTokens;
   usage.lastCallCacheRead = usage.cacheReadInputTokens;
+  usage.lastCallCacheCreation = usage.cacheCreationInputTokens;
   // Estimated — Codex reports tokens, not dollars. Pass the raw usage (with
   // cached still folded into input_tokens); estimateOpenAiCostUsd subtracts.
   usage.totalCostUsd = estimateOpenAiCostUsd(model, u);
@@ -768,7 +770,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
     yield {
       type: 'result',
       text: finalText(),
-      usage: usage ?? usageFromTurn(model, { input_tokens: 0, cached_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 }, Date.now() - startedAt),
+      usage: usage ?? usageFromTurn(model, { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 }, Date.now() - startedAt),
       stopReason: 'end_turn',
     };
     return { done: true, emitted, failure: '', text: finalText() ?? '', usage };

@@ -16,8 +16,11 @@ import { summarizeCommand } from './command-summary.js';
 import { requestDeliveryOf } from './codex-app-server-client.js';
 import {
   CodexAuthPreparationError,
+  CodexWindowsSandboxPreparationError,
   applyCodexAuth,
+  applyCodexWindowsSandbox,
   detectCodexAuth,
+  detectCodexWindowsSandbox,
   ensureIsolatedCodexHome,
 } from './codex-home.js';
 import {
@@ -32,6 +35,7 @@ import {
 } from './codex-app-server-policy-verify.js';
 import {
   parseEffectiveThreadPolicy,
+  parseWindowsSandboxReadiness,
   parseMcpServerStatusPage,
   parseThreadItem,
   parseThreadTokenUsage,
@@ -469,6 +473,8 @@ export interface AppServerAdapterDeps {
    * two minutes, which is not a thing to sit through in a unit test.
    */
   turnDeadlineMs?: number;
+  /** Test seam: native Windows requires an elevated-sandbox readiness preflight. */
+  platform?: NodeJS.Platform;
 }
 
 export class CodexAppServerEngineAdapter implements AgentEngine {
@@ -493,6 +499,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       // Mirroring or removing a credential now would change it underneath turns still
       // running on the warm child.
       const auth = detectCodexAuth(codexHome, !!OPENAI_API_KEY);
+      const windowsSandbox = detectCodexWindowsSandbox(codexHome, this.deps.platform ?? process.platform);
       // AWAITED, because a launch-environment change cannot be applied to a running
       // child: the outgoing generation drains its turns and its child is observed to exit
       // before the replacement is built, so the two never overlap. This turn has not
@@ -505,7 +512,11 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         // switch between subscription and API-key auth is a different launch environment
         // and rotates the process exactly once.
         authIdentity: auth.identity,
-        prepareLaunch: () => applyCodexAuth(auth),
+        sandboxIdentity: windowsSandbox.identity,
+        prepareLaunch: () => {
+          applyCodexAuth(auth);
+          applyCodexWindowsSandbox(windowsSandbox);
+        },
         // Deliberately NOT part of the launch fingerprint: changing the ceiling does
         // not require a new child, so it is read once for the process rather than
         // replacing a manager that is happily serving turns.
@@ -534,7 +545,9 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       // (EACCES)" into a generic "run `codex login`", which is the wrong thing to do about
       // a permissions problem.
       yield* this.terminalError(
-        err instanceof CodexAuthPreparationError ? message : friendlyAppServerError(message),
+        err instanceof CodexAuthPreparationError || err instanceof CodexWindowsSandboxPreparationError
+          ? message
+          : friendlyAppServerError(message),
       );
     }
   }
@@ -578,6 +591,28 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
     signal: AbortSignal | undefined,
   ): AsyncGenerator<AgentEngineEvent> {
     const client = await manager.ready();
+    const platform = this.deps.platform ?? process.platform;
+    if (platform === 'win32') {
+      const windowsSandbox = parseWindowsSandboxReadiness(
+        await client.request('windowsSandbox/readiness', undefined, THREAD_CALL_TIMEOUT_MS),
+      );
+      logger.info(
+        {
+          provider: 'openai',
+          transport: 'app-server',
+          windowsSandboxImplementation: 'elevated',
+          windowsSandboxReadiness: windowsSandbox.status,
+        },
+        'codex_windows_sandbox_readiness',
+      );
+      if (windowsSandbox.status !== 'ready') {
+        yield* this.terminalError(
+          `OpenAI (Codex) turn refused: elevated Windows sandbox readiness is ${windowsSandbox.status}. `
+          + 'Run `codex` once from an elevated terminal to repair the Windows sandbox, then restart ClaudeClaw.',
+        );
+        return;
+      }
+    }
     const persona = composeSystemPrompt(input.systemPrompt, input.runtimeIdentity);
 
     let config: Record<string, unknown>;

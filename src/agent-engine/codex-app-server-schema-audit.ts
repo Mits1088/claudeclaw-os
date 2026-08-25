@@ -281,6 +281,9 @@ export function auditBindings(read: BindingReader): SchemaAuditResult {
   // ── 6. thread/turn lifecycle: the v2 surface Phase 2 consumes ──────────────
   auditThreadLifecycle(audit, load);
 
+  // ── 6a. native Windows containment readiness ─────────────────────────────
+  auditWindowsSandboxReadiness(audit, load);
+
   // ── 6b. the MCP-authority surface a resume is verified through ─────────────
   auditMcpAuthoritySurface(audit, load);
 
@@ -303,6 +306,33 @@ export function auditBindings(read: BindingReader): SchemaAuditResult {
   }
 
   return { checks: audit.checks, failures: audit.failures };
+}
+
+function auditWindowsSandboxReadiness(audit: Audit, load: (name: string) => string | null): void {
+  const response = load('v2/WindowsSandboxReadinessResponse');
+  if (!response) {
+    audit.fail('WindowsSandboxReadinessResponse exists', 'native Windows turns cannot prove containment readiness');
+  } else {
+    audit.requireField(
+      response,
+      'WindowsSandboxReadinessResponse',
+      'status',
+      /WindowsSandboxReadiness/,
+      'WindowsSandboxReadiness',
+    );
+  }
+
+  const readiness = load('v2/WindowsSandboxReadiness');
+  if (!readiness) {
+    audit.fail('WindowsSandboxReadiness exists', 'the readiness status union is missing');
+  } else {
+    audit.requireExactEnum(
+      readiness,
+      'WindowsSandboxReadiness',
+      ['ready', 'notConfigured', 'updateRequired'],
+      'the runtime parser rejects unknown values before thread/start',
+    );
+  }
 }
 
 /**

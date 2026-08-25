@@ -62,6 +62,7 @@ class FakeServer {
   handlers: Record<string, (params: any) => unknown> = {
     'thread/unsubscribe': () => ({ status: 'notLoaded' }),
     'mcpServerStatus/list': () => ({ data: [], nextCursor: null }),
+    'windowsSandbox/readiness': () => ({ status: 'ready' }),
   };
   released: string[] = [];
   acquired: string[] = [];
@@ -244,6 +245,37 @@ function scriptedServer(opts: {
   return server;
 }
 
+describe('native Windows containment preflight', () => {
+  it('requires elevated sandbox readiness before thread/start', async () => {
+    const server = scriptedServer();
+    server.handlers['windowsSandbox/readiness'] = () => ({ status: 'updateRequired' });
+    const adapter = new CodexAppServerEngineAdapter({ manager: server.asManager(), platform: 'win32' });
+    const events: AgentEngineEvent[] = [];
+
+    for await (const event of adapter.invoke(baseInput())) events.push(event);
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'result',
+      stopReason: 'error',
+      text: expect.stringContaining('updateRequired'),
+    });
+    expect(server.requests.map((request) => request.method)).toEqual(['windowsSandbox/readiness']);
+    expect(server.slotsReleased).toBe(1);
+  });
+
+  it('starts only after readiness is proven', async () => {
+    const server = scriptedServer();
+    const adapter = new CodexAppServerEngineAdapter({ manager: server.asManager(), platform: 'win32' });
+    const events: AgentEngineEvent[] = [];
+
+    for await (const event of adapter.invoke(baseInput())) events.push(event);
+
+    expect(events.at(-1)?.type).toBe('result');
+    expect(server.requests[0]).toEqual({ method: 'windowsSandbox/readiness', params: undefined });
+    expect(server.requests.some((request) => request.method === 'thread/start')).toBe(true);
+  });
+});
+
 /** Minimal client stub for driving the real manager's server-request handler. */
 class FakeManagerClient {
   serverRequest!: (request: JsonRpcRequest) => Promise<
@@ -253,7 +285,11 @@ class FakeManagerClient {
   async shutdown(): Promise<void> {}
 }
 
-beforeEach(() => vi.clearAllMocks());
+beforeEach(() => {
+  vi.clearAllMocks();
+  vi.restoreAllMocks();
+  vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+});
 
 describe('thread configuration per capability profile', () => {
   it('tool-less disables shell, host apps and web search, and sends no MCP', () => {

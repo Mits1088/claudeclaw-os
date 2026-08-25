@@ -362,7 +362,7 @@ export class CodexAppServerClient {
         // Structured user input (`item/tool/requestUserInput`) is experimental in
         // this baseline, so it must be opted into.
         experimentalApi: true,
-        // REQUIRED by the 0.144.6 schema — not optional, no default. False because
+        // REQUIRED by the 0.149.1 schema — not optional, no default. False because
         // ClaudeClaw does not implement `attestation/generate`. Neither field is
         // caller-overridable; both are release invariants.
         requestAttestation: false,
@@ -384,7 +384,7 @@ export class CodexAppServerClient {
       // drop, and resolve start() for a child nobody will use.
       this.assertGenerationLive(gen, 'initialization');
 
-      // No `params` member: the 0.144.6 ClientNotification variant has none.
+      // No `params` member: the 0.149.1 ClientNotification variant has none.
       this.send(gen, { method: CONSUMED_CLIENT_NOTIFICATION });
 
       // Re-checked after the write as well: shutdown() may have raced the send.

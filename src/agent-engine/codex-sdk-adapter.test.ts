@@ -69,10 +69,10 @@ import { CodexSdkEngineAdapter } from './codex-sdk-adapter.js';
 import { logger } from '../logger.js';
 import type { AgentEngineEvent, AgentTurnInput } from './types.js';
 
-function turnCompleted(usage?: Partial<{ input_tokens: number; cached_input_tokens: number; output_tokens: number; reasoning_output_tokens: number }>) {
+function turnCompleted(usage?: Partial<{ input_tokens: number; cached_input_tokens: number; cache_write_input_tokens: number; output_tokens: number; reasoning_output_tokens: number }>) {
   return {
     type: 'turn.completed',
-    usage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 20, reasoning_output_tokens: 5, ...usage },
+    usage: { input_tokens: 100, cached_input_tokens: 40, cache_write_input_tokens: 10, output_tokens: 20, reasoning_output_tokens: 5, ...usage },
   };
 }
 
@@ -139,7 +139,9 @@ describe('CodexSdkEngineAdapter — happy path', () => {
     // inputTokens + cacheReadInputTokens = 100 = the true context size.
     expect(usage.usage.inputTokens).toBe(60);
     expect(usage.usage.cacheReadInputTokens).toBe(40);
+    expect(usage.usage.cacheCreationInputTokens).toBe(10);
     expect(usage.usage.lastCallInputTokens).toBe(60);
+    expect(usage.usage.lastCallCacheCreation).toBe(10);
     expect(usage.usage.inputTokens + usage.usage.cacheReadInputTokens).toBe(100);
     expect(usage.usage.outputTokens).toBe(20);
     expect(usage.usage.model).toBe('gpt-5.5');
