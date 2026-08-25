@@ -25,6 +25,32 @@ echo ""
 # Ensure logs directory exists
 mkdir -p "$LOG_DIR"
 
+# An agent created through the dashboard or `agent-create` writes its plist
+# straight to ~/Library/LaunchAgents and never into launchd/. "Absent from
+# launchd/" is therefore the normal state of every user-created agent, not a
+# sign that it is stale. Removing those plists unregisters agents the user is
+# still running, so treat an existing agent directory as proof the agent is live.
+#
+# Resolve that directory the way the runtime does (getClaudeclawConfig,
+# src/config.ts): the process environment wins, .env is consulted only when the
+# process value is absent, and ~/.claudeclaw is the last resort. Reading .env
+# over a live process value would point the lookup below at a stale directory
+# and delete the plists of the very agents this block exists to protect.
+CONFIG_DIR="${CLAUDECLAW_CONFIG:-}"
+if [ -z "$CONFIG_DIR" ] && [ -f "$PROJECT_DIR/.env" ]; then
+  # Strip one layer of surrounding quotes (mirrors readEnvFile in src/env.ts).
+  CONFIG_DIR=$(grep '^CLAUDECLAW_CONFIG=' "$PROJECT_DIR/.env" 2>/dev/null | cut -d'=' -f2- | sed -E "s/^'(.*)'\$/\1/; s/^\"(.*)\"\$/\1/")
+fi
+# Expand a leading ~ on whichever value won, as expandHome does at runtime.
+# Quotes are stripped first, so a single-quoted path keeps its layout intact.
+CONFIG_DIR=$(printf '%s' "${CONFIG_DIR:-$HOME/.claudeclaw}" | sed "s|^~|$HOME|")
+
+# An agent directory lives either under CLAUDECLAW_CONFIG or in the repo,
+# depending on how it was created (see createAgent in src/agent-create.ts).
+agent_exists() {
+  [ -d "$CONFIG_DIR/agents/$1" ] || [ -d "$PROJECT_DIR/agents/$1" ]
+}
+
 # Clean up stale/orphaned claudeclaw agents not in the current launchd/ directory
 echo "Cleaning up stale agents..."
 for existing in "$LAUNCH_AGENTS_DIR"/com.claudeclaw.*.plist; do
@@ -32,6 +58,12 @@ for existing in "$LAUNCH_AGENTS_DIR"/com.claudeclaw.*.plist; do
   label=$(basename "$existing" .plist)
   # Check if this plist has a corresponding file in our launchd/ dir
   if [ ! -f "$LAUNCHD_DIR/$label.plist" ]; then
+    agent_id="${label#com.claudeclaw.}"
+    # scripts/agent-service.sh labels its services com.claudeclaw.agent-<id>
+    if agent_exists "$agent_id" || agent_exists "${agent_id#agent-}"; then
+      echo "  Keeping user-created agent: $label"
+      continue
+    fi
     echo "  Removing stale agent: $label"
     launchctl unload "$existing" 2>/dev/null || true
     rm -f "$existing"
