@@ -126,6 +126,14 @@ async function main() {
     const availability = checkProviderAvailability(provider);
     if (availability.ok) ok(`Agent provider: ${providerLabel}`);
     else fail(`Agent provider: ${availability.error ?? 'OpenAI not available'}`);
+  } else if (provider.type === 'anthropic-compatible') {
+    // Credential and endpoint live in .env, which is per-machine and NOT
+    // synced, while agent.yaml IS. An agent pointed at this provider on one
+    // machine can therefore be keyless on the other — so status names the
+    // endpoint it resolved, and says plainly when there is none.
+    const availability = checkProviderAvailability(provider);
+    if (availability.ok) ok(`Agent provider: ${providerLabel} — ${availability.setupHint ?? ''}`);
+    else fail(`Agent provider: ${availability.error ?? 'Z.ai (GLM) provider not configured'}`);
   } else if (provider.command && commandExists(provider.command)) {
     ok(`Agent provider: ${providerLabel}`);
   } else {
@@ -257,7 +265,7 @@ async function main() {
         ? commandExists('gemini')
         : provider.type === 'acp-codex'
           ? commandExists('codex-acp')
-          : provider.type === 'openai'
+          : provider.type === 'openai' || provider.type === 'anthropic-compatible'
             ? checkProviderAvailability(provider).ok
             : !!provider.command && commandExists(provider.command);
 

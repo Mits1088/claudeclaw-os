@@ -116,6 +116,7 @@ async function selectProvider(): Promise<ProviderConfig> {
   console.log('  5. Gemini CLI');
   console.log('  6. Codex ACP adapter');
   console.log('  7. Custom ACP command');
+  console.log('  8. Z.ai GLM (full Claude Code tool surface; key in .env)');
   console.log();
 
   const answer = (await ask('Select provider', '1')).toLowerCase();
@@ -130,6 +131,14 @@ async function selectProvider(): Promise<ProviderConfig> {
   }
   if (answer === '5' || answer === 'gemini' || answer === 'g') return { type: 'gemini' };
   if (answer === '6' || answer === 'codex' || answer === 'acp-codex') return { type: 'acp-codex' };
+  if (answer === '8' || answer === 'zai' || answer === 'z.ai' || answer === 'glm' || answer === 'anthropic-compatible' || answer === 'compat') {
+    // No model prompt: the model is set in .env alongside the credential,
+    // because it has to match what that endpoint actually serves. An optional
+    // endpoint override is validated at call time against the allowlist, so a
+    // typo here fails the turn loudly instead of silently reaching elsewhere.
+    const baseUrl = (await ask('Endpoint (blank = z.ai built-in default; other Anthropic-compatible hosts are advanced config)', '')).trim();
+    return baseUrl ? { type: 'anthropic-compatible', baseUrl } : { type: 'anthropic-compatible' };
+  }
   if (answer === '7' || answer === 'acp' || answer === 'custom') {
     const command = await ask('ACP command');
     if (!command) throw new Error('Custom ACP provider requires a command.');
@@ -193,6 +202,9 @@ async function main(): Promise<void> {
     console.log('OpenAI (native Codex) — a stable, ungated provider. No feature flag needed.');
     console.log('Transport: CODEX_TRANSPORT=app-server, or sdk for the temporary rollback path.');
     console.log('Auth: `codex login` (ChatGPT subscription) or OPENAI_API_KEY in .env.');
+  } else if (provider.type === 'anthropic-compatible') {
+    console.log('Z.ai GLM — set ANTHROPIC_COMPAT_API_KEY in .env; the model defaults to glm-5.3[1m].');
+    console.log('Other Anthropic-compatible endpoints are advanced configuration: ANTHROPIC_COMPAT_ALLOW_CUSTOM_ENDPOINTS=true plus ANTHROPIC_COMPAT_ALLOWED_HOSTS.');
   }
 
   const targets = target === 'all' ? agents : [target];

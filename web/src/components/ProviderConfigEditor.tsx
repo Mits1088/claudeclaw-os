@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'preact/hooks';
 import { useFetch } from '@/lib/useFetch';
 
 export interface ProviderConfig {
-  type: 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp';
+  type: 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp' | 'anthropic-compatible';
   model?: string;
   runtimeMode?: string;
   thinkingMode?: string;

@@ -570,6 +570,11 @@ export function createSignalBot(): SignalBot {
             result.usage.totalCostUsd,
             result.usage.didCompact,
             AGENT_ID,
+            null,
+            result.usage.cacheCreationInputTokens,
+            // Without this the turn is recorded as priced money even when
+            // nobody priced it — see AgentEngineUsage.costSource.
+            { costSource: result.usage.costSource },
           );
         } catch (dbErr) {
           logger.error({ err: dbErr }, 'Failed to save token usage (Signal)');

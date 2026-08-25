@@ -39,17 +39,19 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { DISPATCH_ALLOW_HIVE_READ } from './config.js';
 import { renderHelp } from './cli-reference.js';
 import { dispatchMcpServerDescriptor as descriptor } from './cli-descriptors.js';
-import { dispatchToolDefinitions, type DispatchToolDefinition } from './dispatch-tools.js';
+import { dispatchToolDefinitions, EGRESS_GATED_TOOLS, type DispatchToolDefinition } from './dispatch-tools.js';
 
 /** Server name; tools surface to the model as `mcp__claudeclaw-dispatch__<name>`. */
 export const DISPATCH_MCP_SERVER_NAME = 'claudeclaw-dispatch';
 
 /**
- * Tools withheld from the out-of-process bridge unless explicitly enabled,
- * because they egress shared data to a non-Claude vendor. See
- * `DISPATCH_ALLOW_HIVE_READ`.
+ * Tools withheld from a non-Claude vendor unless explicitly enabled, because
+ * they egress shared data. The list moved next to the tool definitions when
+ * the in-process path started enforcing it too — keeping it here as well would
+ * have meant two lists, or an import cycle. Re-exported so this module's
+ * public surface is unchanged. See `DISPATCH_ALLOW_HIVE_READ`.
  */
-export const EGRESS_GATED_TOOLS = new Set<string>(['hive_read']);
+export { EGRESS_GATED_TOOLS } from './dispatch-tools.js';
 
 /**
  * The tool set this bridge exposes: all of `dispatchToolDefinitions()`, minus

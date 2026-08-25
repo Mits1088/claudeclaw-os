@@ -49,15 +49,17 @@ export function buildCostFooter(
     return `\n\n[${modelLabel} | ${inTokens} in | ${outTokens} out]`;
   }
 
+  // An em dash, not "$0.00": a turn nobody priced is not a free turn, and the
+  // footer is the one place a reader forms an intuition about what a turn cost.
+  const cost = usage.costSource === 'provider' ? `$${usage.totalCostUsd.toFixed(2)}` : '—';
+
   if (mode === 'cost') {
-    const cost = `$${usage.totalCostUsd.toFixed(2)}`;
     return `\n\n[${modelLabel} | ${cost}]`;
   }
 
   if (mode === 'full') {
     const inTokens = formatTokens(usage.inputTokens);
     const outTokens = formatTokens(usage.outputTokens);
-    const cost = `$${usage.totalCostUsd.toFixed(2)}`;
     return `\n\n[${modelLabel} | ${inTokens} in | ${outTokens} out | ${cost}]`;
   }
 

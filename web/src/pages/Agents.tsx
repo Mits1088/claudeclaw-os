@@ -526,6 +526,7 @@ function providerLabel(provider?: ProviderConfig): string {
   if (provider.type === 'acp-codex') return 'Codex';
   if (provider.type === 'openai') return 'OpenAI';
   if (provider.type === 'openrouter') return 'OpenRouter';
+  if (provider.type === 'anthropic-compatible') return 'Z.ai (GLM)';
   return 'ACP';
 }
 

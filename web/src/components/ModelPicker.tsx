@@ -11,12 +11,16 @@ const PROVIDER_LABELS: Record<string, string> = {
   opencode: 'OpenCode default',
   gemini: 'Gemini CLI default',
   'acp-codex': 'Codex default',
+  // The model is set in .env (ANTHROPIC_COMPAT_MODEL), not per agent: it has to
+  // match what the endpoint actually serves, which the picker cannot know.
+  // Z.ai / GLM is the built-in, tested path; the endpoint stays advanced config.
+  'anthropic-compatible': 'Z.ai GLM (set in .env)',
   openai: 'OpenAI default',
   acp: 'ACP default',
 };
 
 interface ProviderStatus {
-  providerType: 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp';
+  providerType: 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp' | 'anthropic-compatible';
   label: string;
   model: string;
 }

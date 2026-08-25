@@ -4,7 +4,17 @@ import { existsSync } from 'node:fs';
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
 import { logger } from '../logger.js';
+import {
+  buildCompatEnv,
+  compatProviderEnabled,
+  CompatConfigError,
+  getCompatConfig,
+  withConfigDir,
+} from '../anthropic-compat-env.js';
+import { ensureCompatConfigDir } from '../anthropic-compat-config-dir.js';
+import { STORE_DIR } from '../config.js';
 import { authError, isAuthErrorText } from '../errors.js';
+import { getScrubbedSdkEnv } from '../security.js';
 import { composeSystemPrompt } from '../runtime-identity.js';
 
 import type {
@@ -364,6 +374,39 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
       input.allowDangerouslySkipPermissions ??
       (permissionMode === 'bypassPermissions' ? true : undefined);
 
+    // ── The anthropic-compatible seam ────────────────────────────────────
+    // An anthropic-compatible endpoint is this same Claude Code subprocess
+    // with a different counterpart, a different credential and its own tool
+    // surface. Everything provider-specific about it is this one expression;
+    // nothing else in the adapter knows the provider exists.
+    //
+    // Resolution happens BEFORE query() on purpose: a misconfigured endpoint
+    // must kill the turn while the credential is still in this process. A turn
+    // that starts and then fails has already sent it.
+    //
+    // The env fallback is NOT optional. Callers may pass no `env` at all
+    // (memory ingest, the voice bridge); without the fallback such a turn
+    // inherits this process's whole environment — CLAUDE_CODE_OAUTH_TOKEN
+    // included — and hands it to a third-party vendor.
+    const isCompat = input.provider?.type === 'anthropic-compatible';
+
+    // The kill switch is checked FIRST and per turn, never cached: a switch
+    // that only takes effect after a service restart is useless during an
+    // incident, and its message must not be masked by a config error.
+    if (isCompat && !compatProviderEnabled()) {
+      throw new CompatConfigError(
+        'The anthropic-compatible provider is switched off (ANTHROPIC_COMPAT_ENABLED=false). '
+        + 'No new turns are accepted.',
+      );
+    }
+
+    const turnEnv = isCompat
+      ? buildCompatEnv(
+        input.env ?? getScrubbedSdkEnv(),
+        withConfigDir(getCompatConfig(input.provider.baseUrl), ensureCompatConfigDir(STORE_DIR)),
+      )
+      : input.env;
+
     // Only wired when the host supplies an AskUserQuestion resolver (the
     // Telegram interactive path). Other paths leave it undefined, so their
     // tool handling is unchanged.
@@ -396,7 +439,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
             : {}),
           ...(canUseTool ? { canUseTool } : {}),
           ...(input.maxTurns && input.maxTurns > 0 ? { maxTurns: input.maxTurns } : {}),
-          ...(input.env ? { env: input.env } : {}),
+          ...(turnEnv ? { env: turnEnv } : {}),
           ...(input.mcpServers && Object.keys(input.mcpServers).length ? { mcpServers: input.mcpServers } : {}),
           ...(input.includePartialMessages ? { includePartialMessages: true } : {}),
           ...(input.model ? { model: input.model } : {}),
@@ -589,7 +632,12 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           outputTokens: evUsage.output_tokens ?? 0,
           cacheReadInputTokens: evUsage.cache_read_input_tokens ?? 0,
           cacheCreationInputTokens: evUsage.cache_creation_input_tokens ?? 0,
-          totalCostUsd: (ev.total_cost_usd as number) ?? 0,
+          // For a compat turn the SDK still reports a dollar figure, but it is
+          // Anthropic list pricing applied to somebody else's model. Refusing
+          // to carry that number is the point: a wrong price is worse than no
+          // price, because it silently enters every total.
+          totalCostUsd: isCompat ? 0 : ((ev.total_cost_usd as number) ?? 0),
+          costSource: isCompat ? 'unknown' as const : 'provider' as const,
           didCompact,
           preCompactTokens,
           lastCallCacheRead,

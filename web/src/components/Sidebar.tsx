@@ -122,7 +122,7 @@ interface Health {
 }
 
 interface ProviderStatus {
-  providerType: 'claude' | 'opencode' | 'openrouter' | 'gemini' | 'acp-codex' | 'openai' | 'acp';
+  providerType: 'claude' | 'opencode' | 'openrouter' | 'gemini' | 'acp-codex' | 'openai' | 'acp' | 'anthropic-compatible';
   label: string;
   model: string;
   runtime: string;

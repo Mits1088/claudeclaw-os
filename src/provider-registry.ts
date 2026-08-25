@@ -38,6 +38,23 @@ export interface ProviderDescriptor {
 export const PROVIDER_REGISTRY: Record<ProviderType, ProviderDescriptor> = {
   claude: { type: 'claude', label: 'Claude', tier: 'stable', enablement: 'always' },
   openai: { type: 'openai', label: 'OpenAI', tier: 'stable', enablement: 'auth' },
+  // Experimental TIER (unproven model behavior on this runtime) but `auth`
+  // ENABLEMENT, not `acp-beta`: it is not an ACP provider and has none of the
+  // ACP family's latency or protocol caveats, so gating it behind ENABLE_ACP
+  // would be filing it under the wrong problem. Auth is enforced at call time
+  // — a missing key fails the turn loudly rather than silently downgrading.
+  //
+  // The user-facing feature is Z.ai / GLM — the built-in, tested endpoint and
+  // the default models. `anthropic-compatible` is the internal abstraction the
+  // type id keeps; other endpoints speaking the same protocol remain available
+  // as advanced configuration (.env), which is why the label names the vendor
+  // users actually configure, not the wire protocol.
+  'anthropic-compatible': {
+    type: 'anthropic-compatible',
+    label: 'Z.ai (GLM)',
+    tier: 'experimental',
+    enablement: 'auth',
+  },
   'acp-codex': { type: 'acp-codex', label: 'Codex (ACP)', tier: 'experimental', enablement: 'acp-beta' },
   gemini: { type: 'gemini', label: 'Gemini', tier: 'experimental', enablement: 'acp-beta' },
   opencode: { type: 'opencode', label: 'OpenCode', tier: 'experimental', enablement: 'acp-beta' },

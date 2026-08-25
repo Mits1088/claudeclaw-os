@@ -1,3 +1,4 @@
+import { compatModelName } from './anthropic-compat-env.js';
 import { agentProvider, DEFAULT_OPENAI_MODEL, DEFAULT_OPENROUTER_MODEL } from './config.js';
 import {
   DEFAULT_CLAUDE_MODEL,
@@ -31,6 +32,10 @@ export function defaultModelForProvider(
     case 'openai': return DEFAULT_OPENAI_MODEL;
     case 'acp-codex': return DEFAULT_CODEX_MODEL;
     case 'openrouter': return DEFAULT_OPENROUTER_MODEL;
+    // The model name is also set in the subprocess env (ANTHROPIC_MODEL et al.);
+    // returning it here keeps the reported runtime identity and the dashboard
+    // honest about which model actually ran.
+    case 'anthropic-compatible': return compatModelName();
     default: return undefined;
   }
 }

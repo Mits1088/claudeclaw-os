@@ -24,6 +24,12 @@ export class EngineFactory {
     if (!providerRunnable(provider.type)) return new ClaudeSdkEngineAdapter();
     switch (provider.type) {
       case 'claude': return new ClaudeSdkEngineAdapter();
+      // Same adapter as Claude, and that is the whole design: the Claude SDK
+      // already spawns the real Claude Code subprocess, so pointing that
+      // subprocess at an anthropic-compatible endpoint needs a different
+      // environment, not a different engine. An explicit case rather than
+      // falling through — `default` is ACP, which would be silently wrong.
+      case 'anthropic-compatible': return new ClaudeSdkEngineAdapter();
       // Native OpenAI: SDK by default; App Server behind the opt-in transport flag
       // so the rollback is a config change, not a deploy.
       case 'openai':
@@ -50,5 +56,9 @@ export class EngineFactory {
 export function engineSupportsSystemPrompt(provider: ProviderConfig | undefined): boolean {
   if (!provider) return !ENABLE_ACP; // no provider → Claude-only world unless ACP is on
   if (!providerRunnable(provider.type)) return true; // falls back to the Claude adapter
-  return provider.type === 'claude' || provider.type === 'openai' || provider.type === 'openrouter';
+  // anthropic-compatible runs on the Claude SDK adapter, so it models a system
+  // prompt like Claude does. Without this it would be treated as ACP and the
+  // caller would skip the persona entirely — an agent with no identity.
+  return provider.type === 'claude' || provider.type === 'openai'
+    || provider.type === 'openrouter' || provider.type === 'anthropic-compatible';
 }

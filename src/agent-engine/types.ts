@@ -27,6 +27,20 @@ export interface AgentEngineUsage {
   cacheReadInputTokens: number;
   cacheCreationInputTokens: number;
   totalCostUsd: number;
+  /**
+   * Where `totalCostUsd` comes from, and therefore whether it may be summed.
+   *
+   *  - `provider`  — the runtime priced this turn. Meaningful money.
+   *  - `unknown`   — nobody priced it. `totalCostUsd` is 0 as a placeholder and
+   *                  must be EXCLUDED from totals, not added as zero.
+   *
+   * The distinction is load-bearing for anthropic-compatible turns: the Claude
+   * SDK still emits a `total_cost_usd`, but it is Anthropic list pricing
+   * applied to a third-party model — a number that looks like money and is
+   * not. Summing it would misreport spend; storing 0 without this marker would
+   * report a paid turn as free.
+   */
+  costSource: 'provider' | 'unknown';
   didCompact: boolean;
   preCompactTokens: number | null;
   lastCallCacheRead: number;
@@ -214,6 +228,12 @@ export function emptyUsage(): AgentEngineUsage {
     cacheReadInputTokens: 0,
     cacheCreationInputTokens: 0,
     totalCostUsd: 0,
+    // 'provider' keeps every existing engine's reporting exactly as it was.
+    // Engines that genuinely cannot price a turn opt in to 'unknown'; today
+    // only the anthropic-compatible path does, and widening that judgement to
+    // the ACP family would change cost reporting this change has no business
+    // touching.
+    costSource: 'provider',
     didCompact: false,
     preCompactTokens: null,
     lastCallCacheRead: 0,

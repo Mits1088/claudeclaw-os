@@ -1903,6 +1903,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
             numTurns: result.usage.numTurns,
             stopReason: result.usage.stopReasonDetail,
             isError: result.usage.isError,
+            costSource: result.usage.costSource,
           },
         );
       } catch (dbErr) {
@@ -3203,6 +3204,7 @@ async function processDashboardMessage(
             numTurns: result.usage.numTurns,
             stopReason: result.usage.stopReasonDetail,
             isError: result.usage.isError,
+            costSource: result.usage.costSource,
           },
         );
       } catch (dbErr) {

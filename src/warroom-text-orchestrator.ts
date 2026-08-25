@@ -67,7 +67,7 @@ import {
   type RouterContext,
   type RouterDecision,
 } from './warroom-text-router.js';
-import { EngineFactory } from './agent-engine/index.js';
+import { EngineFactory, type AgentEngineEvent } from './agent-engine/index.js';
 import { defaultModelForProvider, getSelectedProviderConfig } from './active-provider.js';
 import {
   decodeProviderSession,
@@ -1389,6 +1389,85 @@ export function buildWarRoomRuntimeToolOptions<T>(
   };
 }
 
+/**
+ * What a war-room `result` event contributes to `token_usage`.
+ *
+ * Two persistence paths existed here, and the wrong one was load-bearing: the
+ * Claude SDK attaches `raw` to every event it emits, so a war-room turn always
+ * fell through to the raw branch and never reached the normalized one. That
+ * branch read `raw.total_cost_usd` — for an anthropic-compatible turn, Anthropic
+ * list pricing applied to somebody else's model — and stored it without a
+ * `costSource`, which the column defaults to 'provider'. A GLM turn therefore
+ * entered the totals as real money, defeating the very invariant the compatible
+ * provider introduces.
+ *
+ * So: normalized usage wins wherever the adapter produced it, and carries its
+ * own `costSource`. The raw fields remain only as a fallback for an event that
+ * genuinely lacks normalized usage, and such an event is priced by the runtime
+ * by definition — nothing but a Claude-shaped SDK result carries these fields.
+ */
+export interface WarRoomUsageRecord {
+  inputTokens: number;
+  outputTokens: number;
+  cacheRead: number;
+  contextTokens: number;
+  costUsd: number;
+  didCompact: boolean;
+  contextWindow: number | null;
+  cacheCreation: number;
+  telemetry: {
+    model?: string | null;
+    durationMs?: number;
+    durationApiMs?: number;
+    numTurns?: number;
+    stopReason?: string | null;
+    isError?: boolean;
+    costSource?: 'provider' | 'unknown';
+  };
+}
+
+export function warRoomUsageRecord(ev: AgentEngineEvent): WarRoomUsageRecord | null {
+  const usage = 'usage' in ev ? ev.usage : null;
+  if (usage) {
+    return {
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      cacheRead: usage.cacheReadInputTokens,
+      contextTokens: usage.lastCallCacheRead + usage.lastCallInputTokens,
+      costUsd: usage.totalCostUsd,
+      didCompact: usage.didCompact,
+      contextWindow: usage.contextWindow,
+      cacheCreation: usage.cacheCreationInputTokens,
+      telemetry: {
+        model: usage.model,
+        durationMs: usage.durationMs,
+        durationApiMs: usage.durationApiMs,
+        numTurns: usage.numTurns,
+        stopReason: usage.stopReasonDetail,
+        isError: usage.isError,
+        costSource: usage.costSource,
+      },
+    };
+  }
+
+  const raw = ev.raw as Record<string, unknown> | undefined;
+  const rawUsage = raw?.['usage'] as Record<string, number> | undefined;
+  if (!rawUsage) return null;
+  const inputTokens = rawUsage['input_tokens'] ?? 0;
+  const cacheRead = rawUsage['cache_read_input_tokens'] ?? 0;
+  return {
+    inputTokens,
+    outputTokens: rawUsage['output_tokens'] ?? 0,
+    cacheRead,
+    contextTokens: cacheRead + inputTokens,
+    costUsd: (raw?.['total_cost_usd'] as number | undefined) ?? 0,
+    didCompact: false,
+    contextWindow: null,
+    cacheCreation: rawUsage['cache_creation_input_tokens'] ?? 0,
+    telemetry: {},
+  };
+}
+
 async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   const {
     agentId, meetingId, userText, originalUserText, meetingChatId,
@@ -1728,27 +1807,21 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
           stopReason = ev.stopReason;
           gotResult = true;
           try {
-            if (ev.usage) {
+            const rec = warRoomUsageRecord(ev);
+            if (rec) {
               saveTokenUsage(
                 sessionChatId,
                 undefined,
-                ev.usage.inputTokens,
-                ev.usage.outputTokens,
-                ev.usage.cacheReadInputTokens,
-                ev.usage.lastCallCacheRead + ev.usage.lastCallInputTokens,
-                ev.usage.totalCostUsd,
-                ev.usage.didCompact,
+                rec.inputTokens,
+                rec.outputTokens,
+                rec.cacheRead,
+                rec.contextTokens,
+                rec.costUsd,
+                rec.didCompact,
                 agentId,
-                ev.usage.contextWindow,
-                ev.usage.cacheCreationInputTokens,
-                {
-                  model: ev.usage.model,
-                  durationMs: ev.usage.durationMs,
-                  durationApiMs: ev.usage.durationApiMs,
-                  numTurns: ev.usage.numTurns,
-                  stopReason: ev.usage.stopReasonDetail,
-                  isError: ev.usage.isError,
-                },
+                rec.contextWindow,
+                rec.cacheCreation,
+                rec.telemetry,
               );
             }
           } catch (err) {
@@ -1876,25 +1949,24 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         // all run for free as far as the dashboard is concerned and
         // today/lifetime totals undercount.
         try {
-          const evUsage = (e as any).usage as Record<string, number> | undefined;
-          const totalCost = (e as any).total_cost_usd as number | undefined;
-          if (evUsage) {
-            const inputTokens = evUsage['input_tokens'] ?? 0;
-            const outputTokens = evUsage['output_tokens'] ?? 0;
-            const cacheRead = evUsage['cache_read_input_tokens'] ?? 0;
-            const cacheCreation = evUsage['cache_creation_input_tokens'] ?? 0;
+          // Normalized usage first — see warRoomUsageRecord(). Reading the raw
+          // SDK fields here is what leaked Anthropic list pricing into
+          // compatible-provider turns.
+          const rec = warRoomUsageRecord(ev);
+          if (rec) {
             saveTokenUsage(
               sessionChatId,
               undefined,
-              inputTokens,
-              outputTokens,
-              cacheRead,
-              cacheRead + inputTokens,
-              totalCost ?? 0,
-              false,
+              rec.inputTokens,
+              rec.outputTokens,
+              rec.cacheRead,
+              rec.contextTokens,
+              rec.costUsd,
+              rec.didCompact,
               agentId,
-              null,
-              cacheCreation,
+              rec.contextWindow,
+              rec.cacheCreation,
+              rec.telemetry,
             );
           }
         } catch (err) {

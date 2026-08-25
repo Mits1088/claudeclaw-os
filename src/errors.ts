@@ -15,6 +15,11 @@ export type ErrorCategory =
   | 'network'
   | 'billing'
   | 'overloaded'
+  // The operator's provider configuration is wrong (missing or quoted
+  // credential, an endpoint that is not on the allowlist, the provider
+  // switched off). Never retryable: no number of attempts fixes a config
+  // file, and retrying a refused endpoint would keep offering it a credential.
+  | 'provider_misconfigured'
   | 'unknown';
 
 export interface ErrorRecovery {
@@ -186,6 +191,23 @@ export function classifyError(err: unknown, contextTokens?: number): AgentError 
 
   const raw = err instanceof Error ? err : new Error(String(err));
   const text = raw.message;
+
+  // A CompatConfigError says the operator's configuration is wrong: no
+  // credential, a quoted one, an endpoint that is not allowed, or the kill
+  // switch thrown. Retrying cannot fix any of those, and retrying the endpoint
+  // case would repeatedly offer a credential to a host that was refused on
+  // purpose. Checked first, before any text heuristic can mistake it for a
+  // transient failure. Matched by name rather than by importing the class so
+  // errors.ts stays free of a dependency on the provider module.
+  if (raw.name === 'CompatConfigError') {
+    return new AgentError('provider_misconfigured', {
+      shouldRetry: false,
+      shouldNewChat: false,
+      shouldSwitchModel: false,
+      retryAfterMs: 0,
+      userMessage: text,
+    }, raw);
+  }
 
   // Context exhaustion: process exits with code 1 when context is full
   if (text.includes('exited with code 1') && contextTokens && contextTokens > 0) {

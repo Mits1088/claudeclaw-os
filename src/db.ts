@@ -171,6 +171,9 @@ function createSchema(database: Database.Database): void {
       context_tokens  INTEGER NOT NULL DEFAULT 0,
       context_window  INTEGER,
       cost_usd        REAL NOT NULL DEFAULT 0,
+      -- 'provider' = a runtime priced this turn; 'unknown' = nobody did
+      -- and cost_usd is a placeholder that must stay out of totals.
+      cost_source     TEXT NOT NULL DEFAULT 'provider',
       did_compact     INTEGER NOT NULL DEFAULT 0,
       model           TEXT,
       duration_ms     INTEGER NOT NULL DEFAULT 0,
@@ -564,6 +567,12 @@ function runMigrations(database: Database.Database): void {
   if (!usageCols.some((c) => c.name === 'is_error')) {
     database.exec(`ALTER TABLE token_usage ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0`);
   }
+  // Whether cost_usd is money or a placeholder. Backfilled to 'provider'
+  // because every row written before this column existed came from a runtime
+  // that priced its own turns. Uses addColumnIfMissing rather than a bare
+  // ALTER: several agent services run runMigrations concurrently at boot, and
+  // that helper already tolerates the losing racer's "duplicate column".
+  addColumnIfMissing(database, 'token_usage', 'cost_source', `TEXT NOT NULL DEFAULT 'provider'`);
 
   const convoCols = database.prepare(`PRAGMA table_info(conversation_log)`).all() as Array<{ name: string }>;
   if (!convoCols.some((c) => c.name === 'agent_id')) {
@@ -1891,12 +1900,19 @@ export function saveTokenUsage(
     numTurns?: number;
     stopReason?: string | null;
     isError?: boolean;
+    /**
+     * Whether costUsd is money. Defaults to 'provider' so the six existing
+     * call sites keep their meaning; a provider that cannot price its turns
+     * passes 'unknown', and every aggregate below then excludes the row
+     * instead of adding a misleading zero.
+     */
+    costSource?: 'provider' | 'unknown';
   } = {},
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO token_usage (chat_id, session_id, input_tokens, output_tokens, cache_read, context_tokens, cost_usd, did_compact, created_at, agent_id, context_window, cache_creation, model, duration_ms, duration_api_ms, num_turns, stop_reason, is_error)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO token_usage (chat_id, session_id, input_tokens, output_tokens, cache_read, context_tokens, cost_usd, did_compact, created_at, agent_id, context_window, cache_creation, model, duration_ms, duration_api_ms, num_turns, stop_reason, is_error, cost_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     chatId, sessionId ?? null, inputTokens, outputTokens, cacheRead, contextTokens, costUsd, didCompact ? 1 : 0, now, agentId, contextWindow, cacheCreation,
     telemetry.model ?? null,
@@ -1905,6 +1921,7 @@ export function saveTokenUsage(
     telemetry.numTurns ?? 0,
     telemetry.stopReason ?? null,
     telemetry.isError ? 1 : 0,
+    telemetry.costSource ?? 'provider',
   );
 }
 
@@ -2036,7 +2053,7 @@ export function getDashboardTokenStats(chatId: string): DashboardTokenStats {
       `SELECT
          COALESCE(SUM(input_tokens), 0) as todayInput,
          COALESCE(SUM(output_tokens), 0) as todayOutput,
-         COALESCE(SUM(cost_usd), 0) as todayCost,
+         COALESCE(SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END), 0) as todayCost,
          COUNT(*) as todayTurns
        FROM token_usage
        WHERE chat_id = ? AND created_at >= unixepoch('now', 'start of day')`,
@@ -2048,7 +2065,7 @@ export function getDashboardTokenStats(chatId: string): DashboardTokenStats {
       `SELECT
          COALESCE(SUM(input_tokens), 0) as allTimeInput,
          COALESCE(SUM(output_tokens), 0) as allTimeOutput,
-         COALESCE(SUM(cost_usd), 0) as allTimeCost,
+         COALESCE(SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END), 0) as allTimeCost,
          COUNT(*) as allTimeTurns
        FROM token_usage WHERE chat_id = ?`,
     )
@@ -2062,7 +2079,7 @@ export function getDashboardCostTimeline(chatId: string, days = 30): { date: str
     .prepare(
       `SELECT
          date(created_at, 'unixepoch') as date,
-         SUM(cost_usd) as cost,
+         SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END) as cost,
          COUNT(*) as turns
        FROM token_usage
        WHERE chat_id = ? AND created_at >= unixepoch('now', ?)
@@ -2097,7 +2114,7 @@ export function getCacheTokens(chatId: string, days = 30): CacheTokensRow[] {
          COALESCE(SUM(output_tokens), 0) as outputTokens,
          COALESCE(SUM(cache_read), 0)   as cacheRead,
          COALESCE(SUM(cache_creation), 0) as cacheCreation,
-         COALESCE(SUM(cost_usd), 0)     as costUsd
+         COALESCE(SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END), 0)     as costUsd
        FROM token_usage
        WHERE chat_id = ? AND created_at >= unixepoch('now', ?)
        GROUP BY agent_id
@@ -2225,14 +2242,14 @@ export function getSessionConversation(sessionId: string, limit = 40): Conversat
 export function getAgentTokenStats(agentId: string): { todayCost: number; todayTurns: number; allTimeCost: number } {
   const today = db
     .prepare(
-      `SELECT COALESCE(SUM(cost_usd), 0) as todayCost, COUNT(*) as todayTurns
+      `SELECT COALESCE(SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END), 0) as todayCost, COUNT(*) as todayTurns
        FROM token_usage
        WHERE agent_id = ? AND created_at >= unixepoch('now', 'start of day')`,
     )
     .get(agentId) as { todayCost: number; todayTurns: number };
 
   const allTime = db
-    .prepare('SELECT COALESCE(SUM(cost_usd), 0) as allTimeCost FROM token_usage WHERE agent_id = ?')
+    .prepare(`SELECT COALESCE(SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END), 0) as allTimeCost FROM token_usage WHERE agent_id = ?`)
     .get(agentId) as { allTimeCost: number };
 
   return { ...today, allTimeCost: allTime.allTimeCost };
@@ -2254,7 +2271,7 @@ export function getSessionTokenUsage(sessionId: string): SessionTokenSummary | n
          COUNT(*)           as turns,
          SUM(input_tokens)  as totalInputTokens,
          SUM(output_tokens) as totalOutputTokens,
-         SUM(cost_usd)      as totalCostUsd,
+         SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END)      as totalCostUsd,
          SUM(did_compact)   as compactions,
          MIN(created_at)    as firstTurnAt,
          MAX(created_at)    as lastTurnAt
@@ -2902,7 +2919,7 @@ export function getSessionStats(sessionId: string): {
   const stats = db.prepare(`
     SELECT
       COUNT(*) as turnCount,
-      COALESCE(SUM(cost_usd), 0) as totalCost,
+      COALESCE(SUM(CASE WHEN cost_source = 'provider' THEN cost_usd ELSE 0 END), 0) as totalCost,
       COALESCE(SUM(did_compact), 0) as compactionCount,
       COALESCE(MAX(context_tokens), 0) as maxContextTokens
     FROM token_usage WHERE session_id = ?

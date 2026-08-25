@@ -463,11 +463,64 @@ The model dropdown is populated live from OpenRouter's `/models` endpoint (cache
 | `anthropic/claude-3.5-sonnet` | Paid, billed by OpenRouter |
 | `openai/gpt-oss-120b:free` | Free, agentic-trained — works for instruction tasks |
 
-**Scope:** v1 is **chat-only** (no tool calling) and **single-turn** — each message is an independent `[system, user]` exchange (the system message is the project `CLAUDE.md`). Prior turns are **not** replayed, so pronoun and "rephrase that" follow-ups won't resolve against earlier messages. Persistent facts still reach the model through ClaudeClaw's memory injection (keyword-selective), but recent dialogue is not. For tool-heavy or multi-turn workflows (Read/Bash/Obsidian, threaded back-and-forth), use Claude. Paid models report per-turn cost (from OpenRouter's `usage.cost`) to the dashboard cost footer and the daily budget tracker.
+**Scope:** ClaudeClaw's current OpenRouter integration is **chat-only** and **single-turn** — the adapter sends no tool definitions, does not handle `tool_calls`, and does not run a multi-turn tool loop. Each message is an independent `[system, user]` exchange (the system message is the project `CLAUDE.md`). Prior turns are **not** replayed, so pronoun and "rephrase that" follow-ups won't resolve against earlier messages. Persistent facts still reach the model through ClaudeClaw's memory injection (keyword-selective), but recent dialogue is not. This is a limitation of our adapter, not of the platform — OpenRouter itself supports [standardized tool calling](https://openrouter.ai/docs/guides/features/tool-calling). For tool-heavy or multi-turn workflows (Read/Bash/Obsidian, threaded back-and-forth), use Claude or the Z.ai GLM provider below. Paid models report per-turn cost (from OpenRouter's `usage.cost`) to the dashboard cost footer and the daily budget tracker.
 
 **Caveats:** Free models (suffix `:free`) are rate-limited by their upstream providers and rotate frequently — if one starts returning 429s or hangs, switch to a different one in the dashboard.
 
 ---
+
+### Z.ai GLM (full Claude Code tool surface)
+
+**What it does:** Runs GLM from Z.ai through the *same* Claude Code subprocess
+the Claude provider uses, so the model keeps the whole Claude Code tool
+surface: shell, files, MCP servers. ClaudeClaw's current OpenRouter integration
+is chat-only because its adapter sends no tool definitions and runs no
+multi-turn tool loop — this path instead hands Z.ai Claude Code's mature tool
+harness, without first building a separate agent loop.
+
+Internally the provider type is `anthropic-compatible` (the internal
+abstraction), and other endpoints speaking the same wire protocol — Moonshot,
+DeepSeek, a corporate Anthropic gateway — remain available as advanced
+configuration.
+
+**Setup:** put an unquoted key in `.env` and pick the provider **Z.ai (GLM)**.
+
+```
+ANTHROPIC_COMPAT_API_KEY=your-key-here
+# ANTHROPIC_COMPAT_MODEL=glm-5.3[1m]     # [1m] declares the real context window
+```
+
+The built-in, tested default endpoint is z.ai. A different vendor needs **both**
+`ANTHROPIC_COMPAT_ALLOW_CUSTOM_ENDPOINTS=true` and an entry in
+`ANTHROPIC_COMPAT_ALLOWED_HOSTS` — a URL that fails either check aborts the
+turn rather than falling back, so a key meant for one vendor never travels to
+another.
+
+**Credential and deployment boundary.** ClaudeClaw is a single-owner,
+self-hosted fleet: the deployment owner supplies their own Z.ai credential,
+and ClaudeClaw does not share, proxy, resell, or otherwise provide other users
+access to that quota — personal and headless-agent use for the owner is the
+intended scope. One hard boundary holds regardless of configuration: **no
+Anthropic Max/Pro OAuth credential may ever be sent to the compatible
+endpoint.** The environment allow-list enforces that technically — nothing the
+subprocess did not explicitly get can reach the child process.
+
+**What is contained, and why.** These turns run unattended, so the subprocess
+gets its own generated config directory. Without one it would load the whole
+machine's MCP configuration — on a developer machine that measured 24 servers
+and 273 tools — regardless of the agent's `mcp_servers` allow-list. With one,
+that allow-list *is* the tool surface. Chat turns get the strictest tool
+profile, fleet dispatch is off unless you opt in, and `hive_read` stays
+withheld even then. `ANTHROPIC_COMPAT_ENABLED=false` stops new turns on every
+agent immediately, without a restart.
+
+**Cost:** the SDK still reports a dollar figure for these turns — Anthropic
+list pricing applied to somebody else's model. ClaudeClaw records it as
+unpriced and shows an em dash rather than a number that looks like money and
+is not.
+
+Design, measurements and the terms-of-service discussion:
+[`docs/rfcs/anthropic-compatible-provider.md`](docs/rfcs/anthropic-compatible-provider.md).
 
 ### OpenAI (native Codex)
 

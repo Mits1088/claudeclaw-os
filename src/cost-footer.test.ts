@@ -9,6 +9,7 @@ function makeUsage(overrides: Partial<UsageInfo> = {}): UsageInfo {
     cacheReadInputTokens: 40000,
     cacheCreationInputTokens: 5000,
     totalCostUsd: 0.04,
+    costSource: 'provider',
     didCompact: false,
     preCompactTokens: null,
     lastCallCacheRead: 40000,

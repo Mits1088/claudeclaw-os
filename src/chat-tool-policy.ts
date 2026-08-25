@@ -65,6 +65,14 @@ export const CHAT_TOOL_PROFILES: Record<ProviderType, ChatToolProfile> = {
   // boundary.
   openai: 'full',
   // Everything below stays minimal until individually vetted.
+  //
+  // anthropic-compatible runs the SAME engine as Claude, and it is tempting to
+  // read that as "so it can have Claude's chat surface". It cannot: engine
+  // sameness buys enforceability of an allow-list, not judgment about what to
+  // do with a casual message. That judgment is a property of the MODEL, and
+  // this provider's model is by definition not Claude — and swappable per
+  // .env, so no track record accrues to it either. Stays minimal.
+  'anthropic-compatible': STRICTEST_CHAT_TOOL_PROFILE,
   'acp-codex': STRICTEST_CHAT_TOOL_PROFILE, // Codex over ACP, not the native runtime
   gemini: STRICTEST_CHAT_TOOL_PROFILE,
   opencode: STRICTEST_CHAT_TOOL_PROFILE,

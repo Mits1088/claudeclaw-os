@@ -39,6 +39,7 @@ import {
   type McpSdkServerConfigWithInstance,
 } from '@anthropic-ai/claude-agent-sdk';
 
+import { compatDispatchAllowed } from './anthropic-compat-env.js';
 import type { CliCommand, CliToolParam, CliToolSpec } from './cli-reference.js';
 import { hiveDescriptor, missionDescriptor, scheduleDescriptor } from './cli-descriptors.js';
 import { CLAUDECLAW_CONFIG, DB_ENCRYPTION_KEY, DISPATCH_ALLOW_HIVE_READ, PROJECT_ROOT, STORE_DIR } from './config.js';
@@ -354,23 +355,54 @@ export function dispatchToolDefinitions(): DispatchToolDefinition[] {
   });
 }
 
+/**
+ * Dispatch verbs withheld from third-party vendors unless explicitly enabled,
+ * because they egress data every agent has contributed. Defined here, next to
+ * the tools themselves, so both consumers — the in-process server below and
+ * the stdio bridge in dispatch-mcp-server.ts — read ONE list; the bridge used
+ * to own it, which would now be an import cycle.
+ */
+export const EGRESS_GATED_TOOLS = new Set<string>(['hive_read']);
+
 /** Build the Anthropic SDK tool definitions for every promoted command (in-process, Claude path). */
-export function buildDispatchSdkTools() {
-  return dispatchToolDefinitions().map((def) => tool(def.name, def.description, def.schema, def.handler));
+export function buildDispatchSdkTools(opts: { allowHiveRead?: boolean } = {}) {
+  const allowHiveRead = opts.allowHiveRead ?? true;
+  return dispatchToolDefinitions()
+    .filter((def) => allowHiveRead || !EGRESS_GATED_TOOLS.has(def.name))
+    .map((def) => tool(def.name, def.description, def.schema, def.handler));
 }
 
-let cachedServer: McpSdkServerConfigWithInstance | null = null;
+/**
+ * One server instance PER POLICY, never one instance that gets edited.
+ *
+ * The in-process server is shared by every concurrent turn in this process. A
+ * Claude turn and a third-party turn can be in flight at the same moment, so
+ * filtering by mutating a shared tool list would either hand hive_read to the
+ * third-party turn or take it away from the Claude one, depending on ordering.
+ * Keying the cache on the policy makes the two physically different objects and
+ * removes the race instead of narrowing it.
+ */
+const cachedServers = new Map<string, McpSdkServerConfigWithInstance>();
 
-/** The in-process dispatch MCP server, built once per process. */
-export function getDispatchMcpServer(): McpSdkServerConfigWithInstance {
-  if (!cachedServer) {
-    cachedServer = createSdkMcpServer({
+/**
+ * The in-process dispatch MCP server for a given policy, built once per policy.
+ * Defaults to the full tool set, which is what the Claude path has always had.
+ */
+export function getDispatchMcpServer(
+  opts: { allowHiveRead?: boolean } = {},
+): McpSdkServerConfigWithInstance {
+  const allowHiveRead = opts.allowHiveRead ?? true;
+  const key = allowHiveRead ? 'full' : 'no-hive-read';
+  let server = cachedServers.get(key);
+  if (!server) {
+    server = createSdkMcpServer({
       name: DISPATCH_SERVER_NAME,
       version: '1.0.0',
-      tools: buildDispatchSdkTools(),
+      tools: buildDispatchSdkTools({ allowHiveRead }),
     });
+    cachedServers.set(key, server);
   }
-  return cachedServer;
+  return server;
 }
 
 // ── access policy + registration ─────────────────────────────────────────────
@@ -459,6 +491,13 @@ export function dispatchToolsAllowed(ctx: DispatchTurnContext): boolean {
   }
   if (ctx.provider?.type === 'claude') return true;
   if (ctx.provider?.type === 'openai') return !turnRestrictsTools(ctx);
+  // Dispatch lets a turn create missions, schedule work and read the shared
+  // hive. Granting that to a third-party model is a decision an operator makes
+  // deliberately, so it is off until ANTHROPIC_COMPAT_ALLOW_DISPATCH says
+  // otherwise — and even then hive_read stays withheld (see below).
+  if (ctx.provider?.type === 'anthropic-compatible') {
+    return compatDispatchAllowed() && !turnRestrictsTools(ctx);
+  }
   return false;
 }
 
@@ -487,6 +526,13 @@ export function dispatchMcpServersFor(
   if (!dispatchToolsAllowed(ctx)) return {};
   if (ctx.provider?.type === 'openai') {
     return { [DISPATCH_STDIO_SERVER_NAME]: codexDispatchStdioEntry() };
+  }
+  if (ctx.provider?.type === 'anthropic-compatible') {
+    // hive_read egresses everything every agent has ever written to the shared
+    // mind. The stdio bridge has withheld it from non-Claude vendors since it
+    // existed; the in-process path never enforced that because, until now, only
+    // Claude used it. Same rule, now actually applied.
+    return { [DISPATCH_SERVER_NAME]: getDispatchMcpServer({ allowHiveRead: false }) };
   }
   return { [DISPATCH_SERVER_NAME]: getDispatchMcpServer() };
 }

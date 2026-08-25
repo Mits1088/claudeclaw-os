@@ -116,6 +116,12 @@ export interface UsageInfo {
   /** Cumulative cache_creation_input_tokens (cache writes) across the turn. */
   cacheCreationInputTokens: number;
   totalCostUsd: number;
+  /**
+   * Whether totalCostUsd is money or a placeholder. See
+   * AgentEngineUsage.costSource — 'unknown' means nobody priced this turn and
+   * the figure must not be summed or displayed as a price.
+   */
+  costSource: 'provider' | 'unknown';
   /** True if the SDK auto-compacted context during this turn */
   didCompact: boolean;
   /** Token count before compaction (if it happened) */

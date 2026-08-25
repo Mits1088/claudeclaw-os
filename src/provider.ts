@@ -5,6 +5,12 @@ import { spawnSync } from 'child_process';
 import { createRequire } from 'module';
 import yaml from 'js-yaml';
 
+import {
+  compatEnvSource,
+  compatProviderEnabled,
+  getCompatConfig,
+  redactSecret,
+} from './anthropic-compat-env.js';
 import { STORE_DIR, DEFAULT_CLAUDE_MODEL, getClaudeclawConfig, PROJECT_ROOT } from './config.js';
 import { readEnvFile } from './env.js';
 
@@ -15,10 +21,18 @@ import { readEnvFile } from './env.js';
  *                  (Codex SDK or App Server, per CODEX_TRANSPORT).
  *  - `acp-codex` — EXPERIMENTAL provider, reaches Codex over ACP via the
  *                  bundled `codex-acp` adapter.
+ *
+ * `anthropic-compatible` is not a fourth route to a runtime — it is the SAME
+ * Claude Code subprocess the `claude` provider drives, pointed at a
+ * third-party endpoint that speaks the Anthropic wire protocol. It therefore
+ * gets the full Claude Code tool surface, which is the entire point: the
+ * alternative (OpenRouter) tells the model it has no tools at all. Its
+ * endpoint, credential and tool surface are resolved in
+ * src/anthropic-compat-env.ts.
  */
-export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'acp-codex' | 'openrouter' | 'openai';
+export type ProviderType = 'claude' | 'acp' | 'opencode' | 'gemini' | 'acp-codex' | 'openrouter' | 'openai' | 'anthropic-compatible';
 
-const PROVIDER_TYPES: readonly string[] = ['claude', 'acp', 'opencode', 'gemini', 'acp-codex', 'openrouter', 'openai'];
+const PROVIDER_TYPES: readonly string[] = ['claude', 'acp', 'opencode', 'gemini', 'acp-codex', 'openrouter', 'openai', 'anthropic-compatible'];
 
 /**
  * Legacy provider identifiers → their current name. The Codex-over-ACP provider
@@ -59,6 +73,15 @@ export interface ProviderConfig {
   command?: string;
   args?: string[];
   /**
+   * `anthropic-compatible` only: the endpoint this agent talks to, when it is
+   * not the built-in default. NOT validated here — validation belongs at the
+   * point of use (resolveCompatBaseUrl), which fails the turn closed rather
+   * than falling back, because a fallback would send a key meant for one
+   * vendor to another. Stored so an agent can be pinned to an endpoint, and
+   * ignored entirely by every other provider type.
+   */
+  baseUrl?: string;
+  /**
    * Opt-in flag to skip permission prompts and let the provider auto-execute tools.
    * When unset, defaults asymmetrically: Claude keeps its existing permissive
    * behavior (it has months of demonstrated good judgment on Telegram chat
@@ -88,6 +111,12 @@ export function normalizeProviderConfig(input: unknown, legacyModel?: string): P
     if (typeof raw.thinkingMode === 'string' && raw.thinkingMode.trim()) cfg.thinkingMode = raw.thinkingMode.trim();
     if (typeof raw.command === 'string' && raw.command.trim()) cfg.command = raw.command.trim();
     if (Array.isArray(raw.args)) cfg.args = raw.args.filter((v): v is string => typeof v === 'string');
+    // Only the provider that has an endpoint may carry one: a `baseUrl` on a
+    // Claude or Codex block is meaningless config that would survive a later
+    // type switch and quietly become live.
+    if (type === 'anthropic-compatible' && typeof raw.baseUrl === 'string' && raw.baseUrl.trim()) {
+      cfg.baseUrl = raw.baseUrl.trim();
+    }
     if (typeof raw.dangerouslySkipPermissions === 'boolean') cfg.dangerouslySkipPermissions = raw.dangerouslySkipPermissions;
     return cfg;
   }
@@ -108,6 +137,7 @@ export function providerToYaml(provider: ProviderConfig): Record<string, unknown
     if (provider.command) raw.command = provider.command;
     if (provider.args) raw.args = provider.args;
   }
+  if (provider.type === 'anthropic-compatible' && provider.baseUrl) raw.baseUrl = provider.baseUrl;
   if (provider.dangerouslySkipPermissions === true) raw.dangerouslySkipPermissions = true;
   return raw;
 }
@@ -304,6 +334,17 @@ export function getProviderDisplay(provider: ProviderConfig): string {
   if (provider.type === 'acp-codex') return `Codex${suffix ? ` (${suffix})` : ' (codex-acp adapter)'}`;
   if (provider.type === 'openrouter') return `OpenRouter${suffix ? ` (${suffix})` : ' (no model selected)'}`;
   if (provider.type === 'openai') return `OpenAI${suffix ? ` (${suffix})` : ' (native Codex)'}`;
+  if (provider.type === 'anthropic-compatible') {
+    // Naming the endpoint is the point of this line: two agents can run the
+    // same provider type against different vendors, and "which endpoint is my
+    // data going to" must be answerable from the status line alone. No pinned
+    // baseUrl means the built-in default — z.ai — so the label names the
+    // vendor users configured; a pinned baseUrl replaces it with the host.
+    if (provider.baseUrl) {
+      return `Anthropic-compatible (${[suffix, provider.baseUrl].filter(Boolean).join(', ')})`;
+    }
+    return `Z.ai (GLM)${suffix ? ` (${suffix})` : ''}`;
+  }
   return `ACP (${provider.command ?? 'custom command'}${provider.args?.length ? ` ${provider.args.join(' ')}` : ''}${suffix ? `; ${suffix}` : ''})`;
 }
 
@@ -545,6 +586,36 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
         setupHint: 'Run `codex login` to sign in with your ChatGPT account (recommended), or add OPENAI_API_KEY=sk-... to .env and restart with `pm2 restart claudeclaw --update-env`.',
         docsUrl: 'https://github.com/openai/codex/blob/main/docs/authentication.md',
       };
+    }
+    case 'anthropic-compatible': {
+      // Resolves the SAME frozen instance the turn will use, so preflight can
+      // never validate one endpoint while the turn talks to another. Both the
+      // credential and the endpoint are checked here; both fail closed.
+      try {
+        const cfg = getCompatConfig(provider.baseUrl);
+        if (!compatProviderEnabled()) {
+          return {
+            ok: false,
+            error: 'The anthropic-compatible provider is switched off (ANTHROPIC_COMPAT_ENABLED=false).',
+            setupHint: 'Remove ANTHROPIC_COMPAT_ENABLED from .env, or set it to true, to accept turns again.',
+          };
+        }
+        return { ok: true, setupHint: `Endpoint: ${cfg.baseUrl}` };
+      } catch (err) {
+        return {
+          ok: false,
+          // The message is authored in anthropic-compat-env.ts and never
+          // contains the credential; redactSecret is belt-and-braces for a
+          // future message that interpolates something unexpected.
+          error: redactSecret(err instanceof Error ? err.message : String(err), [
+            compatEnvSource().ANTHROPIC_COMPAT_API_KEY,
+            compatEnvSource().ZAI_API_KEY,
+            compatEnvSource().GLM_API_KEY,
+          ]),
+          setupHint: 'Set ANTHROPIC_COMPAT_API_KEY in .env (unquoted), then restart the service.',
+          docsUrl: 'https://docs.claude.com/en/docs/claude-code/llm-gateway',
+        };
+      }
     }
     case 'openrouter': {
       // OpenRouter has no CLI — just check the env var is present.

@@ -250,7 +250,7 @@ describe('isFailedTurn', () => {
   const base: AgentResult = { text: 'fine', newSessionId: undefined, usage: null };
   const usage = (isError: boolean) => ({
     inputTokens: 0, outputTokens: 0, cacheCreationInputTokens: 0, cacheReadInputTokens: 0,
-    totalCostUsd: 0, contextWindow: null, lastCallCacheRead: 0, lastCallInputTokens: 0,
+    totalCostUsd: 0, costSource: 'provider' as const, contextWindow: null, lastCallCacheRead: 0, lastCallInputTokens: 0,
     lastCallCacheCreation: 0, didCompact: false, preCompactTokens: null, model: null,
     durationMs: 0, durationApiMs: 0, numTurns: 1, stopReasonDetail: null, isError,
   });
