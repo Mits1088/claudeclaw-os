@@ -485,6 +485,32 @@ function generateServiceConfig(agentId: string): string | null {
   return null;
 }
 
+// process.execPath resolves every symlink, so a Homebrew install reports the
+// versioned Cellar binary (.../Cellar/node@24/24.19.0/bin/node). Baking that
+// into a plist means the next `brew upgrade node` leaves launchd pointing at a
+// path that no longer exists, and the agent never comes back. Prefer a stable
+// wrapper that resolves to the very same binary — the shell installer already
+// does this with `command -v node`. Falls back to execPath when nothing stable
+// matches (nvm, fnm, a custom build), which is no worse than today.
+export function resolveStableNodePath(): string {
+  let actual: string;
+  try {
+    actual = fs.realpathSync(process.execPath);
+  } catch {
+    return process.execPath;
+  }
+
+  const candidates = ['/opt/homebrew/bin/node', '/usr/local/bin/node', '/usr/bin/node'];
+  for (const candidate of candidates) {
+    try {
+      if (fs.realpathSync(candidate) === actual) return candidate;
+    } catch {
+      // not installed at this location on this machine
+    }
+  }
+  return process.execPath;
+}
+
 function generateLaunchdPlist(agentId: string): string {
   const plistDir = path.join(os.homedir(), 'Library', 'LaunchAgents');
   fs.mkdirSync(plistDir, { recursive: true });
@@ -492,8 +518,9 @@ function generateLaunchdPlist(agentId: string): string {
   const label = `com.claudeclaw.${agentId}`;
   const plistPath = path.join(plistDir, `${label}.plist`);
 
-  // Use the same Node binary that's running this process (works with nvm, homebrew, or system node)
-  const nodePath = process.execPath;
+  // Use the same Node binary that's running this process (works with nvm,
+  // homebrew, or system node), addressed by a stable path when one exists.
+  const nodePath = resolveStableNodePath();
   const nodeBinDir = path.dirname(nodePath);
 
   // Build PATH: node's bin dir first, then standard system paths

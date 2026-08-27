@@ -132,3 +132,33 @@ describe('createAgent headless runtime', () => {
     })).rejects.toThrow(/requires runtime mode 'headless'/);
   });
 });
+
+describe('resolveStableNodePath', () => {
+  it('prefers the stable Homebrew wrapper over the versioned Cellar binary', async () => {
+    const { resolveStableNodePath } = await import('./agent-create.js');
+    const cellar = '/opt/homebrew/Cellar/node@24/24.19.0/bin/node';
+    vi.spyOn(fs, 'realpathSync').mockImplementation(((p: fs.PathLike) => {
+      if (p === process.execPath || p === '/opt/homebrew/bin/node') return cellar;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    }) as typeof fs.realpathSync);
+
+    expect(resolveStableNodePath()).toBe('/opt/homebrew/bin/node');
+  });
+
+  it('keeps execPath when no stable wrapper points at the same binary', async () => {
+    const { resolveStableNodePath } = await import('./agent-create.js');
+    const nvm = '/Users/someone/.nvm/versions/node/v24.19.0/bin/node';
+    vi.spyOn(fs, 'realpathSync').mockImplementation(((p: fs.PathLike) => {
+      if (p === process.execPath) return nvm;
+      throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    }) as typeof fs.realpathSync);
+
+    expect(resolveStableNodePath()).toBe(process.execPath);
+  });
+
+  it('never returns a path that resolves to a different binary', async () => {
+    const { resolveStableNodePath } = await import('./agent-create.js');
+    expect(fs.realpathSync(resolveStableNodePath()))
+      .toBe(fs.realpathSync(process.execPath));
+  });
+});
