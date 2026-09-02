@@ -60,14 +60,20 @@ if [ "$(uname)" = "Linux" ] && command -v systemctl &>/dev/null; then
 fi
 
 # ── 3. Remove config directory (~/.claudeclaw) ──────────────────────────
-CONFIG_DIR="${CLAUDECLAW_CONFIG:-$HOME/.claudeclaw}"
-# Also check .env for a custom path
-if [ -f "$PROJECT_ROOT/.env" ]; then
+# Resolve it the way the runtime does (getClaudeclawConfig, src/config.ts): the
+# process environment wins, .env is consulted only when the process value is
+# absent, and ~/.claudeclaw is the last resort. Letting .env win instead points
+# the rm -rf below at whatever directory the file happens to name — deleting a
+# config the user did not target, and leaving the one they did.
+CONFIG_DIR="${CLAUDECLAW_CONFIG:-}"
+if [ -z "$CONFIG_DIR" ] && [ -f "$PROJECT_ROOT/.env" ]; then
   # Strip one layer of surrounding quotes (mirrors readEnvFile in src/env.ts) BEFORE expanding ~,
   # so a single-quoted Windows path resolves with backslashes intact.
-  env_config=$(grep '^CLAUDECLAW_CONFIG=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2- | sed -E "s/^'(.*)'\$/\1/; s/^\"(.*)\"\$/\1/" | sed "s|^~|$HOME|")
-  [ -n "$env_config" ] && CONFIG_DIR="$env_config"
+  CONFIG_DIR=$(grep '^CLAUDECLAW_CONFIG=' "$PROJECT_ROOT/.env" 2>/dev/null | cut -d'=' -f2- | sed -E "s/^'(.*)'\$/\1/; s/^\"(.*)\"\$/\1/")
 fi
+# Expand a leading ~ on whichever value won, as expandHome does at runtime.
+# Quotes are stripped first, so a single-quoted path keeps its layout intact.
+CONFIG_DIR=$(printf '%s' "${CONFIG_DIR:-$HOME/.claudeclaw}" | sed "s|^~|$HOME|")
 
 if [ -d "$CONFIG_DIR" ]; then
   echo -e "  Removing config: ${CYAN}$CONFIG_DIR${RESET}"
