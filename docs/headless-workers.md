@@ -13,7 +13,7 @@ lifecycle:
   mode: persistent
 provider:
   type: claude
-  model: claude-fable-5
+  model: claude-fable-5-1
 ```
 
 Existing agents remain `messenger` by default. Existing headless workers default to `persistent`. Messenger agents continue to require `telegram_bot_token_env`. Invalid runtime or lifecycle combinations fail closed during config loading.
@@ -45,7 +45,7 @@ node dist/agent-create-cli.js `
   --description "Bounded implementation tasks" `
   --runtime-mode headless `
   --lifecycle task-scoped `
-  --model claude-fable-5 `
+  --model claude-fable-5-1 `
   --activate
 ```
 
@@ -102,4 +102,4 @@ for the accepted lifecycle and fencing specification.
 
 ## Initial validation boundary
 
-The first production-style test should use two isolated headless workers with different provider paths, one Fable 5 and one OpenAI/Codex model. Give them bounded, read-only or disposable-worktree tasks, gather results back to `main`, and verify that no worker has a Telegram token or emits a direct notification. Commits, pushes, deployments, and external writes remain separately approved actions.
+The first production-style test should use two isolated headless workers with different provider paths, one Fable 5.1 and one OpenAI/Codex model. Give them bounded, read-only or disposable-worktree tasks, gather results back to `main`, and verify that no worker has a Telegram token or emits a direct notification. Commits, pushes, deployments, and external writes remain separately approved actions.

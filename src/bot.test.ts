@@ -293,6 +293,7 @@ describe('resolveTelegramModelSelection', () => {
   it('keeps existing Claude aliases and full model ids working', () => {
     const provider = { type: 'claude' as const };
     expect(resolveTelegramModelSelection(provider, 'opus').model).toBeTruthy();
+    expect(resolveTelegramModelSelection(provider, 'fable51').model).toBe('claude-fable-5-1');
     expect(resolveTelegramModelSelection(provider, 'claude-sonnet-4-5').model).toBe('claude-sonnet-4-5');
   });
 

@@ -2409,7 +2409,7 @@ node dist/agent-create-cli.js \
   --description "Bounded implementation tasks" \
   --runtime-mode headless \
   --lifecycle task-scoped \
-  --model claude-fable-5 \
+  --model claude-fable-5-1 \
   --activate
 
 # Validate a token without creating anything

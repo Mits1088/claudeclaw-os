@@ -19,6 +19,7 @@ export interface StaticRuntimeOptions {
 
 const MODEL_LABELS: Readonly<Record<string, string>> = {
   'claude-opus-5': 'Opus 5',
+  'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
   'claude-sonnet-5': 'Sonnet 5',
   'claude-opus-4-8': 'Opus 4.8',
@@ -49,6 +50,7 @@ function uniqueOptions(ids: string[]): ModelOption[] {
 
 export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
   'claude-opus-5',
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-sonnet-5',
   'claude-opus-4-8',
@@ -101,7 +103,10 @@ function claudeEffortIds(model: string): readonly string[] {
 function claudeThinkingOptions(model: string): RuntimeOption[] {
   // These models use adaptive thinking as part of their model contract. The
   // model default is safer than exposing the legacy extended-thinking switch.
-  if (model === 'claude-opus-5' || model === 'claude-fable-5' || model === 'claude-sonnet-5') {
+  if (model === 'claude-opus-5'
+    || model === 'claude-fable-5-1'
+    || model === 'claude-fable-5'
+    || model === 'claude-sonnet-5') {
     return [];
   }
   if (model === 'claude-haiku-4-5' || model === 'claude-sonnet-4-5') {
@@ -233,7 +238,7 @@ export function claudeThinkingForModel(
   const mode = normalizedMode(requested);
   if (!mode) return undefined;
 
-  if (model === 'claude-fable-5') return undefined;
+  if (model === 'claude-fable-5-1' || model === 'claude-fable-5') return undefined;
   if (model === 'claude-opus-5') {
     if (mode === 'off') {
       return effort === 'xhigh' || effort === 'max' ? undefined : { type: 'disabled' };

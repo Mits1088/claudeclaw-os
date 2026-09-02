@@ -18,6 +18,7 @@ import {
 describe('model catalog', () => {
   it('surfaces the frontier models with provider-neutral labels', () => {
     expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: 'claude-opus-5', label: 'Opus 5' });
+    expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: 'claude-fable-5-1', label: 'Fable 5.1' });
     expect(OPENAI_MODEL_OPTIONS).toEqual(expect.arrayContaining([
       { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
       { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
@@ -42,6 +43,10 @@ describe('model catalog', () => {
     expect(opus5?.modeOptions.map((option) => option.id)).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
     expect(opus5?.thinkingOptions).toEqual([]);
 
+    const fable51 = staticRuntimeOptionsFor({ type: 'claude', model: 'claude-fable-5-1' });
+    expect(fable51?.modeOptions.map((option) => option.id)).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+    expect(fable51?.thinkingOptions).toEqual([]);
+
     const haiku = staticRuntimeOptionsFor({ type: 'claude', model: 'claude-haiku-4-5' });
     expect(haiku?.modeOptions).toEqual([]);
 
@@ -63,6 +68,7 @@ describe('model catalog', () => {
   it('never emits legacy extended thinking for adaptive-only frontier models', () => {
     expect(claudeThinkingForModel('claude-opus-5', 'on', 'high')).toEqual({ type: 'adaptive' });
     expect(claudeThinkingForModel('claude-opus-5', 'off', 'xhigh')).toBeUndefined();
+    expect(claudeThinkingForModel('claude-fable-5-1', 'on', 'high')).toBeUndefined();
     expect(claudeThinkingForModel('claude-fable-5', 'on', 'high')).toBeUndefined();
     expect(claudeThinkingForModel('claude-haiku-4-5', 'on', undefined))
       .toEqual({ type: 'enabled', budgetTokens: 16000 });

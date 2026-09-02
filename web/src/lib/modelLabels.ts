@@ -4,6 +4,7 @@
 // to the catalog fails the suite until it is added here too.
 const MODEL_LABELS: Record<string, string> = {
   'claude-opus-5': 'Opus 5',
+  'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
   'claude-sonnet-5': 'Sonnet 5',
   'claude-opus-4-8': 'Opus 4.8',
@@ -26,6 +27,7 @@ const MODEL_LABELS: Record<string, string> = {
 // Selectable Claude ids in picker order. Mirrors CLAUDE_MODEL_OPTIONS.
 export const CLAUDE_MODEL_IDS = [
   'claude-opus-5',
+  'claude-fable-5-1',
   'claude-fable-5',
   'claude-sonnet-5',
   'claude-opus-4-8',

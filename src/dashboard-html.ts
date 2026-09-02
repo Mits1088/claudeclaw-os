@@ -201,6 +201,7 @@ const WARROOM_ENABLED = warroomEnabled;
         <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
         <div class="model-menu" style="display:none;right:0;left:auto">
           <div class="model-opt" data-model="claude-opus-5" onclick="pickGlobalModel(this)">All Opus 5</div>
+          <div class="model-opt" data-model="claude-fable-5-1" onclick="pickGlobalModel(this)">All Fable 5.1</div>
           <div class="model-opt" data-model="claude-fable-5" onclick="pickGlobalModel(this)">All Fable 5</div>
           <div class="model-opt" data-model="claude-sonnet-5" onclick="pickGlobalModel(this)">All Sonnet 5</div>
           <div class="model-opt" data-model="claude-opus-4-8" onclick="pickGlobalModel(this)">All Opus 4.8</div>
@@ -1684,7 +1685,7 @@ async function pickCustomModel(optEl) {
   var picker = optEl.closest('.model-picker');
   var agentId = picker.dataset.agent;
   picker.querySelector('.model-menu').style.display = 'none';
-  var model = window.prompt('Model id (e.g. claude-fable-5):');
+  var model = window.prompt('Model id (e.g. claude-fable-5-1):');
   if (!model || !model.trim()) return;
   await setAgentModelReq(agentId, model.trim());
 }
@@ -1921,6 +1922,7 @@ let cawNameManuallyEdited = false;
 const CAW_FALLBACK_MODELS = {
   claude: [
     { id: 'claude-opus-5', label: 'Opus 5' },
+    { id: 'claude-fable-5-1', label: 'Fable 5.1' },
     { id: 'claude-fable-5', label: 'Fable 5' },
     { id: 'claude-sonnet-5', label: 'Sonnet 5' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8' },
