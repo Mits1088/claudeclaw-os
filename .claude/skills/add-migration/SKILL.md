@@ -7,10 +7,11 @@ Creates a new versioned migration for ClaudeClaw.
 ### 1. Read current state
 
 Read `migrations/version.json`. Find the highest version key using semver order.
-Also read the `version` field from `package.json`.
+This is the migration registry version, not the application release version.
 
-If `migrations/version.json` has no keys yet, use the `version` field from `package.json`
-as the base for computing bump options.
+Do not use the `version` field from `package.json` as the migration base. The migration
+registry and application release are separate counters. If the registry has no version
+keys, ask the user which initial migration version to create.
 
 ### 2. Compute version options
 
@@ -22,6 +23,10 @@ Given the current highest version (e.g. `v1.0.1`), compute:
 | patch   | v1.0.2   | New version key                                |
 | minor   | v1.1.0   | New version key, reset patch to 0              |
 | major   | v2.0.0   | New version key, reset minor and patch to 0    |
+
+Compute these options only from the highest key in `migrations/version.json`. Do not
+read or update `package.json`; application versioning is part of the maintainer-only
+release process.
 
 ### 3. Ask the user
 
@@ -67,53 +72,21 @@ export async function run(): Promise<void> {
 - **current** chosen: append the filename to the existing version's array.
 - **patch / minor / major** chosen: add a new key with `["<filename>"]`.
 
-### 7. Sync `package.json` version
-
-If a new version was created (patch / minor / major), update the `version` field in
-`package.json` to match (without the `v` prefix, e.g. `1.0.2`).
-
-If **current** was chosen, `package.json` stays as-is.
-
-### 8. Update CHANGELOG.md
-
-If `CHANGELOG.md` does not exist, create it with this header:
-
-```md
-# Changelog
-
-All notable changes to ClaudeClaw will be documented here.
-```
-
-For a **new version** (patch / minor / major), prepend a new section directly below
-the header (above any existing entries):
-
-```md
-## [v1.0.2] - YYYY-MM-DD
-
-### Added
-- <description>
-```
-
-For **current**, find the existing section for that version and append a bullet under
-the appropriate heading (`### Added` by default). If the section does not exist yet,
-create it using the same format above.
-
-Use today's date in `YYYY-MM-DD` format.
-
-### 9. Confirm
+### 7. Confirm
 
 Print a summary of everything created or modified:
 
 ```
 Migration created:
 
-  Version : v1.0.2  (package.json updated)
+  Version : v1.0.2  (migration registry only)
   File    : migrations/v1.0.2/rename-bot-token.ts
-  registry: migrations/version.json updated
-  changelog: CHANGELOG.md updated
+  Registry: migrations/version.json updated
 ```
 
 ## Notes
 
 - Never hardcode paths — derive everything from the repo root (`git rev-parse --show-toplevel`).
+- Do not update `package.json` or `CHANGELOG.md`. Version bumps and generated changelog
+  updates belong to the maintainer-only release process.
 - Do not run `npm run migrate` or touch `migrations/.applied.json` — that is the user's responsibility after reviewing the generated file.

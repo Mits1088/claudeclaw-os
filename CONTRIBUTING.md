@@ -7,8 +7,8 @@ change, **MINOR** for backward-compatible features, **PATCH** for fixes. A depen
 own version bump (e.g. the Agent SDK) only moves our MAJOR if it breaks our public
 config/API — it usually doesn't.
 
-`package.json` is the single source of truth for the version; code reads it via
-`src/version.ts` (`VERSION`). Never hardcode a version string elsewhere.
+`package.json` is the single source of truth for the application release version; code
+reads it via `src/version.ts` (`VERSION`). Never hardcode a version string elsewhere.
 
 **Commit messages use [Conventional Commits](https://www.conventionalcommits.org):**
 `feat(scope): ...`, `fix(scope): ...`, `security: ...`, `perf:`, `refactor:`, `docs:`.
@@ -29,9 +29,10 @@ Use the `add-migration` skill from within Claude Code:
 
 or write a prompt like `add a new migration`.
 
-The skill will walk you through picking a version bump (current / patch / minor / major),
-naming the migration, and will create the migration file, update `migrations/version.json`,
-sync `package.json`, and add an entry to `CHANGELOG.md`.
+The skill will walk you through picking a migration registry version (current / patch /
+minor / major), naming the migration, creating the migration file, and updating
+`migrations/version.json`. Migration registry versions are independent from application
+release versions. The skill does not update `package.json` or the generated `CHANGELOG.md`.
 
 After the skill finishes, open the generated file and implement the `run()` function.
 
