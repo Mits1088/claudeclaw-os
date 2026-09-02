@@ -6,7 +6,7 @@ import { execSync, spawn } from 'child_process';
 import yaml from 'js-yaml';
 
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
-import { ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster, findAgentIdentityCollision, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
+import { agentPidFile, ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster, findAgentIdentityCollision, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
 import { refreshAgentRegistry } from './orchestrator.js';
 import { atomicEnvWrite } from './env-write.js';
 import { logger } from './logger.js';
@@ -939,7 +939,7 @@ export function isAgentRunning(agentId: string): boolean {
       return false;
     }
   }
-  const pidFile = path.join(STORE_DIR, `agent-${agentId}.pid`);
+  const pidFile = agentPidFile(agentId);
   if (!fs.existsSync(pidFile)) return false;
   try {
     const pid = parseInt(fs.readFileSync(pidFile, 'utf-8').trim(), 10);

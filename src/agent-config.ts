@@ -349,6 +349,19 @@ export function setMainDescription(description: string): void {
   raw['description'] = trimmed;
   fs.writeFileSync(configPath, JSON.stringify(raw, null, 2) + '\n', 'utf-8');
 }
+/**
+ * The PID file a running agent writes, and that status checks read back.
+ *
+ * `main` is the root ClaudeClaw process rather than a spawned child, so it has
+ * always used store/claudeclaw.pid while sub-agents use store/agent-<id>.pid.
+ * Both halves of that rule live here on purpose: while the writer (messenger)
+ * and the readers each spelled it out for themselves, only the writer knew
+ * about main, and every reader looked for an agent-main.pid nothing creates.
+ */
+export function agentPidFile(agentId: string): string {
+  return path.join(STORE_DIR, agentId === 'main' ? 'claudeclaw.pid' : `agent-${agentId}.pid`);
+}
+
 /** List all configured agent IDs (directories under agents/ with agent.yaml).
  *  Scans both CLAUDECLAW_CONFIG/agents/ and PROJECT_ROOT/agents/, deduplicating.
  */

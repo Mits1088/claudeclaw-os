@@ -5,7 +5,7 @@ import './crash-guard.js';
 import fs from 'fs';
 import path from 'path';
 
-import { loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd, resolveInstructionMd, refreshWarRoomRoster, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
+import { agentPidFile, loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd, resolveInstructionMd, refreshWarRoomRoster, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
 import { checkPendingMigrations, backfillMainAgent } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { startDashboard } from './dashboard.js';
@@ -324,7 +324,7 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
   const { agentId, interactive, runtimeMode, lifecycleMode } = loadAgentIdentity();
   let workerLease: WorkerLeaseHandle | undefined;
 
-  const PID_FILE = path.join(STORE_DIR, `${agentId === 'main' ? 'claudeclaw' : `agent-${agentId}`}.pid`);
+  const PID_FILE = agentPidFile(agentId);
 
   const acquireLock = (): void => {
     fs.mkdirSync(STORE_DIR, { recursive: true });

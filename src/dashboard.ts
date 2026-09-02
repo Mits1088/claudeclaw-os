@@ -147,7 +147,7 @@ import { getIngestionQuotaStatus, extractViaProvider } from './memory-ingest.js'
 import { WARROOM_ENABLED, WARROOM_PORT, CLAUDE_MODEL_OPUS, CLAUDE_MODEL_SONNET, CLAUDE_MODEL_HAIKU, DEFAULT_OPENROUTER_MODEL, DEFAULT_OPENAI_MODEL } from './config.js';
 import { logger } from './logger.js';
 import { getTelegramConnected, getBotInfo, chatEvents, getIsProcessing, abortActiveQuery, ChatEvent } from './state.js';
-import { killProcess, isProcessAlive, findProcessesByPattern } from './platform.js';
+import { killProcess, findProcessesByPattern } from './platform.js';
 import { inspectAcpProviderRuntimeOptions, type AcpProviderRuntimeOptions } from './agent-engine/acp-adapter.js';
 import {
   CLAUDE_MODEL_OPTIONS,
@@ -2420,15 +2420,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         ...agents.filter((a) => a.id !== 'main'),
       ];
     } else {
-      // No agents/main/agent.yaml — build a main entry from env/defaults
-      const mainPidFile = path.join(STORE_DIR, 'claudeclaw.pid');
-      let mainRunning = false;
-      if (fs.existsSync(mainPidFile)) {
-        try {
-          const pid = parseInt(fs.readFileSync(mainPidFile, 'utf-8').trim(), 10);
-          mainRunning = isProcessAlive(pid);
-        } catch { /* not running */ }
-      }
+      // No agents/main/agent.yaml — build a main entry from env/defaults.
+      // Status comes from the same predicate the branch above uses, so the
+      // two ways of listing main can no longer disagree about who is live.
+      const mainRunning = isAgentRunning('main');
       const mainStats = getAgentTokenStats('main');
       const mainProvider = getMainProviderConfig();
       const mainModel = getProviderStatus().model;
