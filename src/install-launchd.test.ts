@@ -119,7 +119,7 @@ function makeInstall() {
   return api;
 }
 
-describe('install-launchd.sh stale-agent cleanup', () => {
+describe.skipIf(process.platform === 'win32')('install-launchd.sh stale-agent cleanup', () => {
   it('keeps an agent whose directory lives under CLAUDECLAW_CONFIG', () => {
     const i = makeInstall();
     const config = i.dir('config');
