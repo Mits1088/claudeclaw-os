@@ -1,6 +1,6 @@
 {
   "name": "claudeclaw",
-  "version": "1.8.5",
+  "version": "1.9.0",
   "description": "Your personal local agent provider, delivered to your phone via Telegram",
   "type": "module",
   "main": "dist/index.js",

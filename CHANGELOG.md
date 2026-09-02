@@ -5,6 +5,37 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.9.0] - 2026-09-02
+
+### Features
+
+- **models:** Add Claude Fable 5.1 support ([#262](https://github.com/earlyaidopters/claudeclaw-os/pull/262))
+- Mattermost messenger adapter — self-hosted team chat with per-channel agent routing ([#112](https://github.com/earlyaidopters/claudeclaw-os/pull/112))
+- **codex:** Uplift 0.149.1 and gate Windows containment ([#251](https://github.com/earlyaidopters/claudeclaw-os/pull/251))
+- **agents:** Add headless worker runtime ([#243](https://github.com/earlyaidopters/claudeclaw-os/pull/243))
+- **provider:** Add Z.ai GLM support through Claude Code harness ([#244](https://github.com/earlyaidopters/claudeclaw-os/pull/244))
+- Add task and job execution banners ([#242](https://github.com/earlyaidopters/claudeclaw-os/pull/242))
+
+### Bug Fixes
+
+- **agents:** Resolve main's PID file the way the runtime writes it ([#257](https://github.com/earlyaidopters/claudeclaw-os/pull/257))
+- **db:** Survive concurrent migrations on first boot ([#256](https://github.com/earlyaidopters/claudeclaw-os/pull/256))
+- **uninstall:** Resolve CLAUDECLAW_CONFIG the way the runtime does before rm -rf ([#254](https://github.com/earlyaidopters/claudeclaw-os/pull/254))
+- **launchd:** Keep generated plists valid across Node upgrades ([#253](https://github.com/earlyaidopters/claudeclaw-os/pull/253))
+- **launchd:** Keep user-created agents when reinstalling services ([#250](https://github.com/earlyaidopters/claudeclaw-os/pull/250))
+- **bot:** Log outbound file deliveries ([#232](https://github.com/earlyaidopters/claudeclaw-os/pull/232))
+- **codex:** Support GPT-5.6 through maintained ACP adapter ([#245](https://github.com/earlyaidopters/claudeclaw-os/pull/245))
+- **missions:** Add bounded self-continuation ([#241](https://github.com/earlyaidopters/claudeclaw-os/pull/241))
+
+### Documentation
+
+- **migrations:** Align skill with release workflow ([#260](https://github.com/earlyaidopters/claudeclaw-os/pull/260))
+- **node:** Update supported Node baseline to 22 and 24 LTS, drop EOL Node 20 ([#209](https://github.com/earlyaidopters/claudeclaw-os/pull/209))
+
+### Testing
+
+- **launchd:** Skip macOS installer suite on Windows ([#259](https://github.com/earlyaidopters/claudeclaw-os/pull/259))
+
 ## [1.8.5] - 2026-08-15
 
 ### Bug Fixes
