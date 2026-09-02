@@ -409,7 +409,7 @@ function createSchema(database: Database.Database): void {
         VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
     END;
 
-    CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE ON memories BEGIN
+    CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF summary, raw_text, entities, topics ON memories BEGIN
       INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
         VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
       INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
@@ -469,7 +469,13 @@ export function initDatabase(): void {
   getEncryptionKey();
 
   db = new Database(dbPath);
-  db.pragma('journal_mode = WAL');
+  // journal_mode is the one statement busy_timeout below cannot cover: switching
+  // a fresh database to WAL takes an exclusive lock and returns SQLITE_BUSY
+  // straight away instead of invoking the busy handler. Only the first process
+  // to arrive performs the switch; the others retry, read back the WAL mode it
+  // just set, and move on. Without the retry they die on the very first
+  // statement of startup (see issue #255).
+  withBusyRetry(() => db.pragma('journal_mode = WAL'));
   // Wait up to 5s on write locks. Multiple agent processes (main + research +
   // comms + content + ops) run initDatabase() at startup; without this a
   // concurrent ALTER can throw SQLITE_BUSY on whichever process loses the race.
@@ -506,19 +512,24 @@ export function ensureDatabase(): void {
  * concurrent-startup race where two agent processes both observe the column
  * as missing and both attempt the ALTER; whichever loses sees "duplicate
  * column" and treats it as a no-op.
+ *
+ * Returns true only when this process actually added the column, so a caller
+ * can log a migration without logging it again on every subsequent boot — and
+ * without the losing racer claiming a migration it didn't perform.
  */
 function addColumnIfMissing(
   database: Database.Database,
   table: string,
   column: string,
   typeAndDefault: string,
-): void {
+): boolean {
   const cols = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
-  if (cols.some((c) => c.name === column)) return;
+  if (cols.some((c) => c.name === column)) return false;
   try {
     database.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${typeAndDefault}`);
+    return true;
   } catch (err: any) {
-    if (/duplicate column/i.test(err?.message ?? '')) return;
+    if (/duplicate column/i.test(err?.message ?? '')) return false;
     throw err;
   }
 }
@@ -526,18 +537,11 @@ function addColumnIfMissing(
 /** Add columns that may not exist in older databases. */
 function runMigrations(database: Database.Database): void {
   // Add context_tokens column to token_usage (introduced for accurate context tracking)
-  const cols = database.prepare(`PRAGMA table_info(token_usage)`).all() as Array<{ name: string }>;
-  const hasContextTokens = cols.some((c) => c.name === 'context_tokens');
-  if (!hasContextTokens) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN context_tokens INTEGER NOT NULL DEFAULT 0`);
-  }
+  addColumnIfMissing(database, 'token_usage', 'context_tokens', 'INTEGER NOT NULL DEFAULT 0');
   // Add context_window column (the model's real window, e.g. Opus 4.8 = 1M).
   // Nullable: NULL on old rows / engines that don't report one, so consumers
   // fall back to CONTEXT_LIMIT.
-  const hasContextWindow = cols.some((c) => c.name === 'context_window');
-  if (!hasContextWindow) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN context_window INTEGER`);
-  }
+  addColumnIfMissing(database, 'token_usage', 'context_window', 'INTEGER');
 
   // Multi-agent: migrate sessions table to composite primary key (chat_id, agent_id)
   // Check if PK is composite by looking at pk column count in pragma
@@ -560,60 +564,28 @@ function runMigrations(database: Database.Database): void {
     `);
   }
 
-  const taskCols = database.prepare(`PRAGMA table_info(scheduled_tasks)`).all() as Array<{ name: string }>;
-  if (!taskCols.some((c) => c.name === 'agent_id')) {
-    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
-  }
+  addColumnIfMissing(database, 'scheduled_tasks', 'agent_id', `TEXT NOT NULL DEFAULT 'main'`);
 
-  const usageCols = database.prepare(`PRAGMA table_info(token_usage)`).all() as Array<{ name: string }>;
-  if (!usageCols.some((c) => c.name === 'agent_id')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
-  }
-  if (!usageCols.some((c) => c.name === 'cache_creation')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN cache_creation INTEGER NOT NULL DEFAULT 0`);
-  }
+  addColumnIfMissing(database, 'token_usage', 'agent_id', `TEXT NOT NULL DEFAULT 'main'`);
+  addColumnIfMissing(database, 'token_usage', 'cache_creation', 'INTEGER NOT NULL DEFAULT 0');
   // Per-turn telemetry columns (free from the SDK result object).
-  if (!usageCols.some((c) => c.name === 'model')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN model TEXT`);
-  }
-  if (!usageCols.some((c) => c.name === 'duration_ms')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0`);
-  }
-  if (!usageCols.some((c) => c.name === 'duration_api_ms')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN duration_api_ms INTEGER NOT NULL DEFAULT 0`);
-  }
-  if (!usageCols.some((c) => c.name === 'num_turns')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN num_turns INTEGER NOT NULL DEFAULT 0`);
-  }
-  if (!usageCols.some((c) => c.name === 'stop_reason')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN stop_reason TEXT`);
-  }
-  if (!usageCols.some((c) => c.name === 'is_error')) {
-    database.exec(`ALTER TABLE token_usage ADD COLUMN is_error INTEGER NOT NULL DEFAULT 0`);
-  }
+  addColumnIfMissing(database, 'token_usage', 'model', 'TEXT');
+  addColumnIfMissing(database, 'token_usage', 'duration_ms', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(database, 'token_usage', 'duration_api_ms', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(database, 'token_usage', 'num_turns', 'INTEGER NOT NULL DEFAULT 0');
+  addColumnIfMissing(database, 'token_usage', 'stop_reason', 'TEXT');
+  addColumnIfMissing(database, 'token_usage', 'is_error', 'INTEGER NOT NULL DEFAULT 0');
   // Whether cost_usd is money or a placeholder. Backfilled to 'provider'
   // because every row written before this column existed came from a runtime
-  // that priced its own turns. Uses addColumnIfMissing rather than a bare
-  // ALTER: several agent services run runMigrations concurrently at boot, and
-  // that helper already tolerates the losing racer's "duplicate column".
+  // that priced its own turns.
   addColumnIfMissing(database, 'token_usage', 'cost_source', `TEXT NOT NULL DEFAULT 'provider'`);
 
-  const convoCols = database.prepare(`PRAGMA table_info(conversation_log)`).all() as Array<{ name: string }>;
-  if (!convoCols.some((c) => c.name === 'agent_id')) {
-    database.exec(`ALTER TABLE conversation_log ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
-  }
+  addColumnIfMissing(database, 'conversation_log', 'agent_id', `TEXT NOT NULL DEFAULT 'main'`);
 
   // Task state machine: add started_at and last_status columns
-  const taskColNames = taskCols.map((c) => c.name);
-  if (!taskColNames.includes('started_at')) {
-    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN started_at INTEGER`);
-  }
-  if (!taskColNames.includes('last_status')) {
-    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN last_status TEXT`);
-  }
-  if (!taskColNames.includes('acceptance_check')) {
-    database.exec(`ALTER TABLE scheduled_tasks ADD COLUMN acceptance_check TEXT`);
-  }
+  addColumnIfMissing(database, 'scheduled_tasks', 'started_at', 'INTEGER');
+  addColumnIfMissing(database, 'scheduled_tasks', 'last_status', 'TEXT');
+  addColumnIfMissing(database, 'scheduled_tasks', 'acceptance_check', 'TEXT');
 
   // ── Memory V2 migration ──────────────────────────────────────────────
   // Detect old schema (has 'sector' column but no 'importance') and migrate.
@@ -712,32 +684,28 @@ function runMigrations(database: Database.Database): void {
     `);
   }
 
-  // Add embedding column if missing (V2 tables created before embedding support)
-  if (memColsPost.some((c) => c.name === 'importance') && !memColsPost.some((c) => c.name === 'embedding')) {
-    database.exec(`ALTER TABLE memories ADD COLUMN embedding TEXT`);
-    logger.info('Migration: added embedding column to memories table');
+  // Add embedding column if missing (V2 tables created before embedding support).
+  // The `importance` condition is load-bearing: it keeps the column off a V1
+  // table that the migration above didn't rewrite.
+  if (memColsPost.some((c) => c.name === 'importance')) {
+    if (addColumnIfMissing(database, 'memories', 'embedding', 'TEXT')) {
+      logger.info('Migration: added embedding column to memories table');
+    }
   }
 
   // Hive Mind V2: Add agent_id to memories for attribution
-  if (!memColsPost.some((c: { name: string }) => c.name === 'agent_id')) {
-    database.exec(`ALTER TABLE memories ADD COLUMN agent_id TEXT NOT NULL DEFAULT 'main'`);
+  if (addColumnIfMissing(database, 'memories', 'agent_id', `TEXT NOT NULL DEFAULT 'main'`)) {
     logger.info('Migration: added agent_id column to memories table');
   }
 
   // Hive Mind V2: Add embedding + model tracking to consolidations
-  const consolCols = database.prepare('PRAGMA table_info(consolidations)').all() as Array<{ name: string }>;
-  if (!consolCols.some((c) => c.name === 'embedding')) {
-    database.exec(`ALTER TABLE consolidations ADD COLUMN embedding TEXT`);
+  if (addColumnIfMissing(database, 'consolidations', 'embedding', 'TEXT')) {
     logger.info('Migration: added embedding column to consolidations table');
   }
-  if (!consolCols.some((c) => c.name === 'embedding_model')) {
-    database.exec(`ALTER TABLE consolidations ADD COLUMN embedding_model TEXT DEFAULT 'embedding-001'`);
-  }
+  addColumnIfMissing(database, 'consolidations', 'embedding_model', `TEXT DEFAULT 'embedding-001'`);
 
   // Add embedding_model to memories too (future-proofing)
-  if (!memColsPost.some((c: { name: string }) => c.name === 'embedding_model')) {
-    database.exec(`ALTER TABLE memories ADD COLUMN embedding_model TEXT DEFAULT 'embedding-001'`);
-  }
+  addColumnIfMissing(database, 'memories', 'embedding_model', `TEXT DEFAULT 'embedding-001'`);
 
   // Hive Mind V2: Fix FTS5 update trigger to only fire on content column changes.
   // The old trigger fires on every UPDATE (including salience/importance-only changes),
@@ -746,9 +714,13 @@ function runMigrations(database: Database.Database): void {
     `SELECT sql FROM sqlite_master WHERE type='trigger' AND name='memories_fts_update'`,
   ).get() as { sql: string } | undefined;
   if (triggerCheck?.sql && !triggerCheck.sql.includes('UPDATE OF')) {
+    // IF NOT EXISTS on the CREATE, because DROP + CREATE is not atomic across
+    // processes: two agents can both drop before either creates, and the loser
+    // would otherwise die on "trigger already exists". Whoever runs last still
+    // ends on a CREATE, so the rewritten trigger is always the one left behind.
     database.exec(`
       DROP TRIGGER IF EXISTS memories_fts_update;
-      CREATE TRIGGER memories_fts_update AFTER UPDATE OF summary, raw_text, entities, topics ON memories BEGIN
+      CREATE TRIGGER IF NOT EXISTS memories_fts_update AFTER UPDATE OF summary, raw_text, entities, topics ON memories BEGIN
         INSERT INTO memories_fts(memories_fts, rowid, summary, raw_text, entities, topics)
           VALUES ('delete', old.id, old.summary, old.raw_text, old.entities, old.topics);
         INSERT INTO memories_fts(rowid, summary, raw_text, entities, topics)
@@ -759,16 +731,14 @@ function runMigrations(database: Database.Database): void {
   }
 
   // Hive Mind V2: Add superseded_by for contradiction resolution
-  if (!memColsPost.some((c: { name: string }) => c.name === 'superseded_by')) {
-    database.exec(`ALTER TABLE memories ADD COLUMN superseded_by INTEGER REFERENCES memories(id)`);
+  if (addColumnIfMissing(database, 'memories', 'superseded_by', 'INTEGER REFERENCES memories(id)')) {
     logger.info('Migration: added superseded_by column to memories table');
   }
 
   // Hive Mind V2: Add pinned flag for permanent memories that never decay.
   // Memories are only pinned explicitly by the user ("remember this permanently")
   // or via /pin command. No auto-pinning: the user controls what's permanent.
-  if (!memColsPost.some((c: { name: string }) => c.name === 'pinned')) {
-    database.exec(`ALTER TABLE memories ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0`);
+  if (addColumnIfMissing(database, 'memories', 'pinned', 'INTEGER NOT NULL DEFAULT 0')) {
     logger.info('Migration: added pinned column to memories table');
   }
 
@@ -777,8 +747,7 @@ function runMigrations(database: Database.Database): void {
   // 0 (strict per-agent) so the cross-agent Hive Mind recall leak is closed
   // without retroactively sharing anyone's memories. Promote a memory to the
   // shared tier explicitly to make it visible to every agent on the chat.
-  if (!memColsPost.some((c: { name: string }) => c.name === 'shared')) {
-    database.exec(`ALTER TABLE memories ADD COLUMN shared INTEGER NOT NULL DEFAULT 0`);
+  if (addColumnIfMissing(database, 'memories', 'shared', 'INTEGER NOT NULL DEFAULT 0')) {
     logger.info('Migration: added shared column to memories table');
   }
 
@@ -804,33 +773,26 @@ function runMigrations(database: Database.Database): void {
   }
 
   // Tier 2 deterministic comms: add parent_task_id to chain handbacks to their originating task
-  const missionColsChain = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
-  if (!missionColsChain.some((c) => c.name === 'parent_task_id')) {
-    database.exec(`ALTER TABLE mission_tasks ADD COLUMN parent_task_id TEXT`);
+  if (addColumnIfMissing(database, 'mission_tasks', 'parent_task_id', 'TEXT')) {
     logger.info('Migration: added mission_tasks.parent_task_id');
   }
 
   // Tier 3 gather/join primitive: group tag + role, so a scheduler-released
   // join mission can aggregate a fan-out's children once all are terminal.
-  const missionColsGather = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
-  if (!missionColsGather.some((c) => c.name === 'group_id')) {
-    database.exec(`ALTER TABLE mission_tasks ADD COLUMN group_id TEXT`);
+  if (addColumnIfMissing(database, 'mission_tasks', 'group_id', 'TEXT')) {
     logger.info('Migration: added mission_tasks.group_id');
   }
-  if (!missionColsGather.some((c) => c.name === 'role')) {
-    database.exec(`ALTER TABLE mission_tasks ADD COLUMN role TEXT NOT NULL DEFAULT 'task'`);
+  if (addColumnIfMissing(database, 'mission_tasks', 'role', `TEXT NOT NULL DEFAULT 'task'`)) {
     logger.info('Migration: added mission_tasks.role');
   }
 
-  const missionColsContinuation = database.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
   for (const [name, type] of [
     ['chain_id', 'TEXT'],
     ['continuation_step', 'INTEGER'],
     ['continuation_limit', 'INTEGER'],
     ['continuation_key', 'TEXT'],
   ] as const) {
-    if (!missionColsContinuation.some((c) => c.name === name)) {
-      database.exec(`ALTER TABLE mission_tasks ADD COLUMN ${name} ${type}`);
+    if (addColumnIfMissing(database, 'mission_tasks', name, type)) {
       logger.info(`Migration: added mission_tasks.${name}`);
     }
   }
@@ -846,10 +808,14 @@ function runMigrations(database: Database.Database): void {
   // Live Meetings: add provider column so we can track which platform
   // each session used (pika avatar vs recall voice-only). Default 'pika'
   // for existing rows so historical data keeps the right label.
+  // The emptiness check is an existence check: PRAGMA table_info returns no
+  // rows for a table that isn't there, and addColumnIfMissing would then ALTER
+  // it and throw "no such table".
   const meetCols = database.prepare(`PRAGMA table_info(meet_sessions)`).all() as Array<{ name: string }>;
-  if (meetCols.length > 0 && !meetCols.some((c) => c.name === 'provider')) {
-    database.exec(`ALTER TABLE meet_sessions ADD COLUMN provider TEXT NOT NULL DEFAULT 'pika'`);
-    logger.info('Migration: added provider column to meet_sessions');
+  if (meetCols.length > 0) {
+    if (addColumnIfMissing(database, 'meet_sessions', 'provider', `TEXT NOT NULL DEFAULT 'pika'`)) {
+      logger.info('Migration: added provider column to meet_sessions');
+    }
   }
 
   // Text War Room: tag each meeting as voice or text so existing voice rows
@@ -3690,7 +3656,7 @@ export function stampMemoryIsolationMigration(database: Database.Database = db):
 export function migrateDbFile(dbPath: string): void {
   const database = new Database(dbPath);
   try {
-    database.pragma('journal_mode = WAL');
+    withBusyRetry(() => database.pragma('journal_mode = WAL'));
     database.pragma('busy_timeout = 5000');
     createSchema(database);
     runMigrations(database);
