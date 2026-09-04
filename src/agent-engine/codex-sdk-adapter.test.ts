@@ -546,7 +546,7 @@ describe('CodexSdkEngineAdapter — configuration', () => {
     expect(state.startCalls[0].modelReasoningEffort).toBe('xhigh');
 
     state.scripts.push(happyScript);
-    await collect(baseInput({ effort: 'max' }));
+    await collect(baseInput({ model: 'gpt-5.6-sol', effort: 'max' }));
     expect(state.startCalls[1].modelReasoningEffort).toBe('max');
 
     state.scripts.push(happyScript);
@@ -571,6 +571,12 @@ describe('CodexSdkEngineAdapter — configuration', () => {
   it('normalizes an unsupported "minimal" effort away (model default)', async () => {
     state.scripts.push(happyScript);
     await collect(baseInput({ thinkingMode: 'minimal' }));
+    expect(state.startCalls[0].modelReasoningEffort).toBeUndefined();
+  });
+
+  it('does not send the unsupported none effort to GPT-6 Astra', async () => {
+    state.scripts.push(happyScript);
+    await collect(baseInput({ model: 'gpt-6-astra', thinkingMode: 'none' }));
     expect(state.startCalls[0].modelReasoningEffort).toBeUndefined();
   });
 
@@ -706,6 +712,20 @@ describe('CodexSdkEngineAdapter — failure paths', () => {
     const events = await collect(baseInput());
     const result = events.at(-1) as any;
     expect(result.text).toMatch(/codex login|OPENAI_API_KEY/);
+  });
+
+  it('explains a staged ChatGPT model rollout without dumping the upstream JSON', async () => {
+    state.scripts.push(async function* () {
+      yield {
+        type: 'error',
+        message: '{"error":{"message":"The \'gpt-6-astra\' model is not supported when using Codex with a ChatGPT account."}}',
+      };
+    });
+    const events = await collect(baseInput({ model: 'gpt-6-astra' }));
+    const result = events.at(-1) as any;
+    expect(result.text).toMatch(/not enabled.*ChatGPT Codex account/i);
+    expect(result.text).toMatch(/API key/);
+    expect(result.text).not.toContain('{"error"');
   });
 
   it('falls back to a fresh thread when resume hits a stale session', async () => {

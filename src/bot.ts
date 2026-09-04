@@ -497,6 +497,7 @@ const AVAILABLE_MODELS: Record<string, string> = {
 };
 
 const OPENAI_MODEL_SHORTCUTS: Record<string, string> = {
+  astra: 'gpt-6-astra',
   sol: 'gpt-5.6-sol',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-5.6-luna',
@@ -530,7 +531,7 @@ export function resolveTelegramModelSelection(provider: ProviderConfig, rawArg: 
     return {
       model,
       shortcuts: OPENAI_MODEL_SHORTCUTS,
-      example: 'gpt-5.6-sol',
+      example: 'gpt-6-astra',
       ...(!model ? { error: `Unknown OpenAI model: ${arg}` } : {}),
     };
   }

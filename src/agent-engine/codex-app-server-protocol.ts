@@ -10,7 +10,7 @@
  * `scripts/check-codex-app-server-schema.ts` regenerates the real schema from the
  * PINNED binary and asserts every method and field named here still exists.
  *
- * Baseline: `@openai/codex` 0.149.1 (direct, exact-pinned dependency).
+ * Baseline: `@openai/codex` 0.153.2 (direct, exact-pinned dependency).
  *
  * Trust rules for anything arriving from the child (see `isJsonRpcMessage`):
  *  - every inbound line is `unknown` until its envelope is checked;
@@ -18,7 +18,7 @@
  *  - a NEW optional field must never break a turn;
  *  - a MISSING required field on a method we consume is a protocol error.
  *
- * Verified against the generated 0.149.1 bindings, where the RFC's prose was
+ * Verified against the generated 0.153.2 bindings, where the RFC's prose was
  * wrong or incomplete:
  *  - `InitializeCapabilities` requires BOTH `experimentalApi` and
  *    `requestAttestation`; the RFC example sends only the former, which would
@@ -64,7 +64,7 @@ export interface ClientInfo {
 }
 
 /**
- * Both fields are REQUIRED by the 0.149.1 schema — `requestAttestation` is not
+ * Both fields are REQUIRED by the 0.153.2 schema — `requestAttestation` is not
  * optional, so it must be sent explicitly even though the first release declines
  * attestation. Omitting it is a deserialization failure, not a default.
  */
@@ -241,7 +241,7 @@ export function parseInitializeResponse(result: unknown): InitializeResponse {
 
 // ── thread + turn lifecycle (v2) ─────────────────────────────────────────────
 //
-// Verified against the generated 0.149.1 v2 bindings. Two asymmetries matter and
+// Verified against the generated 0.153.2 v2 bindings. Two asymmetries matter and
 // are easy to get wrong:
 //
 //  1. The REQUEST takes a sandbox MODE (`sandbox?: SandboxMode`, kebab-case, the
@@ -493,7 +493,7 @@ export function parseEffectiveThreadPolicy(result: unknown, where = 'thread poli
   }
 
   // `reasoningEffort` and `activePermissionProfile` are REQUIRED members with nullable
-  // types in 0.149.1, so an absent key is not the same as an explicit null. Treating
+  // types in 0.153.2, so an absent key is not the same as an explicit null. Treating
   // it as null would let a response that simply omits the profile bypass the
   // mandatory "must be null" verification rule.
   if (!('reasoningEffort' in result)) {
@@ -623,7 +623,7 @@ export function unsubscribeStatus(result: unknown): string {
 
 // ── server-initiated requests ────────────────────────────────────────────────
 //
-// The pinned 0.149.1 `ServerRequest` union has ELEVEN variants. ClaudeClaw answers
+// The pinned 0.153.2 `ServerRequest` union has ELEVEN variants. ClaudeClaw answers
 // exactly one of them with real content — the structured user question — and every
 // other one with a schema-valid refusal. Answering nothing was the previous behaviour
 // and it is not neutral: App Server blocks on its own request until a response
@@ -640,7 +640,7 @@ export const ASK_USER_QUESTION_METHOD = 'item/tool/requestUserInput';
 export const SERVER_REQUEST_REFUSED = -32000;
 
 /**
- * Every method the pinned 0.149.1 `ServerRequest` union can deliver, in schema order.
+ * Every method the pinned 0.153.2 `ServerRequest` union can deliver, in schema order.
  *
  * ALL of them are classified below — supported, denied, or refused. That completeness
  * is the point: a variant nobody decided about would fall through to method-not-found,
@@ -856,7 +856,7 @@ export function toolUserInputResponse(answers: Record<string, string[]> = {}): {
 
 /**
  * Where each notification the adapter consumes carries its turn id, per the pinned
- * 0.149.1 generated types:
+ * 0.153.2 generated types:
  *
  *  - `'nested'` — as `turn.id`, with NO top-level `turnId` (the lifecycle pair);
  *  - `'top'` — as the top-level `turnId`.
@@ -902,7 +902,7 @@ export function consumedNotificationIdentity(method: string): 'nested' | 'top' |
 }
 
 /**
- * `ThreadItem` variants that are NOT tool use, per the pinned 0.149.1 union.
+ * `ThreadItem` variants that are NOT tool use, per the pinned 0.153.2 union.
  *
  * Stated as an EXCLUSION list on purpose. This backs the `maxToolItems: 0` backstop,
  * where the question is "did a turn that authorized no tools use one" — so a variant
@@ -992,7 +992,7 @@ function asString(value: unknown, fallback = ''): string {
 /**
  * Display text for a reasoning item: its SUMMARY, and never its content.
  *
- * The pinned 0.149.1 variant is `{ id, summary: Array<string>, content: Array<string> }`.
+ * The pinned 0.153.2 variant is `{ id, summary: Array<string>, content: Array<string> }`.
  * There is no `text` member — which is what this used to read, so the reasoning line
  * resolved to an empty string and the detail never rendered for any turn. The schema audit
  * now pins `summary`, so the two cannot drift apart again.
@@ -1024,7 +1024,7 @@ export function parseThreadItem(value: unknown): ThreadItem | null {
   switch (type) {
     case 'agentMessage':
       return { type: 'agentMessage', id, text: asString(value.text) };
-    // `reasoning` is the pinned 0.149.1 spelling, confirmed against the generated
+    // `reasoning` is the pinned 0.153.2 spelling, confirmed against the generated
     // `ThreadItem` union. The other two are tolerance for a build that uses the SDK's
     // snake_case convention (`web_search` vs `webSearch`); a miss here costs nothing but
     // silence, which is the exact bug this case exists to fix.

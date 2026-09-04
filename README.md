@@ -524,7 +524,7 @@ Design, measurements and the terms-of-service discussion:
 
 ### OpenAI (native Codex)
 
-First-class OpenAI/GPT provider on the official Codex runtime. `CODEX_TRANSPORT=app-server` opts into one warm process for incremental text streaming, turn-scoped cancellation, and effective-policy verification. The SDK remains the default rollback posture until native-Windows sandboxed process-tree cancellation passes the containment gate. The Codex runtime owns the full agentic loop (shell, file edits, MCP servers, web search, session resume), so this is a real multi-turn agent, not the experimental Codex ACP adapter.
+First-class OpenAI/GPT provider on the official Codex runtime. GPT-6 Astra is selectable as `gpt-6-astra` when the account has rollout access. `CODEX_TRANSPORT=app-server` opts into one warm process for incremental text streaming, turn-scoped cancellation, and effective-policy verification. The SDK remains the default rollback posture until native-Windows sandboxed process-tree cancellation passes the containment gate. The Codex runtime owns the full agentic loop (shell, file edits, MCP servers, web search, session resume), so this is a real multi-turn agent, not the experimental Codex ACP adapter.
 
 **Setup (one-time), no feature flag:**
 
@@ -538,6 +538,8 @@ First-class OpenAI/GPT provider on the official Codex runtime. `CODEX_TRANSPORT=
 > **Security — untrusted input.** The read-only sandbox still lets the model *read* local files, so a prompt-injected message could try to echo on-disk credentials. Mitigations: outbound exfiltration guard redacts key/JWT-shaped strings, secrets are stripped from the model's shell env, MCP servers drop on read-only turns, network is off unless a turn is deliberately full-access, and `CODEX_HOME` is isolated. For a public bot, prefer **API-key auth with a scoped, rotatable key.**
 
 **Scope:** personas, multi-turn sessions (`openai:<thread-id>`, persisted in `~/.codex/sessions`), MCP (stdio + streamable HTTP), streamed text/tool events, and cost tracking all work. GPT costs are **estimates** from token counts (subscription auth = $0 marginal); override with `OPENAI_PRICING_JSON`.
+
+GPT-6 Astra and native-Windows validation evidence is recorded in [`docs/validation/codex-astra-0.153.2.md`](docs/validation/codex-astra-0.153.2.md).
 
 **Caveats:** AskUserQuestion buttons aren't supported (model asks in plain text), and per-tool allow/deny lists don't apply — Codex brings its own workspace-sandboxed toolset.
 

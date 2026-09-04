@@ -26,7 +26,8 @@ export interface OpenAiModelRates {
   outputPerM: number;
 }
 
-// GPT-5.x API list prices per 1M tokens (verified July 2026). The base tier
+// OpenAI API list prices per 1M tokens. GPT-5.x rates were verified July 2026;
+// GPT-6 Astra was verified September 2026. The base tier
 // tracks gpt-5.5 ($5 in / $0.50 cached / $30 out). Point releases keep their
 // tier's pricing, so these tier defaults cover unknown future ids; exact
 // per-model rates can always be pinned via OPENAI_PRICING_JSON. NOTE: these
@@ -41,6 +42,7 @@ const TIER_NANO: OpenAiModelRates = { inputPerM: 0.25, cachedInputPerM: 0.025, o
 // cached rate is OpenAI's standard 10% of input where not separately published.
 // Override any of these via OPENAI_PRICING_JSON.
 const MODEL_RATES: Record<string, OpenAiModelRates> = {
+  'gpt-6-astra': { inputPerM: 10, cachedInputPerM: 1, outputPerM: 50 },
   'gpt-5.6-sol': { inputPerM: 5, cachedInputPerM: 0.5, outputPerM: 30 },
   'gpt-5.6-terra': { inputPerM: 2.5, cachedInputPerM: 0.25, outputPerM: 15 },
   'gpt-5.6-luna': { inputPerM: 1, cachedInputPerM: 0.1, outputPerM: 6 },
@@ -139,8 +141,13 @@ export function estimateOpenAiCostUsd(model: string | undefined, usage: OpenAiTu
  */
 const DEFAULT_OPENAI_CONTEXT_WINDOW = 272_000;
 
-export function contextWindowForOpenAiModel(_model: string | undefined): number {
+const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
+  'gpt-6-astra': 1_050_000,
+};
+
+export function contextWindowForOpenAiModel(model: string | undefined): number {
   const raw = process.env.OPENAI_CONTEXT_WINDOW || readEnvFile(['OPENAI_CONTEXT_WINDOW']).OPENAI_CONTEXT_WINDOW;
   const parsed = raw ? Number.parseInt(raw, 10) : NaN;
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_OPENAI_CONTEXT_WINDOW;
+  if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  return MODEL_CONTEXT_WINDOWS[(model ?? '').toLowerCase().trim()] ?? DEFAULT_OPENAI_CONTEXT_WINDOW;
 }

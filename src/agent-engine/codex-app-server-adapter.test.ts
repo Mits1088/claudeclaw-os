@@ -35,7 +35,7 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../security.js', () => ({ getScrubbedSdkEnv: () => ({ PATH: '/usr/bin' }) }));
 
-import { CodexAppServerEngineAdapter, askUserQuestion, buildThreadConfig, isStaleThreadError, summarizeCommand } from './codex-app-server-adapter.js';
+import { CodexAppServerEngineAdapter, askUserQuestion, buildThreadConfig, friendlyAppServerError, isStaleThreadError, summarizeCommand } from './codex-app-server-adapter.js';
 import type {
   JsonRpcNotification,
   JsonRpcRequest,
@@ -363,6 +363,13 @@ describe('thread start and session handling', () => {
     expect(events.at(-1)).toMatchObject({ type: 'result', stopReason: 'end_turn' });
   });
 
+  it('does not send the unsupported none effort to GPT-6 Astra', async () => {
+    const server = scriptedServer();
+    await collect(server, baseInput({ model: 'gpt-6-astra', thinkingMode: 'none' }));
+
+    expect(server.requests[0].params.config).not.toHaveProperty('model_reasoning_effort');
+  });
+
   it('resumes an existing thread with excludeTurns and re-applies caller policy', async () => {
     // Resume is where the current caller's MCP set and policy are re-applied, and
     // where the effective policy is re-verified.
@@ -435,6 +442,15 @@ describe('thread start and session handling', () => {
     expect(isStaleThreadError('thread not found')).toBe(true);
     expect(isStaleThreadError('429 rate limit')).toBe(false);
     expect(isStaleThreadError('model overloaded')).toBe(false);
+  });
+
+  it('explains a staged ChatGPT model rollout without dumping the upstream JSON', () => {
+    const friendly = friendlyAppServerError(
+      '{"error":{"message":"The \'gpt-6-astra\' model is not supported when using Codex with a ChatGPT account."}}',
+    );
+    expect(friendly).toMatch(/not enabled.*ChatGPT Codex account/i);
+    expect(friendly).toMatch(/API key/);
+    expect(friendly).not.toContain('{"error"');
   });
 });
 

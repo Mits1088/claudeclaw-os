@@ -13,6 +13,7 @@ const MODEL_LABELS: Record<string, string> = {
   'claude-sonnet-4-6': 'Sonnet 4.6',
   'claude-sonnet-4-5': 'Sonnet 4.5',
   'claude-haiku-4-5': 'Haiku 4.5',
+  'gpt-6-astra': 'GPT-6 Astra',
   'gpt-5.6-sol': 'GPT-5.6 Sol',
   'gpt-5.6-terra': 'GPT-5.6 Terra',
   'gpt-5.6-luna': 'GPT-5.6 Luna',

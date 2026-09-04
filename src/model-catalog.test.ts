@@ -20,6 +20,7 @@ describe('model catalog', () => {
     expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: 'claude-opus-5', label: 'Opus 5' });
     expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: 'claude-fable-5-1', label: 'Fable 5.1' });
     expect(OPENAI_MODEL_OPTIONS).toEqual(expect.arrayContaining([
+      { id: 'gpt-6-astra', label: 'GPT-6 Astra' },
       { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
       { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
       { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
@@ -54,6 +55,10 @@ describe('model catalog', () => {
     expect(gpt56?.thinkingOptions.map((option) => option.id))
       .toEqual(['', 'none', 'low', 'medium', 'high', 'xhigh', 'max']);
 
+    const astra = staticRuntimeOptionsFor({ type: 'openai', model: 'gpt-6-astra' });
+    expect(astra?.thinkingOptions.map((option) => option.id))
+      .toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+
     const gpt55 = staticRuntimeOptionsFor({ type: 'openai', model: 'gpt-5.5' });
     expect(gpt55?.thinkingOptions.map((option) => option.id))
       .toEqual(['', 'low', 'medium', 'high', 'xhigh']);
@@ -63,6 +68,7 @@ describe('model catalog', () => {
     expect(normalizedEffortForProvider({ type: 'claude', model: 'claude-opus-5' }, 'deep')).toBe('high');
     expect(normalizedEffortForProvider({ type: 'claude', model: 'claude-sonnet-4-6' }, 'xhigh')).toBeUndefined();
     expect(normalizedEffortForProvider({ type: 'openai', model: 'gpt-5.6-luna' }, 'none')).toBe('none');
+    expect(normalizedEffortForProvider({ type: 'openai', model: 'gpt-6-astra' }, 'none')).toBeUndefined();
   });
 
   it('never emits legacy extended thinking for adaptive-only frontier models', () => {

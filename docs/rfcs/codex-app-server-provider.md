@@ -8,7 +8,7 @@ Decision date: 2026-07-31
 Implementation: Complete
 Implemented in: v1.8.0 (PR #174)
 Component: provider engine / native OpenAI transport
-Current validated baseline: Codex CLI 0.149.1. Historical 0.144.6 probe findings remain labelled below where they still explain a protocol decision.
+Current validated baseline: Codex CLI 0.153.2. Historical 0.144.6 and 0.149.1 probe findings remain labelled below where they still explain a protocol decision.
 Last updated: 2026-07-24
 Last reviewed: 2026-08-01
 ---

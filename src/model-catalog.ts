@@ -28,6 +28,7 @@ const MODEL_LABELS: Readonly<Record<string, string>> = {
   'claude-sonnet-4-6': 'Sonnet 4.6',
   'claude-sonnet-4-5': 'Sonnet 4.5',
   'claude-haiku-4-5': 'Haiku 4.5',
+  'gpt-6-astra': 'GPT-6 Astra',
   'gpt-5.6-sol': 'GPT-5.6 Sol',
   'gpt-5.6-terra': 'GPT-5.6 Terra',
   'gpt-5.6-luna': 'GPT-5.6 Luna',
@@ -63,6 +64,7 @@ export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
 ]);
 
 export const OPENAI_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
+  'gpt-6-astra',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -78,6 +80,7 @@ export const VALID_CLAUDE_MODELS = CLAUDE_MODEL_OPTIONS.map((option) => option.i
 
 const CLAUDE_EFFORT_DEFAULT_HIGH = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const CLAUDE_EFFORT_NO_XHIGH = ['', 'low', 'medium', 'high', 'max'] as const;
+const OPENAI_ASTRA_EFFORT = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const OPENAI_56_EFFORT = ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const OPENAI_LEGACY_EFFORT = ['', 'low', 'medium', 'high', 'xhigh'] as const;
 
@@ -140,7 +143,11 @@ export function staticRuntimeOptionsFor(provider: ProviderConfig, requestedModel
       thinkingLabel: 'Reasoning effort',
       modeOptions: [],
       thinkingOptions: effortOptions(
-        effectiveModel.startsWith('gpt-5.6-') ? OPENAI_56_EFFORT : OPENAI_LEGACY_EFFORT,
+        effectiveModel === 'gpt-6-astra'
+          ? OPENAI_ASTRA_EFFORT
+          : effectiveModel.startsWith('gpt-5.6-')
+            ? OPENAI_56_EFFORT
+            : OPENAI_LEGACY_EFFORT,
         'medium',
       ),
     };

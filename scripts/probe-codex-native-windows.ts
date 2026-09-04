@@ -4,6 +4,7 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { createRequire } from 'module';
 
 import { CodexAppServerClient } from '../src/agent-engine/codex-app-server-client.js';
 import {
@@ -25,6 +26,8 @@ interface ExecResult { exitCode: number; stdout: string; stderr: string }
 const MODEL = process.env.OPENAI_MODEL?.trim() || 'gpt-5.5';
 const ROOT_PREFIX = 'claudeclaw-codex-windows-probe-';
 const ps = (value: string): string => `'${value.replace(/'/g, "''")}'`;
+const require = createRequire(import.meta.url);
+const CODEX_VERSION = (require('@openai/codex/package.json') as { version?: string }).version ?? 'unknown';
 
 function childEnv(codexHome: string): Record<string, string> {
   const env: Record<string, string> = {};
@@ -88,7 +91,7 @@ async function main(): Promise<void> {
 
   const evidence: Record<string, unknown> = {
     platform: `${process.platform}/${process.arch}`,
-    codexVersion: '0.149.1',
+    codexVersion: CODEX_VERSION,
     root: '<disposable-os-temp>',
   };
 
@@ -178,12 +181,12 @@ async function main(): Promise<void> {
     );
     evidence.processTreeCancellation = {
       status: 'blocked',
-      reason: 'Codex 0.149.1 rejects command/exec/terminate for Windows sandbox processes.',
+      reason: `Codex ${CODEX_VERSION} rejects command/exec/terminate for Windows sandbox processes.`,
     };
     evidence.unrelatedProcessIsolation = 'not run because sandboxed cancellation is unavailable';
 
     console.log(JSON.stringify(evidence, null, 2));
-    throw new Error('Native-Windows containment gate failed: sandboxed process-tree cancellation is unavailable in Codex 0.149.1.');
+    throw new Error(`Native-Windows containment gate failed: sandboxed process-tree cancellation is unavailable in Codex ${CODEX_VERSION}.`);
   } finally {
     await client.shutdown().catch(() => {});
     await new Promise((resolve) => setTimeout(resolve, 2_000));

@@ -1,11 +1,11 @@
 // Tests for the App Server schema drift check itself.
 //
 // A check that has never failed is decoration. These prove `auditBindings()` accepts
-// the real pinned 0.149.1 shapes and REJECTS each drift we care about — especially
+// the real pinned 0.153.2 shapes and REJECTS each drift we care about — especially
 // the silent widenings a prefix match would have waved through
 // (`string | null`, `string[]`, `boolean | null`).
 //
-// Fixtures are representative copies of the 0.149.1 `generate-ts` output for the
+// Fixtures are representative copies of the 0.153.2 `generate-ts` output for the
 // bindings the audit reads, so a passing baseline here means the same thing as a
 // passing run against the binary.
 
@@ -58,7 +58,7 @@ export type ClientRequest = { "method": "initialize", id: RequestId, params: Ini
   'v2/WindowsSandboxReadinessResponse': 'export type WindowsSandboxReadinessResponse = { status: WindowsSandboxReadiness, };\n',
 
   // ── server-initiated requests (Phase 2, finding 8) ────────────────────────
-  // All ELEVEN variants, exactly as the pinned 0.149.1 generator emits them. The audit
+  // All ELEVEN variants, exactly as the pinned 0.153.2 generator emits them. The audit
   // compares this union against the classification table in both directions, so a
   // partial fixture would hide the very drift the check exists to catch.
   ServerRequest: `
@@ -67,7 +67,7 @@ export type ServerRequest = { "method": "item/commandExecution/requestApproval",
   'v2/AppToolApproval': 'export type AppToolApproval = "auto" | "prompt" | "writes" | "approve";\n',
   'v2/DynamicToolCallResponse': 'export type DynamicToolCallResponse = { contentItems: Array<DynamicToolCallOutputContentItem>, success: boolean, };\n',
   // Every variant TAG (what the non-tool classification is checked against), with the
-  // verbatim 0.149.1 MEMBERS for the seven ClaudeClaw translates into engine events —
+  // verbatim 0.153.2 MEMBERS for the seven ClaudeClaw translates into engine events —
   // those are what finding 11's field-level checks read. Variants we never map keep an
   // abridged body: their names are all the tool-less backstop needs.
   'v2/ThreadItem': `
@@ -85,7 +85,7 @@ export type ThreadItem = { "type": "userMessage", id: string, clientId: string |
   'v2/GrantedPermissionProfile': 'export type GrantedPermissionProfile = { network?: AdditionalNetworkPermissions, fileSystem?: AdditionalFileSystemPermissions, };\n',
 
   // ── v2 thread/turn surface (Phase 2) ──────────────────────────────────────
-  // Verbatim 0.149.1 shapes for the bindings effective-policy verification reads.
+  // Verbatim 0.153.2 shapes for the bindings effective-policy verification reads.
   'v2/ThreadStartResponse': `
 export type ThreadStartResponse = { thread: Thread, model: string, modelProvider: string, serviceTier: string | null, cwd: AbsolutePathBuf,
 runtimeWorkspaceRoots: Array<AbsolutePathBuf>,
@@ -122,7 +122,7 @@ text_elements: Array<TextElement>, } | { "type": "image", detail?: ImageDetail, 
   'v2/Turn': 'export type Turn = { id: string, items: Array<ThreadItem>, status: TurnStatus, error: TurnError | null, };\n',
 
   // ── the INBOUND surface (finding 11) ──────────────────────────────────────
-  // Verbatim 0.149.1 shapes for everything the manager routes and the adapter maps.
+  // Verbatim 0.153.2 shapes for everything the manager routes and the adapter maps.
   // The eight consumed variants are what the routing-identity check reads: `turn/started`
   // and `turn/completed` carry their id NESTED in `turn`, the other six top-level.
   ServerNotification: `
@@ -247,7 +247,7 @@ function mutate(typeName: string, from: string, to: string): Record<string, stri
   return { [typeName]: source.replace(from, to) };
 }
 
-describe('the pinned 0.149.1 baseline passes', () => {
+describe('the pinned 0.153.2 baseline passes', () => {
   it('reports no failures and checks everything we consume', () => {
     const result = auditBindings(readerWith());
     expect(result.failures).toEqual([]);

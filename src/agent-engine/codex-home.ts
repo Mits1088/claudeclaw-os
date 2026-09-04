@@ -21,7 +21,7 @@ import { logger } from '../logger.js';
  * the mutation happens later, once the outgoing child has exited and before the replacement
  * starts. The SDK path spawns per turn and simply runs the two back to back.
  *
- * ## Pinned 0.149.1 credential storage
+ * ## Pinned 0.153.2 credential storage
  *
  * The binary exposes `auth_credentials_store_mode` over `AutoAuthStorage` /
  * `keyring_storage` / `file_storage`, and in the Auto default it reads the OS keyring

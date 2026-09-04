@@ -9,6 +9,7 @@ import {
   CODEX_APP_SERVER_MAX_CONCURRENT_TURNS,
 } from '../config.js';
 import { logger } from '../logger.js';
+import { normalizedEffortForProvider } from '../model-catalog.js';
 import { getScrubbedSdkEnv } from '../security.js';
 import { composeSystemPrompt } from '../runtime-identity.js';
 import { resolveCodexCapabilityProfile, type CodexCapabilityProfile } from './codex-capability-policy.js';
@@ -257,20 +258,12 @@ export class TrustedMcpProvenanceError extends Error {
   }
 }
 
-const REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'];
-
 /** Same precedence as the SDK path: an explicit thinkingMode wins, 'auto' means default. */
-function reasoningEffortFor(input: AgentTurnInput): string | undefined {
-  const raw = input.thinkingMode?.toLowerCase().trim();
-  if (raw) return REASONING_EFFORTS.includes(raw) ? raw : undefined;
-  switch (input.effort) {
-    case 'low': return 'low';
-    case 'medium': return 'medium';
-    case 'high': return 'high';
-    case 'xhigh': return 'xhigh';
-    case 'max': return 'max';
-    default: return undefined;
-  }
+function reasoningEffortFor(input: AgentTurnInput, model: string): string | undefined {
+  const provider = { type: 'openai' as const, model };
+  const raw = input.thinkingMode?.trim();
+  if (raw) return normalizedEffortForProvider(provider, raw);
+  return normalizedEffortForProvider(provider, input.effort);
 }
 
 /** Build the version-pinned Codex config for a turn from its capability profile. */
@@ -442,6 +435,9 @@ export function isStaleThreadError(message: string): boolean {
 
 /** Turn a raw failure into an actionable, user-visible message. */
 export function friendlyAppServerError(message: string): string {
+  if (/model is not supported when using Codex with a ChatGPT account|model[^\n]*not supported[^\n]*ChatGPT account/i.test(message)) {
+    return 'This model is not enabled for the current ChatGPT Codex account yet. Retry after the rollout reaches the account, or configure an API key with access to the model.';
+  }
   if (/401|unauthorized|not (logged|signed) in|login|auth/i.test(message)) {
     return 'Codex isn\'t authenticated. Run `codex login` on the host or set OPENAI_API_KEY, then restart ClaudeClaw.';
   }
@@ -483,7 +479,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
   async *invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent> {
     const model = input.model ?? input.provider.model ?? DEFAULT_OPENAI_MODEL;
     const profile = resolveCodexCapabilityProfile(input);
-    const reasoningEffort = reasoningEffortFor(input);
+    const reasoningEffort = reasoningEffortFor(input, model);
     const signal = input.abortController?.signal;
 
     let manager: CodexAppServerManager;

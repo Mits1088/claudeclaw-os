@@ -15,6 +15,7 @@ import type {
 
 import { OPENAI_API_KEY, DEFAULT_OPENAI_MODEL, CLAUDECLAW_CONFIG, PROJECT_ROOT } from '../config.js';
 import { logger } from '../logger.js';
+import { normalizedEffortForProvider } from '../model-catalog.js';
 import { getScrubbedSdkEnv } from '../security.js';
 import { resolveCodexCapabilityProfile, type CodexCapabilityProfile } from './codex-capability-policy.js';
 import { summarizeCommand } from './command-summary.js';
@@ -134,38 +135,25 @@ function toCodexMcpServers(
  *  constructs or adds it; that belongs to the dispatch authorization layer. */
 const DISPATCH_MCP_SERVER_NAME = 'claudeclaw-dispatch';
 
-// 'minimal' is intentionally excluded: the bundled GPT-5.x models advertise
-// only low/medium/high/xhigh, so a saved/stale thinkingMode of 'minimal' is
-// normalized away (→ undefined → model default) rather than submitted as an
-// unsupported effort.
-const REASONING_EFFORTS = ['none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-
 /**
  * Reasoning depth: the dashboard's thinking selector passes provider-native
  * values through `thinkingMode`; the Claude-style `effort` (derived from
  * runtimeMode) is the fallback so quick/deep modes still bite on GPT.
  */
-function reasoningEffortFor(input: AgentTurnInput): ModelReasoningEffort | undefined {
-  const raw = input.thinkingMode?.toLowerCase().trim();
+function reasoningEffortFor(input: AgentTurnInput, model: string): ModelReasoningEffort | undefined {
+  const provider = { type: 'openai' as const, model };
+  const raw = input.thinkingMode?.trim();
   // An EXPLICIT thinking selection is authoritative: a supported effort is used
   // verbatim; 'auto' or any unsupported value (e.g. a stale 'minimal') means
   // "no override — model default". Critically, an explicit-but-unsupported
   // value must NOT fall through to the runtimeMode-derived effort below (that
   // would turn thinkingMode='minimal' + runtimeMode='deep' into 'high').
   if (raw) {
-    return (REASONING_EFFORTS as readonly string[]).includes(raw)
-      ? (raw as ModelReasoningEffort)
-      : undefined;
+    return normalizedEffortForProvider(provider, raw) as ModelReasoningEffort | undefined;
   }
-  // No explicit thinking selection → Claude-style effort from runtimeMode.
-  switch (input.effort) {
-    case 'low': return 'low';
-    case 'medium': return 'medium';
-    case 'high': return 'high';
-    case 'xhigh': return 'xhigh';
-    case 'max': return 'max' as ModelReasoningEffort;
-    default: return undefined;
-  }
+  // No explicit thinking selection → Claude-style effort from runtimeMode,
+  // still constrained by the selected model (Astra, for example, rejects none).
+  return normalizedEffortForProvider(provider, input.effort) as ModelReasoningEffort | undefined;
 }
 
 /**
@@ -336,6 +324,9 @@ function isPolicyViolation(message: string): boolean {
 /** Turn a raw Codex failure into an actionable, user-visible message. */
 function friendlyCodexError(message: string): string {
   if (isPolicyViolation(message)) return message.slice(POLICY_VIOLATION_PREFIX.length);
+  if (/model is not supported when using Codex with a ChatGPT account|model[^\n]*not supported[^\n]*ChatGPT account/i.test(message)) {
+    return 'This model is not enabled for the current ChatGPT Codex account yet. Retry after the rollout reaches the account, or configure an API key with access to the model.';
+  }
   if (/401|unauthorized|not (logged|signed) in|login|auth/i.test(message)) {
     return 'Codex isn\'t authenticated. Run `codex login` on the host (ChatGPT subscription) or set OPENAI_API_KEY in .env, then restart with `pm2 restart claudeclaw --update-env`.';
   }
@@ -390,7 +381,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
     const combinedPersona = composeSystemPrompt(persona, identity);
     const personaViaConfig = !!persona && !!combinedPersona && combinedPersona.length <= MAX_PERSONA_ARGV_CHARS;
 
-    const reasoningEffort = reasoningEffortFor(input);
+    const reasoningEffort = reasoningEffortFor(input, model);
     // The shared, transport-neutral capability profile (codex-capability-policy):
     // the single translation of resolved caller intent onto Codex-native
     // controls. The App Server transport consumes the same helper and then
