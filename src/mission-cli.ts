@@ -12,7 +12,7 @@
  * print to stderr and exit non-zero on, exactly as before.
  *
  * Usage:
- *   node dist/mission-cli.js create --agent research --title "Label" "Full prompt"
+ *   node dist/mission-cli.js create --agent research --title "Label" [--at <RFC3339>] "Full prompt"
  *   node dist/mission-cli.js handback <task-id> "Report text"   (replies to the task's originator)
  *   node dist/mission-cli.js list [--status queued]
  *   node dist/mission-cli.js result <id>
@@ -118,6 +118,8 @@ function dispatch(): void {
   const keyArg = keyFlagIdx !== -1 ? process.argv[keyFlagIdx + 1] ?? '' : '';
   const maxStepsFlagIdx = process.argv.indexOf('--max-steps');
   const maxStepsArg = maxStepsFlagIdx !== -1 ? parseInt(process.argv[maxStepsFlagIdx + 1] ?? '0', 10) : undefined;
+  const atFlagIdx = process.argv.indexOf('--at');
+  const atArg = atFlagIdx !== -1 ? process.argv[atFlagIdx + 1] ?? '' : undefined;
 
   // Parse --summary-agent flag (gather command's join assignee)
   const summaryAgentFlagIdx = process.argv.indexOf('--summary-agent');
@@ -132,7 +134,7 @@ function dispatch(): void {
 
   // Clean argv: remove all flag pairs
   const flagIndices = new Set<number>();
-  [agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx, keyFlagIdx, maxStepsFlagIdx].forEach(idx => {
+  [agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx, keyFlagIdx, maxStepsFlagIdx, atFlagIdx].forEach(idx => {
     if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
   });
   taskFlagIndices.forEach((idx) => flagIndices.add(idx));
@@ -145,7 +147,7 @@ function dispatch(): void {
   // silently accepted as the prompt/report body and corrupt the task. See #162.
   const KNOWN_FLAGS = [
     '--agent', '--title', '--priority', '--status', '--summary-agent', '--task',
-    '--key', '--max-steps', '--help',
+    '--key', '--max-steps', '--at', '--help',
   ];
   const unknownFlags = rest.filter((tok) => tok.startsWith('--'));
   if (unknownFlags.length > 0) {
@@ -159,7 +161,7 @@ function dispatch(): void {
     case 'create': {
       const prompt = rest[0];
       if (!prompt) {
-        console.error('Usage: mission-cli create --agent <id> --title "Label" "Full prompt text"');
+        console.error('Usage: mission-cli create --agent <id> --title "Label" [--at <RFC3339>] "Full prompt text"');
         process.exit(1);
       }
       const r = actionCreateMission({
@@ -168,11 +170,13 @@ function dispatch(): void {
         title: titleArg,
         priority: priorityArg,
         createdBy,
+        at: atArg,
       });
       console.log(`Mission task created: ${r.id}`);
       console.log(`  Title:    ${r.title}`);
       console.log(`  Agent:    ${r.agent || 'unassigned (use dashboard to assign)'}`);
       console.log(`  Priority: ${r.priority}`);
+      if (r.availableAt) console.log(`  Run at:   ${new Date(r.availableAt * 1000).toISOString()}`);
       console.log(`  Prompt:   ${r.prompt.slice(0, 100)}${r.prompt.length > 100 ? '...' : ''}`);
       break;
     }
@@ -237,6 +241,7 @@ function dispatch(): void {
         console.log(`${t.id} [${t.status}] @${t.assigned_agent}`);
         console.log(`  Title:   ${t.title}`);
         console.log(`  Created: ${formatDate(t.created_at)}`);
+        if (t.available_at) console.log(`  Run at:  ${formatDate(t.available_at)}`);
         if (t.completed_at) console.log(`  Done:    ${formatDate(t.completed_at)}`);
         console.log();
       }

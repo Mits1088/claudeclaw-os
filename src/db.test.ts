@@ -589,6 +589,20 @@ describe('mission task claim/complete', () => {
     expect(claimNextMissionTask('amos')?.id).toBe('lo');
   });
 
+  it('does not claim a future mission until its availability gate opens', () => {
+    const now = Math.floor(Date.now() / 1000);
+    createMissionTask('future', 'future', 'later', 'amos', 'dashboard', 9,
+      null, null, 'task', 'queued', now + 3600);
+    createMissionTask('ready', 'ready', 'now', 'amos', 'dashboard', 1,
+      null, null, 'task', 'queued', now - 1);
+
+    expect(getMissionTask('future')?.available_at).toBe(now + 3600);
+    expect(claimNextMissionTask('amos')?.id).toBe('ready');
+    completeMissionTask('ready', 'ok', 'completed');
+    expect(claimNextMissionTask('amos')).toBeNull();
+    expect(getMissionTask('future')?.status).toBe('queued');
+  });
+
   it('completeMissionTask sets status and completed_at (no stuck running)', () => {
     createMissionTask('m3', 'T3', 'finish me', 'amos');
     claimNextMissionTask('amos');
@@ -859,6 +873,37 @@ describe('migrateDbFile', () => {
     expect(names).toContain('memories');
     expect(names).toContain('dashboard_settings');
     db.close();
+  });
+
+  it('adds the mission availability gate without changing existing tasks', () => {
+    const legacy = new Database(dbPath);
+    legacy.exec(`
+      CREATE TABLE mission_tasks (
+        id TEXT PRIMARY KEY, title TEXT NOT NULL, prompt TEXT NOT NULL,
+        assigned_agent TEXT, status TEXT NOT NULL DEFAULT 'queued',
+        result TEXT, error TEXT, created_by TEXT NOT NULL DEFAULT 'dashboard',
+        priority INTEGER NOT NULL DEFAULT 0, created_at INTEGER NOT NULL,
+        started_at INTEGER, completed_at INTEGER
+      );
+      INSERT INTO mission_tasks
+        (id, title, prompt, assigned_agent, status, created_by, priority, created_at)
+      VALUES ('legacy-mission', 'Legacy', 'run now', 'main', 'queued', 'dashboard', 5, 100);
+    `);
+    legacy.close();
+
+    migrateDbFile(dbPath);
+
+    const migrated = new Database(dbPath);
+    const cols = migrated.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
+    expect(cols.some((c) => c.name === 'available_at')).toBe(true);
+    expect(migrated.prepare(
+      `SELECT id, status, available_at FROM mission_tasks WHERE id = 'legacy-mission'`,
+    ).get()).toEqual({ id: 'legacy-mission', status: 'queued', available_at: null });
+    const index = migrated.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_mission_claimable'`,
+    ).get() as { name: string } | undefined;
+    expect(index?.name).toBe('idx_mission_claimable');
+    migrated.close();
   });
 });
 

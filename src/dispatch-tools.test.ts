@@ -63,6 +63,16 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
     expect(getMissionTasks()[0].assigned_agent).toBeNull();
   });
 
+  it('mission_create persists a future availability gate', async () => {
+    const r = await callTool('mission_create', {
+      prompt: 'later', agent: 'main', at: '2099-01-02T03:04:05-07:00',
+    });
+    expect(r.isError).toBeFalsy();
+    expect(asText(r)).toContain('2099-01-02T10:04:05.000Z');
+    expect(getMissionTasks()[0].available_at).toBe(4071031445);
+    expect(claimNextMissionTask('main')).toBeNull();
+  });
+
   it('mission_create rejects an unknown agent and writes nothing', async () => {
     const r = await callTool('mission_create', { prompt: 'x', agent: 'definitely-not-an-agent' });
     expect(r.isError).toBe(true);

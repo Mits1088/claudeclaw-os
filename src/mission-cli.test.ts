@@ -104,6 +104,37 @@ describe('mission-cli create — resolve-then-store guard', () => {
     expect(created.stdout).toContain('unassigned');
   });
 
+  it('creates a future mission with an explicit UTC offset', () => {
+    const created = run('create --agent main --at 2099-01-02T03:04:05-07:00 "do this later"');
+    expect(created.status).toBe(0);
+    expect(created.stdout).toContain('Run at:');
+    expect(created.stdout).toContain('2099-01-02T10:04:05.000Z');
+
+    const listed = run('list --status queued');
+    expect(listed.stdout).toContain('Run at:');
+  });
+
+  it('rejects a future timestamp without an explicit offset and writes nothing', () => {
+    const created = run('create --agent main --at 2099-01-02T03:04:05 "do this later"');
+    expect(created.status).not.toBe(0);
+    expect(created.stderr).toContain('RFC 3339');
+    expect(run('list').stdout).toContain('No mission tasks');
+  });
+
+  it('rejects a past timestamp and writes nothing', () => {
+    const created = run('create --agent main --at 2000-01-02T03:04:05Z "too late"');
+    expect(created.status).not.toBe(0);
+    expect(created.stderr).toContain('must be in the future');
+    expect(run('list').stdout).toContain('No mission tasks');
+  });
+
+  it('rejects an invalid calendar timestamp and writes nothing', () => {
+    const created = run('create --agent main --at 2099-02-30T03:04:05Z "never"');
+    expect(created.status).not.toBe(0);
+    expect(created.stderr).toContain('invalid --at timestamp');
+    expect(run('list').stdout).toContain('No mission tasks');
+  });
+
   it('resolves a gather summary display name to its canonical id', () => {
     const gathered = run(
       'gather --summary-agent holden --title "Probe" --task "amos:check the lane" "summarize"',

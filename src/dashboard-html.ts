@@ -2433,15 +2433,44 @@ async function loadMissionControl() {
   }
 }
 
+function missionCountdown(seconds) {
+  if (seconds <= 0) return 'due now';
+  if (seconds < 60) return 'in <1m';
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return 'in ' + minutes + 'm';
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return 'in ' + hours + 'h' + (remainingMinutes ? ' ' + remainingMinutes + 'm' : '');
+  const days = Math.floor(hours / 24);
+  return 'in ' + days + 'd ' + (hours % 24) + 'h';
+}
+
+function missionAvailabilityHtml(t) {
+  if (!t.available_at) return '';
+  const runAt = new Date(t.available_at * 1000);
+  if (Number.isNaN(runAt.getTime())) return '';
+  const localTime = runAt.toLocaleString([], {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+  const countdown = missionCountdown(t.available_at - Math.floor(Date.now() / 1000));
+  const label = t.status === 'queued'
+    ? 'Runs once ' + localTime + ' · ' + countdown
+    : 'One-time gate ' + localTime;
+  return '<div class="text-xs mt-2" style="color:#a78bfa" title="' + escapeHtml(runAt.toISOString()) + '">' +
+    '<span aria-hidden="true">🕒</span> ' + escapeHtml(label) + '</div>';
+}
+
 function renderInboxCard(t) {
   const priorityDot = t.priority >= 8 ? '#ef4444' : t.priority >= 4 ? '#fbbf24' : '#6b7280';
   const timeAgo = elapsed(t.created_at);
+  const availabilityHtml = missionAvailabilityHtml(t);
   return '<div data-mid="' + t.id + '" draggable="true" ondragstart="missionDragStart(event)" ondragend="missionDragEnd(event)" style="background:#1a1a1a;border:1px solid #2a2a2a;border-radius:10px;padding:12px;min-width:200px;max-width:280px;cursor:grab;transition:opacity 0.15s">' +
     '<div class="flex items-center justify-between mb-2">' +
       '<span class="text-sm font-semibold text-white" style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.title) + '</span>' +
       '<span style="display:inline-block;width:6px;height:6px;border-radius:50%;background:' + priorityDot + ';margin-left:6px;flex-shrink:0"></span>' +
     '</div>' +
     '<div class="text-xs text-gray-500 mb-2" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escapeHtml(t.prompt.slice(0, 60)) + '</div>' +
+    availabilityHtml +
     '<div class="flex items-center justify-between">' +
       '<button data-mid="' + t.id + '" onclick="autoAssignOne(this.dataset.mid)" style="background:#1e1b4b;color:#a78bfa;border:1px solid #312e81;border-radius:6px;padding:2px 10px;font-size:11px;cursor:pointer">Auto-assign</button>' +
       '<div class="flex items-center gap-1">' +
@@ -2465,6 +2494,7 @@ function renderMissionCard(t) {
   const statusPill = statusMap[t.status] || '<span class="pill">' + t.status + '</span>';
   const agentBadge = t.status === 'queued' ? '<span class="text-xs" style="color:' + color + '">@' + t.assigned_agent + '</span>' : '';
   const timeAgo = elapsed(t.created_at);
+  const availabilityHtml = missionAvailabilityHtml(t);
   let durationStr = '';
   if (t.completed_at && t.started_at) {
     const dur = t.completed_at - t.started_at;
@@ -2496,6 +2526,7 @@ function renderMissionCard(t) {
       '<div class="flex items-center gap-2">' + statusPill + agentBadge + '</div>' +
       '<div class="flex items-center gap-1">' + cancelBtn + deleteBtn + '<span class="text-xs text-gray-600">' + timeAgo + '</span></div>' +
     '</div>' +
+    availabilityHtml +
     resultHtml +
   '</div>';
 }

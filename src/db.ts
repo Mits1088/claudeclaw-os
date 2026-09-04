@@ -238,6 +238,7 @@ function createSchema(database: Database.Database): void {
       created_by      TEXT NOT NULL DEFAULT 'dashboard',
       priority        INTEGER NOT NULL DEFAULT 0,
       created_at      INTEGER NOT NULL,
+      available_at    INTEGER,
       started_at      INTEGER,
       completed_at    INTEGER,
       parent_task_id  TEXT,
@@ -785,6 +786,15 @@ function runMigrations(database: Database.Database): void {
   if (addColumnIfMissing(database, 'mission_tasks', 'role', `TEXT NOT NULL DEFAULT 'task'`)) {
     logger.info('Migration: added mission_tasks.role');
   }
+
+  // Native one-time future missions remain queued but cannot be claimed until
+  // their UTC availability gate opens. NULL preserves immediate behavior for
+  // every mission created before this column existed.
+  if (addColumnIfMissing(database, 'mission_tasks', 'available_at', 'INTEGER')) {
+    logger.info('Migration: added mission_tasks.available_at');
+  }
+  database.exec(`CREATE INDEX IF NOT EXISTS idx_mission_claimable
+    ON mission_tasks(assigned_agent, status, available_at, priority DESC, created_at ASC)`);
 
   for (const [name, type] of [
     ['chain_id', 'TEXT'],
@@ -2377,6 +2387,7 @@ export interface MissionTask {
   created_by: string;
   priority: number;
   created_at: number;
+  available_at: number | null;
   started_at: number | null;
   completed_at: number | null;
   parent_task_id: string | null;
@@ -2408,12 +2419,16 @@ export function createMissionTask(
   groupId: string | null = null,
   role = 'task',
   status: 'queued' | 'waiting' = 'queued',
+  availableAt: number | null = null,
 ): void {
   const now = Math.floor(Date.now() / 1000);
   db.prepare(
-    `INSERT INTO mission_tasks (id, title, prompt, assigned_agent, status, created_by, priority, created_at, parent_task_id, group_id, role)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-  ).run(id, title, prompt, assignedAgent, status, createdBy, priority, now, parentTaskId, groupId, role);
+    `INSERT INTO mission_tasks
+      (id, title, prompt, assigned_agent, status, created_by, priority, created_at,
+       available_at, parent_task_id, group_id, role)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(id, title, prompt, assignedAgent, status, createdBy, priority, now,
+    availableAt, parentTaskId, groupId, role);
 }
 
 export function createMissionContinuation(input: {
@@ -2538,6 +2553,7 @@ export function claimNextMissionTask(agentId: string, workerInstanceId?: string)
   // SQLITE_BUSY on the upgrade WITHOUT honoring busy_timeout (issue #155).
   const txn = db.transaction(() => {
     if (workerInstanceId && !isWorkerLeaseCurrent(agentId, workerInstanceId)) return null;
+    const now = Math.floor(Date.now() / 1000);
     // One-running-per-agent guard: don't claim while this agent already has a task
     // executing. Tasks are marked 'running' at claim/enqueue time and execution is
     // serialized per chat by the message queue, so without this guard a later tick
@@ -2555,12 +2571,13 @@ export function claimNextMissionTask(agentId: string, workerInstanceId?: string)
       .prepare(
         `SELECT * FROM mission_tasks
          WHERE assigned_agent = ? AND status = 'queued'
+           AND (available_at IS NULL OR available_at <= ?)
          ORDER BY priority DESC, created_at ASC
          LIMIT 1`,
       )
-      .get(agentId) as MissionTask | undefined;
+      .get(agentId, now) as MissionTask | undefined;
     if (!task) return null;
-    const startedAt = Math.floor(Date.now() / 1000);
+    const startedAt = now;
     db.prepare(
       `UPDATE mission_tasks SET status = 'running', started_at = ? WHERE id = ?`,
     ).run(startedAt, task.id);

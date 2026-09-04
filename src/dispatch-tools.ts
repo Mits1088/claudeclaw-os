@@ -129,12 +129,14 @@ const HANDLERS: Record<string, Handler> = {
       agent: asStr(a.agent) ?? null,
       title: asStr(a.title),
       priority: asNum(a.priority),
+      at: asStr(a.at),
     });
     return [
       `Mission task created: ${r.id}`,
       `  Title:    ${r.title}`,
       `  Agent:    ${r.agent || 'unassigned (use dashboard to assign)'}`,
       `  Priority: ${r.priority}`,
+      ...(r.availableAt ? [`  Run at:   ${new Date(r.availableAt * 1000).toISOString()}`] : []),
       `  Prompt:   ${truncate(r.prompt, 100)}`,
     ].join('\n');
   },

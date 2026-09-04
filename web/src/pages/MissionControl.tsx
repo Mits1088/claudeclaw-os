@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2, LayoutGrid as LayoutIcon, Check } from 'lucide-preact';
+import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2, LayoutGrid as LayoutIcon, Check, Clock3 } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
@@ -28,6 +28,7 @@ interface MissionTask {
   priority: number;
   created_by: string;
   created_at: number;
+  available_at: number | null;
   started_at: number | null;
   completed_at: number | null;
   result: string | null;
@@ -38,6 +39,28 @@ interface Agent { id: string; name: string; description: string; running: boolea
 
 const TERMINAL: MissionTask['status'][] = ['completed', 'failed', 'cancelled'];
 const DONE_VISIBLE_SECS = 30 * 60;
+
+function missionCountdown(seconds: number): string {
+  if (seconds <= 0) return 'due now';
+  if (seconds < 60) return 'in <1m';
+  const minutes = Math.ceil(seconds / 60);
+  if (minutes < 60) return `in ${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMinutes = minutes % 60;
+  if (hours < 24) return `in ${hours}h${remainingMinutes ? ` ${remainingMinutes}m` : ''}`;
+  const days = Math.floor(hours / 24);
+  return `in ${days}d ${hours % 24}h`;
+}
+
+function missionAvailability(task: MissionTask): string | null {
+  if (task.status !== 'queued' || !task.available_at) return null;
+  const runAt = new Date(task.available_at * 1000);
+  if (Number.isNaN(runAt.getTime())) return null;
+  const localTime = runAt.toLocaleString([], {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+  return `Runs once ${localTime} · ${missionCountdown(task.available_at - Math.floor(Date.now() / 1000))}`;
+}
 
 export function MissionControl() {
   const [location, navigate] = useLocation();
@@ -788,6 +811,7 @@ function TaskCard({ task, onChange }: { task: MissionTask; onChange: () => void 
   const [expanded, setExpanded] = useState(false);
   const priorityTone = task.priority >= 7 ? 'high' : task.priority >= 4 ? 'medium' : 'low';
   const draggable = task.status === 'queued';
+  const availability = missionAvailability(task);
 
   async function cancel() {
     setBusy('cancel');
@@ -827,6 +851,15 @@ function TaskCard({ task, onChange }: { task: MissionTask; onChange: () => void 
       <div class={'text-[12.5px] text-[var(--color-text)] leading-snug mb-1.5 ' + (expanded ? '' : 'line-clamp-2')}>
         {task.title}
       </div>
+      {availability && (
+        <div
+          class="flex items-center gap-1 mb-1.5 text-[10.5px] tabular-nums text-[var(--color-accent)]"
+          title={new Date(task.available_at! * 1000).toISOString()}
+        >
+          <Clock3 size={11} aria-hidden="true" />
+          <span>{availability}</span>
+        </div>
+      )}
       <div class="flex items-center gap-1.5 flex-wrap">
         {task.priority > 0 && <Pill tone={priorityTone}>P{task.priority}</Pill>}
         <Pill tone={task.status as any}>{task.status}</Pill>

@@ -134,9 +134,9 @@ export const missionDescriptor: CliDescriptor = {
   ship: true,
   commands: [
     {
-      usage: 'create [--agent <id>] [--title "Label"] [--priority N] "Full prompt text"',
+      usage: 'create [--agent <id>] [--title "Label"] [--priority N] [--at <RFC3339>] "Full prompt text"',
       description:
-        'Queue a one-shot mission task. --agent assigns it (omit to leave unassigned for dashboard auto-assign); --title defaults to the first 60 chars of the prompt; --priority defaults to 5.',
+        'Queue a one-shot mission task immediately, or gate it until a future RFC 3339 timestamp with --at. The timestamp must include Z or an explicit UTC offset. --agent assigns it (omit to leave unassigned for dashboard auto-assign); --title defaults to the first 60 chars of the prompt; --priority defaults to 5.',
       tool: {
         name: 'mission_create',
         params: [
@@ -144,6 +144,7 @@ export const missionDescriptor: CliDescriptor = {
           { name: 'agent', type: 'string', required: false, description: 'Target agent id/name/alias; omit to leave unassigned for dashboard auto-assign.' },
           { name: 'title', type: 'string', required: false, description: 'Short label (defaults to the first 60 chars of the prompt).' },
           { name: 'priority', type: 'number', required: false, description: 'Priority (default 5).' },
+          { name: 'at', type: 'string', required: false, description: 'Future RFC 3339 timestamp with Z or an explicit UTC offset.' },
         ],
       },
     },
@@ -232,7 +233,8 @@ export const missionDescriptor: CliDescriptor = {
     },
   ],
   notes: [
-    'The target agent claims it within ~60s, runs in their process, self-completes, auto-purges after 7 days.',
+    'Immediate tasks are normally claimed within ~60s. Tasks created with --at stay queued until the UTC availability gate opens.',
+    'Every mission runs once, reaches a terminal status, and auto-purges after 7 days through normal mission retention.',
     'The creating agent is recorded from CLAUDECLAW_AGENT_ID (defaults to "main").',
     'Orchestration modes: delegate (create, 1->1 async), await (orchestrator fires N creates and waits inline — no CLI verb), gather (1->N non-blocking join). Handbacks resolve to the originator.',
   ],

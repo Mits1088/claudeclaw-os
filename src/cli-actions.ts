@@ -103,6 +103,7 @@ export interface CreateMissionInput {
   title?: string;
   priority?: number;
   createdBy?: string;
+  at?: string;
 }
 export interface CreateMissionResult {
   id: string;
@@ -110,6 +111,42 @@ export interface CreateMissionResult {
   agent: string | null;
   priority: number;
   prompt: string;
+  availableAt: number | null;
+}
+
+function parseMissionAvailableAt(value: string | undefined): number | null {
+  if (value === undefined) return null;
+  // Require an explicit offset. A bare local timestamp would depend on the
+  // timezone of whichever process/provider created the task.
+  const rfc3339 = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|[+-]\d{2}:\d{2})$/i;
+  const match = rfc3339.exec(value);
+  if (!match) {
+    throw new CliActionError('--at must be RFC 3339 with Z or an explicit UTC offset');
+  }
+  const [, yearText, monthText, dayText, hourText, minuteText, secondText = '0', zone] = match;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const hour = Number(hourText);
+  const minute = Number(minuteText);
+  const second = Number(secondText);
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [31, leapYear ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  const zoneHour = zone.toUpperCase() === 'Z' ? 0 : Number(zone.slice(1, 3));
+  const zoneMinute = zone.toUpperCase() === 'Z' ? 0 : Number(zone.slice(4, 6));
+  if (month < 1 || month > 12 || day < 1 || day > daysInMonth[month - 1] ||
+      hour > 23 || minute > 59 || second > 59 || zoneHour > 23 || zoneMinute > 59) {
+    throw new CliActionError(`invalid --at timestamp: ${value}`);
+  }
+  const parsedMs = Date.parse(value);
+  if (!Number.isFinite(parsedMs)) {
+    throw new CliActionError(`invalid --at timestamp: ${value}`);
+  }
+  const availableAt = Math.floor(parsedMs / 1000);
+  if (availableAt <= Math.floor(Date.now() / 1000)) {
+    throw new CliActionError('--at must be in the future');
+  }
+  return availableAt;
 }
 
 export function actionCreateMission(input: CreateMissionInput): CreateMissionResult {
@@ -124,8 +161,12 @@ export function actionCreateMission(input: CreateMissionInput): CreateMissionRes
   const priority = input.priority ?? 5;
   const title = input.title || prompt.slice(0, 60);
   const id = randomBytes(4).toString('hex');
-  createMissionTask(id, title, prompt, resolvedAgent, input.createdBy ?? defaultAgent(), priority);
-  return { id, title, agent: resolvedAgent, priority, prompt };
+  const availableAt = parseMissionAvailableAt(input.at);
+  createMissionTask(
+    id, title, prompt, resolvedAgent, input.createdBy ?? defaultAgent(), priority,
+    null, null, 'task', 'queued', availableAt,
+  );
+  return { id, title, agent: resolvedAgent, priority, prompt, availableAt };
 }
 
 export interface HandbackInput {

@@ -79,7 +79,7 @@ Binary: `node dist/mission-cli.js`
 
 ### Commands
 
-- `create [--agent <id>] [--title "Label"] [--priority N] "Full prompt text"` — Queue a one-shot mission task. --agent assigns it (omit to leave unassigned for dashboard auto-assign); --title defaults to the first 60 chars of the prompt; --priority defaults to 5.
+- `create [--agent <id>] [--title "Label"] [--priority N] [--at <RFC3339>] "Full prompt text"` — Queue a one-shot mission task immediately, or gate it until a future RFC 3339 timestamp with --at. The timestamp must include Z or an explicit UTC offset. --agent assigns it (omit to leave unassigned for dashboard auto-assign); --title defaults to the first 60 chars of the prompt; --priority defaults to 5.
 - `handback <task-id> "Report text"` — Report back on a task you were assigned. Routes deterministically to the task's originator (created_by) — another agent, or the human via the primary agent. Use this to close the loop; never guess the recipient.
 - `continue <task-id> "Next-step prompt" --key <idempotency-key> [--max-steps N]` — Queue the next step of an explicitly bounded self-directed chain. The first step fixes the chain limit; every request requires a stable idempotency key.
 - `cancel-chain <chain-id>` — Persistently stop a self-directed continuation chain and cancel its queued next steps. A running step may finish but cannot advance the cancelled chain.
@@ -90,7 +90,8 @@ Binary: `node dist/mission-cli.js`
 
 ### Notes
 
-- The target agent claims it within ~60s, runs in their process, self-completes, auto-purges after 7 days.
+- Immediate tasks are normally claimed within ~60s. Tasks created with --at stay queued until the UTC availability gate opens.
+- Every mission runs once, reaches a terminal status, and auto-purges after 7 days through normal mission retention.
 - The creating agent is recorded from CLAUDECLAW_AGENT_ID (defaults to "main").
 - Orchestration modes: delegate (create, 1->1 async), await (orchestrator fires N creates and waits inline — no CLI verb), gather (1->N non-blocking join). Handbacks resolve to the originator.
 
