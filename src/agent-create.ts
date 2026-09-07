@@ -537,7 +537,7 @@ function generateLaunchdPlist(agentId: string): string {
   <key>ProgramArguments</key>
   <array>
     <string>${nodePath}</string>
-    <string>dist/index.js</string>
+    <string>dist/main-entry.js</string>
     <string>--agent</string>
     <string>${agentId}</string>
   </array>
@@ -679,7 +679,7 @@ function activateLaunchd(agentId: string): ActivationResult {
  * not solved here.
  */
 function activateDetached(agentId: string): ActivationResult {
-  const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
+  const entry = path.join(PROJECT_ROOT, 'dist', 'main-entry.js');
   if (!fs.existsSync(entry)) {
     return { ok: false, error: `Build output missing: ${entry}. Run "npm run build" first.` };
   }

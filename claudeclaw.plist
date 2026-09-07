@@ -33,7 +33,7 @@
   <key>ProgramArguments</key>
   <array>
     <string>YOUR_NODE_PATH</string>
-    <string>PATH_TO_CLAUDECLAW/dist/index.js</string>
+    <string>PATH_TO_CLAUDECLAW/dist/main-entry.js</string>
   </array>
 
   <key>WorkingDirectory</key>

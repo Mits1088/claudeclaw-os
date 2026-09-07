@@ -339,7 +339,7 @@ cat > ~/Library/LaunchAgents/com.claudeclaw.app.plist <<PLIST
   <key>ProgramArguments</key>
   <array>
     <string>/opt/homebrew/bin/node</string>
-    <string>$PWD/dist/index.js</string>
+    <string>$PWD/dist/main-entry.js</string>
   </array>
   <key>WorkingDirectory</key><string>$PWD</string>
   <key>RunAtLoad</key><true/>

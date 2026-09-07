@@ -35,6 +35,16 @@ const PROJECT_ROOT = path.resolve(
 );
 
 /**
+ * Build entrypoint for every service this installer registers, and for the
+ * build check that gates them. dist/main-entry.js is the only module that reads
+ * MESSENGER_TYPE (src/main-entry.ts); dist/index.js hard-wires the Telegram
+ * factory, so a service pointed at it pins its agent to Telegram whatever the
+ * operator configured. One constant so the launchd, systemd, PM2 and schtasks
+ * definitions below cannot drift apart again.
+ */
+const DISPATCHER_ENTRY = path.join(PROJECT_ROOT, 'dist', 'main-entry.js');
+
+/**
  * When a Windows step can't finish, print a copy-paste Claude Code prompt
  * so the user can self-serve a fix without filing a GitHub issue or waiting.
  * Inline to avoid a build-time dep on src/platform.ts.
@@ -466,7 +476,7 @@ async function main() {
   }
 
   // Build check
-  const distExists = fs.existsSync(path.join(PROJECT_ROOT, 'dist', 'index.js'));
+  const distExists = fs.existsSync(DISPATCHER_ENTRY);
   if (distExists) {
     ok('Build output found (dist/)');
   } else {
@@ -1179,7 +1189,7 @@ async function main() {
   } else {
     section('Auto-start');
     info('Unknown platform. Start manually: npm start');
-    info('Or use PM2: pm2 start dist/index.js --name claudeclaw && pm2 save');
+    info('Or use PM2: pm2 start dist/main-entry.js --name claudeclaw && pm2 save');
   }
 
   // ── macOS permissions warning ──────────────────────────────────────────
@@ -1494,7 +1504,7 @@ async function setupMacOS() {
   <key>ProgramArguments</key>
   <array>
     <string>${process.execPath}</string>
-    <string>${path.join(PROJECT_ROOT, 'dist', 'index.js')}</string>
+    <string>${DISPATCHER_ENTRY}</string>
   </array>
   <key>WorkingDirectory</key><string>${PROJECT_ROOT}</string>
   <key>RunAtLoad</key><true/>
@@ -1528,7 +1538,7 @@ async function setupLinux() {
   const install = await confirm('Install as a systemd user service?');
   if (!install) {
     info('Start manually: npm start');
-    info('Or: pm2 start dist/index.js --name claudeclaw && pm2 save');
+    info('Or: pm2 start dist/main-entry.js --name claudeclaw && pm2 save');
     return;
   }
 
@@ -1543,7 +1553,7 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${PROJECT_ROOT}
-ExecStart=${process.execPath} ${path.join(PROJECT_ROOT, 'dist', 'index.js')}
+ExecStart=${process.execPath} ${DISPATCHER_ENTRY}
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -1589,14 +1599,12 @@ async function setupWindows() {
     if (usePm2) {
       const s = spinner('Configuring PM2...');
       try {
-        const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
-
         // Stop any existing instance
         try { execSync('pm2 delete claudeclaw', { stdio: 'ignore' }); } catch { /* not running */ }
 
         // Start with PM2
         execSync(
-          `pm2 start "${entry}" --name claudeclaw --cwd "${PROJECT_ROOT}" --env NODE_ENV=production`,
+          `pm2 start "${DISPATCHER_ENTRY}" --name claudeclaw --cwd "${PROJECT_ROOT}" --env NODE_ENV=production`,
           { stdio: 'pipe' },
         );
 
@@ -1642,7 +1650,6 @@ async function setupWindows() {
 
     const label = 'com.claudeclaw.main';
     const batPath = path.join(winDir, `${label}.bat`);
-    const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
     const logsDir = path.join(PROJECT_ROOT, 'logs');
     const logFile = path.join(logsDir, 'main.log');
 
@@ -1652,7 +1659,7 @@ REM ClaudeClaw main bot wrapper\r
 set NODE_ENV=production\r
 cd /d ${q(PROJECT_ROOT)}\r
 if not exist ${q(logsDir)} mkdir ${q(logsDir)}\r
-${q(process.execPath)} ${q(entry)} >> ${q(logFile)} 2>&1\r
+${q(process.execPath)} ${q(DISPATCHER_ENTRY)} >> ${q(logFile)} 2>&1\r
 `;
     fs.writeFileSync(batPath, bat, 'utf-8');
 

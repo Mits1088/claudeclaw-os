@@ -342,7 +342,7 @@ Type=simple
 User=$RUN_USER
 WorkingDirectory=$APP_DIR
 EnvironmentFile=$ENV_FILE
-ExecStart=/usr/bin/node dist/index.js
+ExecStart=/usr/bin/node dist/main-entry.js
 Restart=always
 RestartSec=10
 

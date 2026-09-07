@@ -1,9 +1,13 @@
 // Mindfield-only file. Tiny dispatcher that picks the right entry point based
 // on MESSENGER_TYPE. Keeps Mark's src/index.ts pristine; signal-entry and
 // mattermost-entry each hand a MessengerFactory to the shared bootMessenger()
-// path (src/messenger.ts). The launchd plist for the main process targets
-// dist/main-entry.js. Specialists keep using dist/index.js because they only
-// delegate to main and don't open their own messenger transport.
+// path (src/messenger.ts). Every supervisor entry point targets
+// dist/main-entry.js -- the launchd templates, the systemd units, the generated
+// per-agent services and the documented npm/PM2 commands -- for specialists as
+// well as main: ClaudeClaw runs one process per agent and each process opens
+// its own transport (signal-entry.ts and mattermost-entry.ts are both written
+// against an agentId), so an agent started through dist/index.js is pinned to
+// Telegram whatever MESSENGER_TYPE says.
 //
 // Reads MESSENGER_TYPE from .env directly because launchd/systemd do not load
 // .env automatically (and we don't want to add MESSENGER_TYPE to Mark's launchd

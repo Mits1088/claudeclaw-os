@@ -85,7 +85,7 @@ let tmpRoot: string;
 
 function writeDistEntry(): void {
   fs.mkdirSync(path.join(state.projectRoot, 'dist'), { recursive: true });
-  fs.writeFileSync(path.join(state.projectRoot, 'dist', 'index.js'), '// built entry', 'utf-8');
+  fs.writeFileSync(path.join(state.projectRoot, 'dist', 'main-entry.js'), '// built entry', 'utf-8');
 }
 
 function pidFile(agentId: string): string {
@@ -123,7 +123,7 @@ describe('activateAgent on Linux', () => {
     expect(state.spawnCalls).toHaveLength(1);
     const call = state.spawnCalls[0];
     expect(call.args).toEqual([
-      path.join(state.projectRoot, 'dist', 'index.js'),
+      path.join(state.projectRoot, 'dist', 'main-entry.js'),
       '--agent',
       'research',
     ]);
@@ -141,7 +141,7 @@ describe('activateAgent on Linux', () => {
   });
 
   it('reports a build-output failure instead of claiming success', async () => {
-    // No dist/index.js on purpose.
+    // No dist/main-entry.js on purpose.
     const { activateAgent } = await import('./agent-create.js');
 
     const result = activateAgent('research');

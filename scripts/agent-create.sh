@@ -122,5 +122,5 @@ read -p "Start the agent now for a quick test? (y/N): " START_NOW
 if [ "$START_NOW" = "y" ] || [ "$START_NOW" = "Y" ]; then
   echo "Starting agent '$AGENT_ID'... Press Ctrl+C to stop."
   echo ""
-  node dist/index.js --agent "$AGENT_ID"
+  node dist/main-entry.js --agent "$AGENT_ID"
 fi

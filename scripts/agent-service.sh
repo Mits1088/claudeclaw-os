@@ -41,7 +41,7 @@ if [ "$(uname)" = "Darwin" ]; then
   <key>ProgramArguments</key>
   <array>
     <string>${NODE_PATH}</string>
-    <string>${PROJECT_DIR}/dist/index.js</string>
+    <string>${PROJECT_DIR}/dist/main-entry.js</string>
     <string>--agent</string>
     <string>${AGENT_ID}</string>
   </array>
@@ -94,7 +94,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=${NODE_PATH} ${PROJECT_DIR}/dist/index.js --agent ${AGENT_ID}
+ExecStart=${NODE_PATH} ${PROJECT_DIR}/dist/main-entry.js --agent ${AGENT_ID}
 WorkingDirectory=${PROJECT_DIR}
 Environment=PATH=${SERVICE_PATH}
 Restart=always

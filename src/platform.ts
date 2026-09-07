@@ -108,13 +108,22 @@ export interface AgentProcessInfo {
 }
 
 /**
- * Enumerate ClaudeClaw agent processes for one exact build entrypoint. Unlike
- * findProcessesByPattern(), this parses the command line and returns the agent
- * identity, so worker reconciliation never kills a similarly-named process or
- * a ClaudeClaw instance from another checkout.
+ * Enumerate ClaudeClaw agent processes for this checkout's build entrypoints.
+ * Unlike findProcessesByPattern(), this parses the command line and returns the
+ * agent identity, so worker reconciliation never kills a similarly-named process
+ * or a ClaudeClaw instance from another checkout.
+ *
+ * Both entrypoints are matched on purpose. New services start
+ * dist/main-entry.js, the MESSENGER_TYPE dispatcher, but a launchd/systemd/PM2
+ * definition installed before that change keeps launching dist/index.js until
+ * the operator re-runs setup. Those processes still belong to this checkout and
+ * must be reconciled and stopped rather than left orphaned across a restart.
  */
 export function listAgentProcesses(projectRoot: string): AgentProcessInfo[] {
-  const entry = path.join(projectRoot, 'dist', 'index.js');
+  const entries = [
+    path.join(projectRoot, 'dist', 'main-entry.js'),
+    path.join(projectRoot, 'dist', 'index.js'),
+  ];
   let rows: Array<{ pid: number; commandLine: string }> = [];
   try {
     if (IS_WINDOWS) {
@@ -138,12 +147,12 @@ export function listAgentProcesses(projectRoot: string): AgentProcessInfo[] {
     return [];
   }
 
-  const normalizedEntry = entry.replace(/\\/g, '/').toLowerCase();
+  const normalizedEntries = entries.map((entry) => entry.replace(/\\/g, '/').toLowerCase());
   const result: AgentProcessInfo[] = [];
   for (const row of rows) {
     if (!Number.isFinite(row.pid) || row.pid <= 0 || row.pid === process.pid) continue;
     const normalizedCommand = row.commandLine.replace(/\\/g, '/').toLowerCase();
-    if (!normalizedCommand.includes(normalizedEntry)) continue;
+    if (!normalizedEntries.some((entry) => normalizedCommand.includes(entry))) continue;
     const match = row.commandLine.match(/(?:^|\s)--agent\s+(?:"([^"\s]+)"|'([^'\s]+)'|([^\s]+))(?:\s|$)/);
     const agentId = match?.[1] ?? match?.[2] ?? match?.[3];
     if (!agentId || !/^[a-z][a-z0-9_-]{0,29}$/.test(agentId)) continue;

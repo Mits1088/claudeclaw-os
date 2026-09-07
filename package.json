@@ -10,7 +10,7 @@
     "build": "vite build && tsc",
     "build:web": "vite build",
     "build:server": "tsc",
-    "start": "node dist/index.js",
+    "start": "node dist/main-entry.js",
     "typecheck": "tsc -p tsconfig.typecheck.json",
     "test": "vitest run",
     "test:e2e": "playwright test",
@@ -27,7 +27,7 @@
     "dashboard:open": "tsx scripts/open-dashboard.ts",
     "status": "tsx scripts/status.ts",
     "agent:create": "bash scripts/agent-create.sh",
-    "agent:start": "node dist/index.js --agent",
+    "agent:start": "node dist/main-entry.js --agent",
     "uninstall": "bash scripts/uninstall.sh",
     "build:warroom-client": "esbuild warroom/client.js --bundle --outfile=warroom/client.bundle.js --format=iife --global-name=PipecatWarRoom",
     "postinstall": "node scripts/patch-codex-sdk-windows-hide.mjs"
