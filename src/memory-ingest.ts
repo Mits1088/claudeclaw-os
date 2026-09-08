@@ -2,9 +2,7 @@ import { generateContent, parseJsonResponse } from './gemini.js';
 import { cosineSimilarity, embedText } from './embeddings.js';
 import { getMemoriesWithEmbeddings, saveStructuredMemoryAtomic } from './db.js';
 import { logger } from './logger.js';
-import { readEnvFile } from './env.js';
-import { getScrubbedSdkEnv } from './security.js';
-import { EngineFactory } from './agent-engine/index.js';
+import { runIsolatedExtraction } from './isolated-extraction.js';
 import { defaultModelForProvider, getSelectedProviderConfig } from './active-provider.js';
 
 // Callback for notifying when a high-importance memory is created.
@@ -36,41 +34,17 @@ function isQuotaError(err: unknown): boolean {
  * before — keeps the contract identical to generateContent().
  */
 export async function extractViaProvider(prompt: string, timeoutMs = 15_000): Promise<string> {
-  const secrets = readEnvFile(['CLAUDE_CODE_OAUTH_TOKEN', 'ANTHROPIC_API_KEY']);
-  const env = getScrubbedSdkEnv(secrets);
   const provider = getSelectedProviderConfig();
-  const abort = new AbortController();
-  const timer = setTimeout(() => abort.abort(), timeoutMs);
-  let text = '';
   try {
-    const engine = EngineFactory.forProvider(provider);
-    for await (const ev of engine.invoke({
-      prompt,
+    return await runIsolatedExtraction(prompt, {
       provider,
-      cwd: process.cwd(),
       model: defaultModelForProvider(provider, 'claude-haiku-4-5-20251001'),
-      // Deny-all IS the explicit tool-less request: it selects the 'tool-less'
-      // Codex capability profile (no shell, no web search, no MCP, read-only, no
-      // network) and is what keeps this extraction turn from receiving dispatch.
-      // Do not loosen without reading codex-capability-policy.ts.
-      allowedTools: [],
-      disallowedTools: ['*'],
-      settingSources: [],
-      maxTurns: 1,
-      permissionMode: 'bypassPermissions',
-      allowDangerouslySkipPermissions: true,
-      env,
-      abortController: abort,
-    })) {
-      if (ev.type === 'result' && typeof ev.text === 'string') text = ev.text;
-    }
+      timeoutMs,
+    });
   } catch (err) {
     logger.warn({ err: err instanceof Error ? err.message : err, provider: provider.type }, 'Memory extraction via selected provider failed');
     throw err;
-  } finally {
-    clearTimeout(timer);
   }
-  return text;
 }
 
 export function getIngestionQuotaStatus(): {

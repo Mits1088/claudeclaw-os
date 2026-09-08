@@ -48,11 +48,25 @@ import {
   markWorkerTaskScopeStarted,
   deactivateWorkerIfTaskScopeDrained,
   createScheduledTask,
+  logConversationTurn,
+  getSessionConversation,
 } from './db.js';
 
 describe('database', () => {
   beforeEach(() => {
     _initTestDatabase();
+  });
+
+  describe('session conversation', () => {
+    it('returns the newest limited turns in chronological order', () => {
+      for (let i = 1; i <= 45; i += 1) {
+        logConversationTurn('chat', i % 2 ? 'user' : 'assistant', `turn-${i}`, 'session-215');
+      }
+      const turns = getSessionConversation('session-215', 40);
+      expect(turns).toHaveLength(40);
+      expect(turns[0].content).toBe('turn-6');
+      expect(turns.at(-1)?.content).toBe('turn-45');
+    });
   });
 
   // ── Sessions ────────────────────────────────────────────────────

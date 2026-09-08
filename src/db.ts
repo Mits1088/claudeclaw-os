@@ -2390,8 +2390,10 @@ export function getOtherAgentActivity(
 export function getSessionConversation(sessionId: string, limit = 40): ConversationTurn[] {
   return db
     .prepare(
-      `SELECT * FROM conversation_log WHERE session_id = ?
-       ORDER BY created_at ASC LIMIT ?`,
+      `SELECT * FROM (
+         SELECT * FROM conversation_log WHERE session_id = ?
+         ORDER BY created_at DESC, id DESC LIMIT ?
+       ) ORDER BY created_at ASC, id ASC`,
     )
     .all(sessionId, limit) as ConversationTurn[];
 }

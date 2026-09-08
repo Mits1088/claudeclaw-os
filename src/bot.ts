@@ -44,7 +44,7 @@ import {
   CLAUDE_MODEL_HAIKU,
   DEFAULT_OPENAI_MODEL,
 } from './config.js';
-import { clearAgentSessions, clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, logToHiveMind, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice, getCacheTokens } from './db.js';
+import { clearAgentSessions, clearSession, getRecentConversation, getRecentMemories, getRecentTaskOutputs, getSession, getSessionConversation, pinMemory, unpinMemory, setSession, lookupWaChatId, saveWaMessageMap, saveTokenUsage, saveCompactionEvent, getCompactionCount, getMemoryMigrationNotice, setMemoryMigrationNotice, getCacheTokens } from './db.js';
 import { loadAgentConfig, resolvePrimaryAgentId, setAgentProvider, resolveAgentDisplayName } from './agent-config.js';
 import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage, buildMediaGroupMessage, createMediaGroupBuffer } from './media.js';
@@ -66,6 +66,7 @@ import {
   selectedEffortForProvider,
 } from './model-catalog.js';
 import { setHighImportanceCallback } from './memory-ingest.js';
+import { commitSessionSummary, SESSION_SUMMARY_MAX_TURNS } from './session-summary.js';
 import { messageQueue } from './message-queue.js';
 import { applyOtherSelection, stepHint } from './auq-selection.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
@@ -2183,50 +2184,25 @@ export function createBot(): Bot {
       const sessionToSummarize = oldSessionId;
       sessionBaseline.delete(oldSessionId);
 
-      // Fire-and-forget: ask the agent to produce a one-liner summary
+      // Snapshot the newest stored turns before clearing the session. Summary
+      // persistence remains best-effort/fire-and-forget by the command's
+      // existing contract; an immediate process stop can still lose this write.
       (async () => {
+        let turns;
         try {
-          const turns = getSessionConversation(sessionToSummarize, 40);
-          if (turns.length < 2) return;
-
-          // Timeout after 60s to prevent a stuck summarization from running indefinitely
-          const summaryAbort = new AbortController();
-          const summaryTimer = setTimeout(() => summaryAbort.abort(), 60_000);
-
-          const result = await runAgent(
-            'Summarize what we accomplished this session in ONE short sentence (under 100 chars). No preamble, no quotes, just the summary. Example: "Drafted LinkedIn post about AI agents and scheduled Gmail triage task"',
-            sessionToSummarize,
-            () => {},  // no typing indicator
-            undefined,
-            undefined,
-            summaryAbort,
-            undefined,
-            undefined,
-            activeProvider(),
-          );
-          clearTimeout(summaryTimer);
-
-          const summary = result.text?.trim();
-          // If the saved session could not actually be resumed (the engine
-          // recovers such turns on a fresh session), the model had no view of
-          // the conversation being summarized — its "summary" would be noise.
-          // Only commit when the run stayed on the session it summarizes.
-          const resumedOriginal = !result.newSessionId || result.newSessionId === sessionToSummarize;
-          if (summary && summary.length > 0 && resumedOriginal) {
-            logToHiveMind(AGENT_ID, chatIdStr, 'session_end', summary.slice(0, 300));
-            logger.info({ agentId: AGENT_ID, summary }, 'Hive mind auto-commit (LLM summary)');
-          }
+          turns = getSessionConversation(sessionToSummarize, SESSION_SUMMARY_MAX_TURNS);
         } catch (err) {
-          // Fallback: log a basic summary from conversation turns
-          try {
-            const turns = getSessionConversation(sessionToSummarize, 40);
-            if (turns.length >= 2) {
-              const firstUserMsg = turns.find(t => t.role === 'user')?.content?.slice(0, 100) || 'unknown';
-              logToHiveMind(AGENT_ID, chatIdStr, 'session_end', `${turns.length} turns starting with: ${firstUserMsg}`);
-            }
-          } catch { /* give up */ }
-          logger.error({ err }, 'Hive mind LLM summary failed, used fallback');
+          logger.error({ err, agentId: AGENT_ID }, 'Could not read turns for Hive mind session summary');
+          return;
         }
+        const outcome = await commitSessionSummary({
+          turns,
+          agentId: AGENT_ID,
+          chatId: chatIdStr,
+          provider: activeProvider(),
+        });
+        const level = outcome === 'write-failed' ? 'error' : 'info';
+        logger[level]({ agentId: AGENT_ID, outcome }, 'Hive mind session summary completed');
       })();
     }
 
