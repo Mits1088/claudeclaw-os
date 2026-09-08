@@ -1,3 +1,4 @@
+import { outboundText } from './outbound-payload.js';
 import { execFile } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -319,7 +320,7 @@ export function createSignalBot(): SignalBot {
     // HTML mid-text), strip Markdown + HTML tags here so Signal never sees
     // <b>/<pre>/`**bold**` rendered as literal characters. formatForSignal
     // is idempotent — running it twice on already-clean text is a no-op.
-    const sanitized = formatForSignal(text);
+    const sanitized = formatForSignal(outboundText(text, 'signal.format'));
 
     // Append every outbound message to the audit log: ISO timestamp,
     // recipient (full — useful for multi-recipient routing review), byte

@@ -1,3 +1,4 @@
+import { serializeOutboundJson } from './outbound-payload.js';
 /**
  * Agent Voice Bridge
  *
@@ -34,6 +35,8 @@ import {
   sessionBelongsToProvider,
 } from './provider.js';
 import { providerRunnable } from './provider-registry.js';
+import { resolveOutboundPolicy, outboundOptionsForSeam } from './outbound-policy.js';
+import { sanitizeOutboundText } from './outbound-sanitizer.js';
 
 // The voice bridge is a standalone subprocess — initialize the DB
 // connection before any getSession/setSession calls run. Without this,
@@ -224,17 +227,30 @@ async function main() {
       setSession(chatId, encodeProviderSession(provider, newSessionId) ?? newSessionId, agentId);
     }
 
-    console.log(JSON.stringify({
-      response: resultText,
+    // Shared outbound sanitization (issue #269). The voice bridge runs the
+    // engine directly (not through agent.ts), so it must scrub the model's
+    // reply itself before serializing it to stdout — otherwise a leaked secret
+    // reaches warroom/server.py and, from there, TTS. Single non-streaming
+    // final scan; the stream guard is unnecessary because no partial text is
+    // emitted from this process.
+    const safeResponse = resultText == null
+      ? resultText
+      : sanitizeOutboundText(
+          resultText,
+          outboundOptionsForSeam('voice.bridge', resolveOutboundPolicy()),
+        );
+
+    console.log(serializeOutboundJson({
+      response: safeResponse,
       usage,
       error: null,
-    }));
+    }, 'voice.json'));
   } catch (err) {
-    console.log(JSON.stringify({
+    console.log(serializeOutboundJson({
       response: null,
       usage: null,
       error: err instanceof Error ? err.message : String(err),
-    }));
+    }, 'voice.json'));
     process.exit(1);
   }
 }

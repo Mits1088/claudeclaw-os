@@ -1,3 +1,4 @@
+import { outboundTelegramTransformer, outboundText } from './outbound-payload.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -6,6 +7,7 @@ import { Api, Bot, Context, InlineKeyboard, InputFile, RawApi } from 'grammy';
 
 import { runAgent, runAgentWithRetry, emptyTurnReply, UsageInfo, AgentProgressEvent, AgentToolPolicy } from './agent.js';
 import { turnAbortMessage } from './turn-watchdog.js';
+import { getRecentMissionReportContext } from './db.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
 import type {
   AskUserQuestionRequest,
@@ -33,8 +35,6 @@ import {
   SHOW_COST_FOOTER,
   SMART_ROUTING_ENABLED,
   SMART_ROUTING_CHEAP_MODEL,
-  EXFILTRATION_GUARD_ENABLED,
-  PROTECTED_ENV_VARS,
   DAILY_COST_BUDGET,
   HOURLY_TOKEN_BUDGET,
   MEMORY_NOTIFY,
@@ -50,7 +50,6 @@ import { logger } from './logger.js';
 import { downloadMedia, buildPhotoMessage, buildDocumentMessage, buildVideoMessage, buildMediaGroupMessage, createMediaGroupBuffer } from './media.js';
 import { buildMemoryContext, evaluateMemoryRelevance, saveConversationTurn, shouldNudgeMemory, MEMORY_NUDGE_TEXT } from './memory.js';
 import { classifyMessageComplexity } from './message-classifier.js';
-import { scanForSecrets, redactSecrets } from './exfiltration-guard.js';
 import { trackUsage, getRateStatus } from './rate-tracker.js';
 import { buildCostFooter } from './cost-footer.js';
 import { COMPLETION_DONE_GLYPH, completionStatusGlyph } from './completion-glyph.js';
@@ -600,6 +599,7 @@ function extractSelectionNumber(text: string): number | null {
  * This function bridges the gap so Claude's responses render cleanly.
  */
 export function formatForTelegram(text: string): string {
+  text = outboundText(text, 'telegram.format');
   // 1. Extract and protect code blocks before any other processing
   const codeBlocks: string[] = [];
   let result = text.replace(/```(?:\w*\n)?([\s\S]*?)```/g, (_, code) => {
@@ -761,6 +761,7 @@ export function formatForSignal(text: string): string {
  * Splits on newlines where possible to avoid breaking mid-sentence.
  */
 export function splitMessage(text: string): string[] {
+  text = outboundText(text, 'telegram.split');
   if (text.length <= MAX_MESSAGE_LENGTH) return [text];
 
   const parts: string[] = [];
@@ -1741,20 +1742,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     let rawResponse = result.text?.trim() || emptyTurnReply(result);
 
-    // Exfiltration guard: scan for leaked secrets before sending to Telegram
-    if (EXFILTRATION_GUARD_ENABLED) {
-      const protectedValues = PROTECTED_ENV_VARS
-        .map((key) => process.env[key])
-        .filter((v): v is string => !!v && v.length > 8);
-      const secretMatches = scanForSecrets(rawResponse, protectedValues);
-      if (secretMatches.length > 0) {
-        rawResponse = redactSecrets(rawResponse, secretMatches);
-        logger.warn(
-          { matchCount: secretMatches.length, types: secretMatches.map((m) => m.type) },
-          'Exfiltration guard: redacted secrets from response',
-        );
-      }
-    }
+    rawResponse = outboundText(rawResponse, 'telegram.response');
 
     // Extract file markers before any formatting
     const { text: responseText, files: fileMarkers } = extractFileMarkers(rawResponse);
@@ -2038,6 +2026,7 @@ export function createBot(): Bot {
   }
 
   const bot = new Bot(token);
+  bot.api.config.use(outboundTelegramTransformer);
   botRef = bot; // expose for the module-level emergency-kill drain
 
   // Reject group chats. ClaudeClaw only works in private (1-on-1) chats.
@@ -3053,6 +3042,8 @@ async function processDashboardMessage(
       dashParts.push(`[Recent scheduled task context — the user may be replying to this]\n${taskLines.join('\n\n')}\n[End task context]`);
     }
 
+    const missionContext = getRecentMissionReportContext(AGENT_ID);
+    if (missionContext) dashParts.push(missionContext);
     dashParts.push(text);
     const fullMessage = dashParts.join('\n\n');
 

@@ -1,3 +1,4 @@
+import { sanitizePresentation } from './outbound-payload.js';
 /**
  * Per-meeting event channel for the text War Room.
  *
@@ -85,7 +86,7 @@ export class MeetingChannel {
       return -1;
     }
     const seq = ++this.seq;
-    const entry: ChannelEntry = { seq, ts: Date.now(), event };
+    const entry: ChannelEntry = { seq, ts: Date.now(), event: sanitizePresentation(event, 'warroom.event') };
     this.buffer.push(entry);
     if (this.buffer.length > this.maxBuffer) this.buffer.shift();
     this.lastActivityAt = entry.ts;

@@ -1,3 +1,4 @@
+import { outboundText } from '../outbound-payload.js';
 /**
  * Turn a raw shell command into a readable one-line progress label.
  *
@@ -13,12 +14,12 @@ const SHELL_WRAPPERS: RegExp[] = [
 ];
 
 function truncate(text: string, max: number): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const oneLine = outboundText(text, 'provider.preview').replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
 export function summarizeCommand(command: string, max = 80): string {
-  let rest = command.replace(/\s+/g, ' ').trim();
+  let rest = outboundText(command, 'provider.command').replace(/\s+/g, ' ').trim();
   for (const wrapper of SHELL_WRAPPERS) {
     if (wrapper.test(rest)) {
       rest = rest.replace(wrapper, '');

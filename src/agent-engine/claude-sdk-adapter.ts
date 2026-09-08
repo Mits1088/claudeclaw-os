@@ -1,5 +1,6 @@
 import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -101,10 +102,9 @@ function resolveClaudeExecutableOverride(): string | undefined {
 const CLAUDE_EXECUTABLE_OVERRIDE = resolveClaudeExecutableOverride();
 
 // The CLI dumps its full minified bundle into stderr on some errors (a failing
-// hook callback produced 777 × ~5 KB lines in one day). Relay a bounded snippet
+// hook callback produced 777 × ~5 KB lines in one day). Relay content-free lengths
 // and squelch repeats: identical messages log once, then every REPEAT_EVERYth
 // occurrence with the count. Factory exported for tests.
-const STDERR_SNIPPET_CHARS = 500;
 const STDERR_REPEAT_EVERY = 50;
 export function makeStderrRelay(
   log: (obj: Record<string, unknown>, msg: string) => void,
@@ -112,20 +112,18 @@ export function makeStderrRelay(
   let lastKey = '';
   let repeats = 0;
   return (data: string) => {
-    const snippet =
-      data.length > STDERR_SNIPPET_CHARS
-        ? `${data.slice(0, STDERR_SNIPPET_CHARS)}… [truncated, ${data.length} chars total]`
-        : data;
-    const key = snippet.slice(0, 100);
+    // Chunks can split any credential. Never log raw fragments, even when a
+    // complete-value detector would consider this individual chunk clean.
+    const key = createHash('sha256').update(data).digest('hex');
     if (key === lastKey) {
       repeats++;
       if (repeats % STDERR_REPEAT_EVERY !== 0) return;
-      log({ stderr: snippet, repeats }, 'claude subprocess stderr (repeating)');
+      log({ stderrChars: data.length, repeats }, 'claude subprocess stderr (repeating)');
       return;
     }
     lastKey = key;
     repeats = 0;
-    log({ stderr: snippet }, 'claude subprocess stderr');
+    log({ stderrChars: data.length }, 'claude subprocess stderr');
   };
 }
 const relayStderr = makeStderrRelay((obj, msg) => logger.error(obj, msg));

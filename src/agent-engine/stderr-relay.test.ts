@@ -5,14 +5,12 @@ import { makeStderrRelay } from './claude-sdk-adapter.js';
 // One failing CLI hook produced 777 × ~5 KB stderr lines in a day: the relay
 // must bound each snippet and squelch identical repeats instead of logging all.
 describe('makeStderrRelay — truncation and repeat squelch', () => {
-  it('truncates oversized chunks and reports the original length', () => {
+  it('reports oversized chunk length without logging raw fragments', () => {
     const calls: Array<{ obj: Record<string, unknown>; msg: string }> = [];
     const relay = makeStderrRelay((obj, msg) => calls.push({ obj, msg }));
     relay('x'.repeat(5000));
     expect(calls).toHaveLength(1);
-    const logged = calls[0].obj.stderr as string;
-    expect(logged.length).toBeLessThan(600);
-    expect(logged).toContain('[truncated, 5000 chars total]');
+    expect(calls[0].obj).toEqual({ stderrChars: 5000 });
   });
 
   it('logs an identical repeating message once, then every 50th with the count', () => {
@@ -32,6 +30,7 @@ describe('makeStderrRelay — truncation and repeat squelch', () => {
     relay('first error');
     relay('a different error');
     relay('first error');
-    expect(calls.map((c) => c.obj.stderr)).toEqual(['first error', 'a different error', 'first error']);
+    expect(calls.map((c) => c.obj.stderrChars)).toEqual([11, 17, 11]);
+    expect(JSON.stringify(calls)).not.toContain('first error');
   });
 });

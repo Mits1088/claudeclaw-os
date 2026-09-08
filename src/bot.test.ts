@@ -317,13 +317,13 @@ describe('splitMessage', () => {
   });
 
   it('returns single-element array for exact 4096 char message', () => {
-    const msg = 'a'.repeat(4096);
+    const msg = 'x'.repeat(4096); // Non-hex text, outside the credential detector.
     const result = splitMessage(msg);
     expect(result).toEqual([msg]);
   });
 
   it('splits 4097 char message into two parts', () => {
-    const msg = 'a'.repeat(4097);
+    const msg = 'x'.repeat(4097);
     const result = splitMessage(msg);
     expect(result.length).toBe(2);
     // Reconstruct the original - parts should cover all chars
@@ -331,7 +331,7 @@ describe('splitMessage', () => {
   });
 
   it('never produces chunks longer than 4096 chars', () => {
-    const msg = 'a'.repeat(10000);
+    const msg = 'x'.repeat(10000);
     const result = splitMessage(msg);
     for (const part of result) {
       expect(part.length).toBeLessThanOrEqual(4096);

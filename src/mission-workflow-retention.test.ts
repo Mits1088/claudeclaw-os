@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { getMissionWorkflow, getMissionWorkflowOutcomes, claimMissionWorkflowReport } from './db.js';
 import { _initTestDatabase, createMissionWorkflow, claimNextMissionTask, completeMissionTask, cleanupOldMissionTasks, applyMissionWorkflowTransition, getMissionTask, resumeMissionWorkflow, maybeReleaseJoinForMission, createMissionTask, deleteMissionTask } from './db.js';
 
 beforeEach(() => { vi.useFakeTimers(); vi.setSystemTime(new Date('2026-09-01T00:00:00Z')); _initTestDatabase(); });
@@ -88,4 +89,20 @@ it('skips expired work and can still claim an ordinary mission for the same agen
   createMissionTask('ordinary', 'Ordinary', 'Check', 'bobbi', 'main', 1);
   vi.setSystemTime(new Date('2026-09-01T00:00:02Z'));
   expect(claimNextMissionTask('bobbi')?.id).toBe('ordinary');
+});
+
+it('treats blocked workflows as terminal while preserving outcome and report evidence after pruning', () => {
+  seed();
+  claimNextMissionTask('bobbi');
+  completeMissionTask('review-root', 'retained evidence', 'completed');
+  const coordinator = claimNextMissionTask('main')!;
+  completeMissionTask(coordinator.id, null, 'failed', 'Review cannot proceed');
+  expect(getMissionWorkflow('review-wf')?.status).toBe('blocked');
+  vi.setSystemTime(new Date('2026-09-09T00:00:00Z'));
+  expect(cleanupOldMissionTasks()).toBe(2);
+  expect(getMissionTask('review-root')).toBeNull();
+  expect(getMissionWorkflowOutcomes('review-wf')[0]?.report).toBe('retained evidence');
+  expect(() => resumeMissionWorkflow({ workflowId: 'review-wf', ownerAgent: 'main', answerTaskId: 'answer', answer: 'Proceed' })).toThrow('not waiting for human input');
+  expect(claimNextMissionTask('main')).toBeNull();
+  expect(claimMissionWorkflowReport('main', 'review-token')?.body).toContain('Review cannot proceed');
 });

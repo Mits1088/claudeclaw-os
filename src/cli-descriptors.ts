@@ -226,6 +226,18 @@ export const missionDescriptor: CliDescriptor = {
       },
     },
     {
+      usage: 'governor-status',
+      description: 'Show read-only Crew Mission governor state, five-hour turn allowance, active reservations, parked work, and provider/model usage.',
+    },
+    {
+      usage: 'governor-enable --reason "Operator reason" [--for-minutes N]',
+      description: 'Enable Crew Missions for 1-1440 minutes. Main operator only. Every change is durably audited and automatically expires.',
+    },
+    {
+      usage: 'governor-disable --reason "Operator reason"',
+      description: 'Immediately disable Crew Missions. Main operator only. The change is durably audited.',
+    },
+    {
       usage: 'workflow-list [--status <status>]',
       description: 'List durable workflows with owner, status, objective, and persisted bounds.',
       tool: {

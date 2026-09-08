@@ -1,3 +1,4 @@
+import { outboundText, serializeOutboundArguments } from './outbound-payload.js';
 /**
  * Text War Room orchestrator.
  *
@@ -56,6 +57,9 @@ import { getScrubbedSdkEnv } from './security.js';
 import { requireEnabled, KillSwitchDisabledError } from './kill-switches.js';
 import { warRoomToolPolicy, filterMcpServers } from './warroom-tool-policy.js';
 import { loadMcpServers } from './agent.js';
+import { resolveOutboundPolicy, outboundOptionsForSeam } from './outbound-policy.js';
+import { sanitizeOutboundText } from './outbound-sanitizer.js';
+import { OutboundStreamGuard } from './outbound-stream-guard.js';
 import { setActiveAbort, abortByPrefix } from './state.js';
 import {
   getChannel,
@@ -525,7 +529,7 @@ export async function handleTextTurn(
 
     return { accepted: true, turnId };
   } catch (err) {
-    logger.error({ err: err instanceof Error ? err.message : err, meetingId, turnId }, 'handleTextTurn crashed');
+    logger.error({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), meetingId, turnId }, 'handleTextTurn crashed');
     channel.emit({
       type: 'error',
       turnId,
@@ -677,7 +681,7 @@ export async function warmupAgentSDK(agentId: string): Promise<void> {
       }
     } catch (err) {
       logger.warn({
-        err: err instanceof Error ? err.message : err,
+        err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'),
         agentId,
       }, 'agent SDK warmup failed (non-fatal)');
     } finally {
@@ -1513,7 +1517,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
       warroomTools = cfg.warroomTools;
     }
   } catch (err) {
-    logger.warn({ err: err instanceof Error ? err.message : err, agentId }, 'loadAgentConfig failed; using defaults');
+    logger.warn({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId }, 'loadAgentConfig failed; using defaults');
   }
 
   // War-room tool boundary. Default-deny side-effect tools and MCPs
@@ -1587,7 +1591,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         : memCtx.contextText;
     } catch (err) {
       // Memory failure is non-fatal — keep the turn moving.
-      logger.warn({ err: err instanceof Error ? err.message : err, agentId }, 'buildMemoryContext failed in war room');
+      logger.warn({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId }, 'buildMemoryContext failed in war room');
     }
 
     try {
@@ -1605,7 +1609,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         telegramHistoryBlock = block;
       }
     } catch (err) {
-      logger.warn({ err: err instanceof Error ? err.message : err, agentId }, 'getRecentConversation failed in war room');
+      logger.warn({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId }, 'getRecentConversation failed in war room');
     }
 
     try {
@@ -1616,7 +1620,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         missionLine = `[Your queue: ${queued.length} pending, oldest ~${ageH}h old]`;
       }
     } catch (err) {
-      logger.warn({ err: err instanceof Error ? err.message : err, agentId }, 'mission queue lookup failed in war room');
+      logger.warn({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId }, 'mission queue lookup failed in war room');
     }
   }
 
@@ -1656,6 +1660,16 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   });
 
   let fullText = '';
+  // Outbound sanitization (issue #269). The war room is its own engine
+  // boundary — it does NOT flow through runAgent() — so it needs its own
+  // guard. The stream guard buffers the bounded reply until completion so
+  // credentials spanning whitespace and deltas cannot escape early;
+  // the persisted transcript/conversation_log rows and the returned reply are
+  // sanitized once more (idempotently) below.
+  const outboundPolicy = resolveOutboundPolicy();
+  const streamGuard = new OutboundStreamGuard(
+    outboundOptionsForSeam('warroom.stream', outboundPolicy),
+  );
   let newSessionId: string | undefined;
   let incomplete = false;
   // Set when the SDK delivered its `result` event — i.e. the model finished
@@ -1752,7 +1766,8 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
       }
       if (ev.type === 'text_delta') {
         fullText += ev.delta;
-        channel.emit({ type: 'agent_chunk', turnId, agentId, role, delta: ev.delta });
+        const safe = streamGuard.pushDelta(ev.delta);
+        if (safe) channel.emit({ type: 'agent_chunk', turnId, agentId, role, delta: safe });
       }
       if (ev.type === 'progress' && ev.progress.type === 'tool_active') {
         const toolUseId = ev.progress.toolCallId ?? `${agentId}:${ev.progress.description}`;
@@ -1773,7 +1788,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
               agentId,
               meetingChatId || '',
               'tool_call',
-              `${ev.progress.description} (${ev.progress.kind ?? 'provider'})`.slice(0, 2000),
+              outboundText(`${ev.progress.description} (${ev.progress.kind ?? 'provider'})`, 'warroom.audit').slice(0, 2000),
               false,
             );
           } catch (auditErr) {
@@ -1826,7 +1841,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
             }
           } catch (err) {
             logger.warn(
-              { err: err instanceof Error ? err.message : err, agentId, meetingId },
+              { err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId, meetingId },
               'failed to persist warroom token usage (non-fatal)',
             );
           }
@@ -1841,7 +1856,8 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
           const text = typeof delta?.text === 'string' ? (delta.text as string) : '';
           if (text && ev.type !== 'text_delta') {
             fullText += text;
-            channel.emit({ type: 'agent_chunk', turnId, agentId, role, delta: text });
+            const safe = streamGuard.pushDelta(text);
+            if (safe) channel.emit({ type: 'agent_chunk', turnId, agentId, role, delta: safe });
           }
         }
       }
@@ -1865,7 +1881,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
             // search queries with embedded text). Cap aggressively.
             let argsPreview = '';
             try {
-              const json = JSON.stringify(b.input ?? {});
+              const json = serializeOutboundArguments(b.input ?? {}, 'warroom.tool.arguments');
               argsPreview = json.length > 240 ? json.slice(0, 240) + '…' : json;
             } catch { argsPreview = '{}'; }
             channel.emit({
@@ -1884,7 +1900,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
                 agentId,
                 meetingChatId || '',
                 'tool_call',
-                `${b.name} ${argsPreview}`.slice(0, 2000),
+                outboundText(`${b.name} ${argsPreview}`, 'warroom.audit').slice(0, 2000),
                 false,
               );
             } catch (auditErr) {
@@ -1922,7 +1938,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
                 if (typeof cb?.text === 'string') { preview += cb.text; }
               }
             }
-            preview = preview.replace(/\s+/g, ' ').trim();
+            preview = outboundText(preview, 'warroom.tool.result').replace(/\s+/g, ' ').trim();
             if (preview.length > 240) preview = preview.slice(0, 240) + '…';
             channel.emit({
               type: 'tool_result',
@@ -1971,7 +1987,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
           }
         } catch (err) {
           logger.warn(
-            { err: err instanceof Error ? err.message : err, agentId, meetingId },
+            { err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId, meetingId },
             'failed to persist warroom token usage (non-fatal)',
           );
         }
@@ -1996,13 +2012,13 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
       // completion) shouldn't mark a fully-streamed reply as interrupted.
       incomplete = true;
       logger.warn({
-        err: err instanceof Error ? err.message : err,
+        err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'),
         agentId,
         meetingId,
         role,
         timedOut,
         budgetMs: agentBudgetMs,
-        userTextPreview: (args.originalUserText || args.userText || '').slice(0, 80),
+        userTextPreview: outboundText(args.originalUserText || args.userText || '', 'warroom.preview').slice(0, 80),
       }, 'runAgentTurn error');
     }
   } finally {
@@ -2046,7 +2062,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
   // Normalize whitespace server-side too so history and the streaming
   // render stay consistent. Models sometimes prepend "\n\n" or insert
   // runs of blank lines; the UI's pre-wrap honors those as visible gaps.
-  const normalized = (fullText || '').replace(/^\s+|\s+$/g, '').replace(/\n{3,}/g, '\n\n');
+  const normalized = sanitizeOutboundText(fullText || '', outboundOptionsForSeam('warroom.normalize', outboundPolicy)).replace(/^\s+|\s+$/g, '').replace(/\n{3,}/g, '\n\n');
 
   // No content from this agent — whether they returned nothing OR they
   // were cancelled before producing any text. Drop the bubble (no ugly
@@ -2103,7 +2119,16 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
 
   if (incomplete) turnState.anyIncomplete = true;
 
-  const finalText = normalized;
+  // Sanitize once at the persistence/delivery boundary: this single value
+  // feeds the transcript row, the agent_done event, the conversation_log
+  // bridge, and the returned reply. Idempotent with the per-chunk stream
+  // guard above.
+  const safeTail = streamGuard.finalize();
+  if (safeTail) channel.emit({ type: 'agent_chunk', turnId, agentId, role, delta: safeTail });
+  const finalText = sanitizeOutboundText(
+    normalized,
+    outboundOptionsForSeam('warroom.final', outboundPolicy),
+  );
 
   // Last-mile guard: if the queue-wrapper's 300s watchdog already marked
   // this turn finalized, drop the transcript write + agent_done. Late
@@ -2175,7 +2200,7 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
         const ingestText = normalizeForIngestion(originalUserText);
         // Fire-and-forget — same pattern as Telegram.
         void ingestConversationTurn(meetingChatId, ingestText, finalText, agentId).catch((err) => {
-          logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'war-room memory ingestion failed');
+          logger.warn({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId, meetingId }, 'war-room memory ingestion failed');
         });
 
         // Hive-mind row for the team rail / Hive Mind page. Without
@@ -2194,11 +2219,11 @@ async function runAgentTurn(args: RunAgentTurnArgs): Promise<string> {
             assistantInserted: true,
           });
         } catch (err) {
-          logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'logToHiveMind from warroom failed');
+          logger.warn({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId, meetingId }, 'logToHiveMind from warroom failed');
         }
       }
     } catch (err) {
-      logger.warn({ err: err instanceof Error ? err.message : err, agentId, meetingId }, 'saveWarRoomConversationTurn failed');
+      logger.warn({ err: outboundText(err instanceof Error ? err.message : String(err), 'warroom.error'), agentId, meetingId }, 'saveWarRoomConversationTurn failed');
     }
   }
 

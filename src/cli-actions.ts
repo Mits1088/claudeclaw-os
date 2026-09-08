@@ -61,12 +61,17 @@ import {
   type HiveMindEntry,
   getWorkerRuntime,
   isWorkerLeaseCurrent,
+  getMissionGovernorStatus,
+  type MissionGovernorStatus,
+  missionGovernorOperationsEnabled,
+  setMissionGovernorControl,
 } from './db.js';
 import { resolveAgentId, knownAgentIds, loadAgentConfig } from './agent-config.js';
 import { resolveHandbackDestination, MAIN_AGENT_ID } from './routing.js';
 import { computeNextRun } from './cron.js';
 import { getMissionExecutionContext } from './mission-execution-context.js';
 import { getMissionEntryKey } from './mission-entry-key.js';
+import { CREW_MISSIONS_DISABLED_MESSAGE, crewMissionGovernorPolicy } from './crew-mission-policy.js';
 
 /**
  * A recoverable, user-facing action failure (unknown agent, bad cron, missing
@@ -84,6 +89,11 @@ export class CliActionError extends Error {
 /** Default creating/owning agent for a write, from the process env. */
 function defaultAgent(): string {
   return process.env.CLAUDECLAW_AGENT_ID ?? 'main';
+}
+
+function assertCrewMissionsEnabled(): void {
+  ensureDatabase();
+  if (!missionGovernorOperationsEnabled()) throw new CliActionError(CREW_MISSIONS_DISABLED_MESSAGE);
 }
 
 function isHeadlessAgent(agentId: string): boolean {
@@ -288,6 +298,7 @@ function boundedInteger(value: number | undefined, fallback: number, min: number
 }
 
 export function actionCreateMissionWorkflow(input: CreateMissionWorkflowInput): CreateMissionWorkflowResult {
+  assertCrewMissionsEnabled();
   assertAlternateDispatchAllowed('workflow create');
   if (!input.objective?.trim()) throw new CliActionError('a workflow objective is required');
   if (!input.prompt?.trim()) throw new CliActionError('an initial workflow task prompt is required');
@@ -307,27 +318,32 @@ export function actionCreateMissionWorkflow(input: CreateMissionWorkflowInput): 
     return { workflow: existing, task };
   }
   assertMissionTargetAvailable(worker);
-  const maxDepth = boundedInteger(input.maxDepth, 5, 1, 100, '--max-depth');
-  const maxTasks = boundedInteger(input.maxTasks, 10, 1, 500, '--max-tasks');
-  const maxFanout = boundedInteger(input.maxFanout, 4, 1, 50, '--max-fanout');
+  const governor = crewMissionGovernorPolicy();
+  const maxDepth = boundedInteger(input.maxDepth, governor.maxWorkflowDepth, 1, governor.maxWorkflowDepth, '--max-depth');
+  const maxTasks = boundedInteger(input.maxTasks, governor.maxWorkflowTasks, 1, governor.maxWorkflowTasks, '--max-tasks');
+  const maxFanout = boundedInteger(input.maxFanout, governor.maxWorkflowFanout, 1, governor.maxWorkflowFanout, '--max-fanout');
   const availableAt = parseFutureTimestamp(input.at);
   const deadlineAt = parseFutureTimestamp(input.deadline, '--deadline');
   if (availableAt && deadlineAt && availableAt >= deadlineAt) throw new CliActionError('Workflow availability must precede its deadline');
-  return createMissionWorkflow({
-    id: workflowId,
-    rootTaskId,
-    title: input.title || input.prompt.slice(0, 60),
-    objective: input.objective.trim(),
-    initialPrompt: input.prompt.trim(),
-    ownerAgent: owner,
-    workerAgent: worker,
-    priority: input.priority ?? 5,
-    maxDepth,
-    maxTasks,
-    maxFanout,
-    deadlineAt,
-    availableAt,
-  });
+  try {
+    return createMissionWorkflow({
+      id: workflowId,
+      rootTaskId,
+      title: input.title || input.prompt.slice(0, 60),
+      objective: input.objective.trim(),
+      initialPrompt: input.prompt.trim(),
+      ownerAgent: owner,
+      workerAgent: worker,
+      priority: input.priority ?? 5,
+      maxDepth,
+      maxTasks,
+      maxFanout,
+      deadlineAt,
+      availableAt,
+    });
+  } catch (err) {
+    throw new CliActionError(err instanceof Error ? err.message : String(err));
+  }
 }
 
 export interface MissionWorkflowDetails {
@@ -348,6 +364,30 @@ export function actionListMissionWorkflows(input: { status?: string } = {}): Mis
     throw new CliActionError(`unknown workflow status: ${input.status}`);
   }
   return getMissionWorkflows(input.status as MissionWorkflowStatus | undefined);
+}
+
+export function actionMissionGovernorStatus(): MissionGovernorStatus {
+  ensureDatabase();
+  return getMissionGovernorStatus();
+}
+
+export function actionSetMissionGovernorControl(input: {
+  enabled: boolean; reason: string; durationMinutes?: number; createdBy?: string;
+}): MissionGovernorStatus {
+  ensureDatabase();
+  const actor = (input.createdBy ?? defaultAgent()).trim().toLowerCase();
+  if (actor !== MAIN_AGENT_ID) throw new CliActionError('Only the main operator may change Crew Mission governor state');
+  if (!input.reason?.trim()) throw new CliActionError('A reason is required for Crew Mission governor changes');
+  let expiresAt: number | null = null;
+  if (input.enabled) {
+    const duration = input.durationMinutes ?? 60;
+    if (!Number.isInteger(duration) || duration < 1 || duration > 1440) {
+      throw new CliActionError('--for-minutes must be an integer from 1 to 1440');
+    }
+    expiresAt = Math.floor(Date.now() / 1000) + duration * 60;
+  }
+  setMissionGovernorControl({ enabled: input.enabled, actor, reason: input.reason.trim(), expiresAt });
+  return getMissionGovernorStatus();
 }
 
 export function actionMissionWorkflowResult(input: { id: string }): MissionWorkflowDetails {
@@ -400,6 +440,7 @@ export interface MissionWorkflowTransitionActionInput {
 export function actionTransitionMissionWorkflow(
   input: MissionWorkflowTransitionActionInput,
 ): MissionWorkflowTransitionResult {
+  assertCrewMissionsEnabled();
   if (!input.coordinatorTaskId || !input.disposition || !input.idempotencyKey) {
     throw new CliActionError('transition requires a coordinator task id, disposition, and idempotency key');
   }
@@ -465,6 +506,7 @@ export function actionCancelMissionWorkflow(input: { id: string; createdBy?: str
 export function actionResumeMissionWorkflow(input: { id: string; answer: string; createdBy?: string }): {
   workflowId: string; coordinatorTaskId: string; outcomeId: string;
 } {
+  assertCrewMissionsEnabled();
   if (!input.id || !input.answer?.trim()) throw new CliActionError('workflow resume requires an id and answer');
   ensureDatabase();
   const actor = (input.createdBy ?? defaultAgent()).trim().toLowerCase();

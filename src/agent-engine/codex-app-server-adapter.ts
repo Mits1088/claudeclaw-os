@@ -1,3 +1,4 @@
+import { outboundText } from '../outbound-payload.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -13,6 +14,8 @@ import { normalizedEffortForProvider } from '../model-catalog.js';
 import { getScrubbedSdkEnv } from '../security.js';
 import { composeSystemPrompt } from '../runtime-identity.js';
 import { toProviderFailure } from '../provider-recovery.js';
+import { MISSION_ACTOR_ENV, MISSION_TASK_ID_ENV } from '../mission-execution-context.js';
+import { MISSION_ENTRY_KEY_ENV } from '../mission-entry-key.js';
 import type { ExecutionCertainty } from './types.js';
 import { resolveCodexCapabilityProfile, type CodexCapabilityProfile } from './codex-capability-policy.js';
 import { summarizeCommand } from './command-summary.js';
@@ -164,7 +167,7 @@ function sanitizeMcpServerName(name: string): string {
 }
 
 function truncate(text: string, max: number): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const oneLine = outboundText(text, 'provider.preview').replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
@@ -431,9 +434,10 @@ class TurnUsage {
 
 /** Codex resume failures that mean "this thread is gone", not "this turn failed". */
 export function isStaleThreadError(message: string): boolean {
-  const subject = /session|thread|conversation|rollout/i.test(message);
-  const missing = /not found|no (?:rollout|session|thread|record|conversation)[^.]*found|no such|missing|does not exist|failed to (?:load|read|resume)|resume failed/i.test(message);
-  return subject && missing;
+  // Do not accept the generic "resume failed" wrapper: it also prefixes auth,
+  // rate-limit and transport failures. Absence language must describe the saved
+  // session/thread itself, not an API key or unavailable model later in the text.
+  return /(?:session|thread|conversation|rollout)(?:\s+(?:id|record))?\s+(?:was\s+)?(?:not found|missing|does not exist)|no\s+(?:such\s+)?(?:session|thread|conversation|rollout)(?:\s+(?:id|record))?[^.\n]*?found|missing\s+(?:session|thread|conversation|rollout)|could not find\s+(?:the\s+)?(?:session|thread|conversation|rollout)/i.test(message);
 }
 
 /** Turn a raw failure into an actionable, user-visible message. */
@@ -504,7 +508,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       // before the replacement is built, so the two never overlap. This turn has not
       // started yet, which makes it exactly the right one to wait.
       manager = this.deps.manager ?? await CodexAppServerManager.shared({
-        env: buildEnv(input, codexHome),
+        env: buildAppServerLaunchEnv(input, codexHome, profile),
         expectedCodexHome: codexHome,
         clientVersion: process.env.npm_package_version ?? '0.0.0',
         // A mode plus a digest — never the credential. A rotated login, a logout, or a
@@ -595,7 +599,17 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
     cwd: string,
     signal: AbortSignal | undefined,
   ): AsyncGenerator<AgentEngineEvent> {
-    const client = await manager.ready();
+    let client: Awaited<ReturnType<CodexAppServerManager['ready']>>;
+    try {
+      client = await manager.ready();
+    } catch (err) {
+      // No client means no thread request and, critically, no turn/start carrying
+      // the prompt. Preserve that positive delivery boundary for recovery policy.
+      const message = err instanceof Error ? err.message : String(err);
+      logger.error({ err: message }, 'codex_app_server was not ready');
+      yield* this.terminalError(friendlyAppServerError(message), 'not_started', input.provider, err);
+      return;
+    }
     const platform = this.deps.platform ?? process.platform;
     if (platform === 'win32') {
       const windowsSandbox = parseWindowsSandboxReadiness(
@@ -670,33 +684,43 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       // ── start or resume ──────────────────────────────────────────────────────
       let effective: EffectiveThreadPolicy;
       let resumed = false;
-      if (input.sessionId) {
-        // A thread already LOADED in the App Server process is REJOINED by
-        // `thread/resume`, and a rejoin ignores the resume parameters WHOLESALE —
-        // MCP table, sandbox and model all keep the values they were loaded with
-        // (probe-verified on pinned 0.144.6: resuming with `mcp_servers: {}` left a
-        // previously configured server live, and resuming with a different table
-        // never applied it). Dropping the loaded copy first is what makes the resume
-        // rebuild the thread from THIS caller's parameters.
-        await dropLoadedThread(client, input.sessionId);
-        try {
-          effective = parseEffectiveThreadPolicy(
-            await client.request('thread/resume', { ...threadParams, threadId: input.sessionId, excludeTurns: true }, THREAD_CALL_TIMEOUT_MS),
-            'thread/resume',
-          );
-          resumed = true;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          if (!isStaleThreadError(message)) throw err;
-          // Stale-session fallback is allowed ONLY here, before turn/start: once a turn
-          // may have reached the server, replaying the prompt could repeat side effects.
-          // The lock on the stale session id is kept: it is what serializes two callers
-          // racing to replace the same dead thread.
-          logger.warn({ sessionId: input.sessionId }, 'codex thread not resumable — starting a fresh thread');
+      try {
+        if (input.sessionId) {
+          // A thread already LOADED in the App Server process is REJOINED by
+          // `thread/resume`, and a rejoin ignores the resume parameters WHOLESALE —
+          // MCP table, sandbox and model all keep the values they were loaded with
+          // (probe-verified on pinned 0.144.6: resuming with `mcp_servers: {}` left a
+          // previously configured server live, and resuming with a different table
+          // never applied it). Dropping the loaded copy first is what makes the resume
+          // rebuild the thread from THIS caller's parameters.
+          await dropLoadedThread(client, input.sessionId);
+          try {
+            effective = parseEffectiveThreadPolicy(
+              await client.request('thread/resume', { ...threadParams, threadId: input.sessionId, excludeTurns: true }, THREAD_CALL_TIMEOUT_MS),
+              'thread/resume',
+            );
+            resumed = true;
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (!isStaleThreadError(message)) throw err;
+            // Stale-session fallback is allowed ONLY here, before turn/start: once a turn
+            // may have reached the server, replaying the prompt could repeat side effects.
+            // The lock on the stale session id is kept: it is what serializes two callers
+            // racing to replace the same dead thread.
+            logger.warn({ sessionId: input.sessionId }, 'codex thread not resumable — starting a fresh thread');
+            effective = parseEffectiveThreadPolicy(await client.request('thread/start', threadParams, THREAD_CALL_TIMEOUT_MS), 'thread/start');
+          }
+        } else {
           effective = parseEffectiveThreadPolicy(await client.request('thread/start', threadParams, THREAD_CALL_TIMEOUT_MS), 'thread/start');
         }
-      } else {
-        effective = parseEffectiveThreadPolicy(await client.request('thread/start', threadParams, THREAD_CALL_TIMEOUT_MS), 'thread/start');
+      } catch (err) {
+        // thread/start and thread/resume configure a thread but do not carry the
+        // user prompt. Even an unanswered setup request cannot have begun this
+        // agent turn, so recovery may rely on not_started without replay risk.
+        const message = err instanceof Error ? err.message : String(err);
+        logger.error({ err: message, resume: !!input.sessionId }, 'codex_app_server thread setup failed');
+        yield* this.terminalError(friendlyAppServerError(message), 'not_started', input.provider, err);
+        return;
       }
 
       const threadId = effective.thread.id;
@@ -1669,15 +1693,43 @@ function isAbort(err: unknown, signal: AbortSignal | undefined): boolean {
   return err instanceof Error && err.name === 'AbortError';
 }
 
-/** Scrubbed child env with the isolated CODEX_HOME pinned. Mirrors the SDK path. */
-function buildEnv(input: AgentTurnInput, codexHome: string): Record<string, string> {
+const MISSION_SCOPE_ENV_KEYS = new Set([
+  MISSION_TASK_ID_ENV.toLowerCase(),
+  MISSION_ACTOR_ENV.toLowerCase(),
+  MISSION_ENTRY_KEY_ENV.toLowerCase(),
+]);
+
+/**
+ * Scrubbed App Server child env with the isolated CODEX_HOME pinned.
+ *
+ * A mission-control turn cannot open a shell, use host apps, or access the
+ * network. Its dispatch MCP process receives task identity in that server's
+ * per-turn config, so putting the same identity on the warm App Server child is
+ * unnecessary and counterproductive: it changes the manager launch fingerprint
+ * and drains an interactive turn before the coordinator can start (and vice
+ * versa). Strip only that restricted profile's inherited mission scope here.
+ * The input and its MCP server config are copied, never mutated.
+ *
+ * Full-power mission and worker turns keep the inherited scope because shell
+ * commands and CLI fallbacks need it and must rotate away before an interactive
+ * turn can reuse the child.
+ */
+export function buildAppServerLaunchEnv(
+  input: AgentTurnInput,
+  codexHome: string,
+  profile: CodexCapabilityProfile = resolveCodexCapabilityProfile(input),
+): Record<string, string> {
   const source = input.env ?? getScrubbedSdkEnv();
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(source)) {
     if (typeof value === 'string') env[key] = value;
   }
   for (const key of Object.keys(env)) {
-    if (/^ANTHROPIC_/i.test(key) || /^CLAUDE_CODE_/i.test(key)) delete env[key];
+    if (
+      /^ANTHROPIC_/i.test(key)
+      || /^CLAUDE_CODE_/i.test(key)
+      || (profile.mode === 'mission-control' && MISSION_SCOPE_ENV_KEYS.has(key.toLowerCase()))
+    ) delete env[key];
   }
   if (OPENAI_API_KEY) env.OPENAI_API_KEY = OPENAI_API_KEY;
   env.CODEX_HOME = codexHome;

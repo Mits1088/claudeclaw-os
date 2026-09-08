@@ -11,6 +11,7 @@ vi.mock('./env.js', () => ({
 }));
 
 vi.mock('./config.js', () => ({
+  AGENT_ID: 'fixture',
   AGENT_MAX_TURNS: 30,
   AGENT_IDLE_TIMEOUT_MS: 900000,
   AGENT_MAX_RUNTIME_MS: 3600000,
@@ -18,6 +19,8 @@ vi.mock('./config.js', () => ({
   agentCwd: undefined,
   agentSystemPrompt: undefined,
   ENABLE_ACP: true,
+  EXFILTRATION_GUARD_ENABLED: true,
+  PROTECTED_ENV_VARS: [],
   DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
   CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
   CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
@@ -32,8 +35,13 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
+vi.mock('./db.js', () => ({ claimProviderHealth: () => ({ allowed: true }), recordProviderHealth: () => null,
+  getRecentMissionReportContext: () => '' }));
+vi.mock('./mission-provider-policy.js', () => ({ loadMissionProviderPolicy: () => ({ fallbackProviders: [], maxAttempts: 3, maxRuntimeSeconds: 600, cooldownSeconds: 60, retryRateLimit: true }) }));
+
 import { emptyTurnReply, isFailedTurn, runAgentWithRetry, type AgentResult } from './agent.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
+import { logger } from './logger.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockQuery = query as any;
@@ -188,7 +196,7 @@ describe('runAgentWithRetry', () => {
     const abortCtrl = new AbortController();
     abortCtrl.abort();
 
-    // The SDK returns {aborted: true} when pre-aborted, runAgent returns it directly
+    // Pre-aborted turns stop before health admission or SDK invocation.
     mockQuery.mockReturnValue(mockQueryEvents([
       { type: 'system', subtype: 'init', session_id: 'sess-1' },
       resultEvent('partial'),
@@ -204,7 +212,7 @@ describe('runAgentWithRetry', () => {
       'hi', undefined, noop, undefined, undefined, abortCtrl, undefined, undefined, undefined, undefined, claudeProvider,
     );
     expect(result.aborted).toBe(true);
-    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(0);
   });
 
   it('non-AgentError exceptions are classified then thrown', async () => {
@@ -236,7 +244,7 @@ describe('runAgentWithRetry', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('uses fallback model on shouldSwitchModel errors', async () => {
+  it('warns once without legacy values and never authorizes legacy model switching', async () => {
     const overloadedError = new AgentError('overloaded', {
       shouldRetry: true,
       shouldNewChat: false,
@@ -269,7 +277,19 @@ describe('runAgentWithRetry', () => {
 
     expect(result.text).toBe('Fallback worked');
     expect(capturedModels[0]).toBe('claude-opus-4-6');
-    expect(capturedModels[1]).toBe('claude-sonnet-4-6');
+    expect(capturedModels[1]).toBe('claude-opus-4-6');
+    const deprecationWarnings = () => vi.mocked(logger.warn).mock.calls
+      .filter((args) => String(args[0]).includes('MODEL_FALLBACK_CHAIN'));
+    expect(deprecationWarnings()).toEqual([[
+      'MODEL_FALLBACK_CHAIN is deprecated and ignored; configure the agent.yaml fallback policy instead',
+    ]]);
+    await runAgentWithRetry(
+      'hi again', undefined, noop, undefined,
+      'claude-opus-4-6', undefined, undefined, undefined,
+      ['private-legacy-value'], undefined, claudeProvider,
+    );
+    expect(deprecationWarnings()).toHaveLength(1);
+    expect(capturedModels[2]).toBe('claude-opus-4-6');
   }, 15000);
 });
 

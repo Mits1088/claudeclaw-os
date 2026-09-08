@@ -5,6 +5,8 @@ const state = vi.hoisted(() => ({
   capturedInputs: [] as AgentTurnInput[],
   activeProvider: { type: 'opencode' as const },
   mainProvider: { type: 'claude' as const, model: 'claude-opus-4-6' },
+  output: 'ok',
+  snapshots: [] as string[],
 }));
 
 vi.mock('./config.js', () => ({
@@ -16,6 +18,8 @@ vi.mock('./config.js', () => ({
   agentProvider: state.activeProvider,
   agentSystemPrompt: undefined,
   ENABLE_ACP: true,
+  EXFILTRATION_GUARD_ENABLED: true,
+  PROTECTED_ENV_VARS: [],
 }));
 
 vi.mock('./env.js', () => ({
@@ -53,8 +57,11 @@ vi.mock('./agent-engine/index.js', () => ({
     forProvider: vi.fn((provider) => ({
       async *invoke(input: AgentTurnInput) {
         state.capturedInputs.push(input);
+        for (const accumulatedText of state.snapshots) {
+          yield { type: 'text_delta' as const, text: accumulatedText, accumulatedText };
+        }
         yield { type: 'session' as const, sessionId: `${provider.type}-session` };
-        yield { type: 'result' as const, text: 'ok', usage: null };
+        yield { type: 'result' as const, text: state.output, usage: null };
       },
     })),
   },
@@ -65,6 +72,19 @@ import { runAgent } from './agent.js';
 describe('runAgent provider selection', () => {
   beforeEach(() => {
     state.capturedInputs.length = 0;
+    state.output = 'ok';
+    state.snapshots = [];
+  });
+
+  it('sanitizes the returned result and every captured stream delivery', async () => {
+    const secret = 'sk-ant-api03-CANARYcanaryCANARYcanary01';
+    state.output = `value ${secret} end`;
+    state.snapshots = ['value sk-ant-', state.output];
+    const captured: string[] = [];
+    const result = await runAgent('test', undefined, () => {}, undefined, undefined, undefined,
+      text => captured.push(text));
+    expect(result.text).toBe('value [REDACTED] end');
+    expect(captured).toEqual(['value [REDACTED] end']);
   });
 
   it('uses the active agent provider when no provider is passed', async () => {

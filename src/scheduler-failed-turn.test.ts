@@ -3,6 +3,7 @@ vi.mock('./mission-reporting.js', () => ({ deliverMissionWorkflowReport: vi.fn(a
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { claimNextMissionTask, completeMissionTask, maybeReleaseJoinForMission, updateTaskAfterRun, saveTokenUsage } from './db.js';
 import { settleMissionProviderHealth } from './mission-provider-execution.js';
+import { runAgent } from './agent.js';
 
 // Routing regression for failed turns: both engines can surface a failure as a
 // normal (non-thrown, non-aborted) result — Claude SDK via usage.isError /
@@ -24,6 +25,20 @@ vi.mock('./config.js', () => ({
   ALLOWED_CHAT_ID: 'chat-1',
   SCHEDULER_IDLE_TIMEOUT_MS: 900_000,
   SCHEDULER_MAX_RUNTIME_MS: 1_800_000,
+  CREW_MISSIONS_ENABLED: true,
+  CREW_MISSION_MAX_ACTIVE: 1,
+  CREW_MISSION_MAX_RUNNING_WORKERS: 1,
+  CREW_MISSION_MAX_RUNNING_COORDINATORS: 1,
+  CREW_MISSION_MAX_TURNS: 3,
+  CREW_MISSION_MAX_RUNTIME_SECONDS: 600,
+  CREW_MISSION_TURN_BUDGET_5H: 12,
+  CREW_MISSION_BUDGET_HARD_PERCENT: 75,
+  CREW_MISSION_PROVIDER_TURN_BUDGET_5H: 12,
+  CREW_MISSION_BUDGET_WARNING_PERCENT: 60,
+  CREW_MISSION_MAX_DEPTH: 1,
+  CREW_MISSION_MAX_TASKS: 2,
+  CREW_MISSION_MAX_FANOUT: 1,
+  CREW_MISSION_MAX_COORDINATOR_REVIEWS: 2,
   agentMcpAllowlist: [],
   agentDefaultModel: undefined,
   agentProvider: undefined,
@@ -54,7 +69,7 @@ vi.mock('./db.js', () => ({
     state.mission = null;
     return m;
   }),
-  completeMissionTask: vi.fn(() => { state.missionCompleted = true; }),
+  completeMissionTask: vi.fn(() => { state.missionCompleted = true; return { changed: true, outcomeId: null, coordinatorTaskId: null }; }),
   maybeReleaseJoinForMission: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
   failStuckMissionTasks: vi.fn(() => 0),
@@ -71,6 +86,8 @@ vi.mock('./db.js', () => ({
   isWorkerLeaseCurrent: vi.fn(() => true),
   markWorkerTaskScopeStarted: vi.fn(() => true),
   deactivateWorkerIfTaskScopeDrained: vi.fn(() => state.missionCompleted),
+  authorizeMissionGovernorProvider: vi.fn(() => ({ allowed: true, reason: null, retryAt: null })),
+  reconcileMissionGovernorUsage: vi.fn(() => true),
 }));
 
 vi.mock('./bot.js', () => ({
@@ -220,6 +237,17 @@ describe('scheduler failed-turn routing', () => {
     expect(send).toHaveBeenCalledWith('all good');
   });
 
+  it('does not publish completion or release a join when cancellation won the write', async () => {
+    state.mission = { id: 'cancel-race', title: 'Cancelled', prompt: 'go', role: 'task',
+      created_by: 'main', assigned_agent: 'research', status: 'running' };
+    state.agentResult = { text: 'must not publish', usage: null };
+    vi.mocked(completeMissionTask).mockReturnValueOnce({ changed: false, outcomeId: null, coordinatorTaskId: null });
+    const send = vi.fn(async () => {});
+    await runSchedulerCycle(send);
+    expect(send).not.toHaveBeenCalledWith('must not publish');
+    expect(maybeReleaseJoinForMission).not.toHaveBeenCalled();
+  });
+
   it('preserves completed execution and settles health when ancillary usage recording fails', async () => {
     state.mission = { id: 'usage-busy', title: 'Executed work', prompt: 'go', role: 'task',
       workflow_id: 'wf-usage', created_by: 'main', assigned_agent: 'research', status: 'running' };
@@ -240,6 +268,7 @@ describe('scheduler failed-turn routing', () => {
     const send = vi.fn(async () => {});
     await runSchedulerCycle(send);
     expect(completeMissionTask).toHaveBeenCalledWith('workflow-worker', 'unverified intermediate finding', 'completed');
+    expect(vi.mocked(runAgent).mock.calls[0]?.[12]).toBe(3);
     expect(send).not.toHaveBeenCalled();
   });
 

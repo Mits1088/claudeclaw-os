@@ -1,3 +1,4 @@
+import { outboundText } from './outbound-payload.js';
 import net from 'net';
 import { EventEmitter } from 'events';
 
@@ -311,13 +312,13 @@ export class SignalRpcClient extends EventEmitter {
 
   /** Send a plain-text message to one recipient (phone number or `group.<id>`). */
   async send(recipient: string, text: string): Promise<void> {
-    await this.call('send', buildSendParams(recipient, { message: text }));
+    await this.call('send', buildSendParams(recipient, { message: outboundText(text, 'signal.send') }));
   }
 
   /** Send a message with attachments (file paths on local disk). */
   async sendWithAttachments(recipient: string, text: string, attachmentPaths: string[]): Promise<void> {
     await this.call('send', buildSendParams(recipient, {
-      message: text,
+      message: outboundText(text, 'signal.attachments'),
       attachment: attachmentPaths,
     }));
   }

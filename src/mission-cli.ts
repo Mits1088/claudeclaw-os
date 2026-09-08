@@ -38,6 +38,8 @@ import {
   actionHandbackMission,
   actionListMissions,
   actionListMissionWorkflows,
+  actionMissionGovernorStatus,
+  actionSetMissionGovernorControl,
   actionMissionResult,
   actionMissionWorkflowResult,
   actionResumeMissionWorkflow,
@@ -140,6 +142,8 @@ function dispatch(): void {
   const deadlineArg = deadlineFlagIdx !== -1 ? process.argv[deadlineFlagIdx + 1] ?? '' : undefined;
   const reasonFlagIdx = process.argv.indexOf('--reason');
   const reasonArg = reasonFlagIdx !== -1 ? process.argv[reasonFlagIdx + 1] ?? '' : undefined;
+  const forMinutesFlagIdx = process.argv.indexOf('--for-minutes');
+  const forMinutesArg = forMinutesFlagIdx !== -1 ? parseInt(process.argv[forMinutesFlagIdx + 1] ?? '0', 10) : undefined;
 
   // Parse --summary-agent flag (gather command's join assignee)
   const summaryAgentFlagIdx = process.argv.indexOf('--summary-agent');
@@ -157,7 +161,7 @@ function dispatch(): void {
   [
     agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx,
     keyFlagIdx, maxStepsFlagIdx, atFlagIdx, ownerFlagIdx, objectiveFlagIdx,
-    maxDepthFlagIdx, maxTasksFlagIdx, maxFanoutFlagIdx, deadlineFlagIdx, reasonFlagIdx,
+    maxDepthFlagIdx, maxTasksFlagIdx, maxFanoutFlagIdx, deadlineFlagIdx, reasonFlagIdx, forMinutesFlagIdx,
   ].forEach(idx => {
     if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
   });
@@ -172,7 +176,7 @@ function dispatch(): void {
   const KNOWN_FLAGS = [
     '--agent', '--title', '--priority', '--status', '--summary-agent', '--task',
     '--key', '--max-steps', '--at', '--owner', '--objective', '--max-depth',
-    '--max-tasks', '--max-fanout', '--deadline', '--reason', '--help',
+    '--max-tasks', '--max-fanout', '--deadline', '--reason', '--for-minutes', '--help',
   ];
   const unknownFlags = rest.filter((tok) => tok.startsWith('--'));
   if (unknownFlags.length > 0) {
@@ -327,6 +331,34 @@ function dispatch(): void {
       break;
     }
 
+    case 'governor-status': {
+      const status = actionMissionGovernorStatus();
+      console.log(`Crew Missions: ${status.enabled ? 'enabled' : 'disabled'}`);
+      console.log(`5h budget:    ${status.usedTurns}/${status.hardAllowanceTurns} turns used (${status.remainingTurns} remaining)`);
+      console.log(`Reservations: ${status.activeReservations} active`);
+      console.log(`Parked work:  ${status.parkedWorkflowTasks} task(s)`);
+      for (const provider of status.providerUsage) {
+        console.log(`  ${provider.provider}/${provider.model}: ${provider.turns} turns; ${provider.activeReservations} active`);
+      }
+      if (status.control.overrideUntil) console.log(`Expires:      ${new Date(status.control.overrideUntil * 1000).toISOString()}`);
+      if (status.control.reason) console.log(`Last change:  @${status.control.updatedBy}: ${status.control.reason}`);
+      break;
+    }
+
+    case 'governor-enable': {
+      const status = actionSetMissionGovernorControl({
+        enabled: true, reason: reasonArg ?? '', durationMinutes: forMinutesArg, createdBy,
+      });
+      console.log(`Crew Missions enabled until ${new Date(status.control.overrideUntil! * 1000).toISOString()}.`);
+      break;
+    }
+
+    case 'governor-disable': {
+      actionSetMissionGovernorControl({ enabled: false, reason: reasonArg ?? '', createdBy });
+      console.log('Crew Missions disabled.');
+      break;
+    }
+
     case 'workflow-result': {
       const id = rest[0];
       if (!id) { console.error('Usage: mission-cli workflow-result <workflow-id>'); process.exit(1); }
@@ -438,7 +470,7 @@ function dispatch(): void {
     }
 
     default:
-      console.error('Commands: create | workflow | handback | continue | cancel-chain | transition | workflow-list | workflow-result | workflow-cancel | workflow-resume | list | result | cancel | gather');
+      console.error('Commands: create | workflow | governor-status | governor-enable | governor-disable | handback | continue | cancel-chain | transition | workflow-list | workflow-result | workflow-cancel | workflow-resume | list | result | cancel | gather');
       process.exit(1);
   }
 }

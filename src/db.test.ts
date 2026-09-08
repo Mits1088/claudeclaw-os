@@ -768,7 +768,7 @@ describe('headless worker lease fencing', () => {
     expect(getWorkerRuntime('ashford')?.desired_state).toBe('active');
 
     claimNextMissionTask('ashford', 'worker-1');
-    completeMissionTask('root', 'done', 'completed');
+    completeMissionTask('root', 'done', 'completed', undefined, { agentId: 'ashford', instanceId: 'worker-1', generation: 1 });
     claimNextMissionTask('dawes');
     completeMissionTask('child', 'done', 'completed');
 

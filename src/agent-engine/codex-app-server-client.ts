@@ -1,3 +1,4 @@
+import { outboundText } from '../outbound-payload.js';
 import fs from 'fs';
 import path from 'path';
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
@@ -329,7 +330,10 @@ export class CodexAppServerClient {
       gen.stderrBytes += Buffer.byteLength(chunk, 'utf8');
       gen.stderrLines += (chunk.match(/\n/g) ?? []).length;
       // Retained only pre-handshake, for startup diagnostics; never after ready.
-      if (!gen.ready) gen.earlyStderr = `${gen.earlyStderr}${chunk}`.slice(-4000);
+      if (!gen.ready && gen.earlyStderr !== '[stderr withheld: buffer limit exceeded]') {
+        gen.earlyStderr = gen.earlyStderr.length + chunk.length <= 4000
+          ? gen.earlyStderr + chunk : '[stderr withheld: buffer limit exceeded]';
+      }
     });
 
     child.stdout.setEncoding('utf8');
@@ -909,7 +913,7 @@ export class CodexAppServerClient {
 }
 
 function truncate(text: string, max: number): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const oneLine = outboundText(text, 'provider.preview').replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 

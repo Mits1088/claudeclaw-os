@@ -2,9 +2,10 @@
  * Bounded, provider-free multi-process isolation probe for mission workflows.
  *
  * Run from the candidate worktree with:
- *   NODE_ENV=development npx tsx scripts/probe-mission-contention.ts
+ *   node node_modules/tsx/dist/cli.mjs scripts/probe-mission-contention.ts --source
  *
- * The parent and every child load dist/db.js against one freshly-created store.
+ * Source mode needs no build. The optional default artifact mode loads dist/db.js.
+ * Two synthetic DB clients race writes; neither is a model/provider worker.
  * Child mode is intentionally kept in this file so the probe has one owned artifact.
  */
 import assert from 'node:assert/strict';
@@ -15,13 +16,16 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import readline from 'node:readline';
+import { createRequire } from 'node:module';
 import type { MissionWorkflowTransitionInput } from '../src/db.js';
 
 const CYCLES = 108;
 const scriptPath = fileURLToPath(import.meta.url);
 const candidateRoot = path.resolve(path.dirname(scriptPath), '..');
-const configArtifact = path.join(candidateRoot, 'dist', 'config.js');
-const dbArtifact = path.join(candidateRoot, 'dist', 'db.js');
+const sourceMode = process.argv.includes('--source');
+const loader = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
+const configArtifact = path.join(candidateRoot, sourceMode ? 'src' : 'dist', sourceMode ? 'config.ts' : 'config.js');
+const dbArtifact = path.join(candidateRoot, sourceMode ? 'src' : 'dist', sourceMode ? 'db.ts' : 'db.js');
 
 type JsonObject = Record<string, unknown>;
 type Request = JsonObject & { requestId: string; op: string; startAt?: number };
@@ -37,11 +41,13 @@ function waitUntil(epochMs: number | undefined): void {
 }
 
 async function loadDatabase() {
+  assert.ok(!fs.existsSync(path.join(candidateRoot, '.env')), 'probe requires a candidate without .env');
   const config = await import(pathToFileURL(configArtifact).href);
   const expectedStore = path.resolve(process.env.CLAUDECLAW_STORE_DIR!);
   const expectedConfig = path.resolve(process.env.CLAUDECLAW_CONFIG!);
   assert.equal(path.resolve(config.STORE_DIR), expectedStore, 'candidate STORE_DIR escaped isolation');
   assert.equal(path.resolve(config.CLAUDECLAW_CONFIG), expectedConfig, 'candidate config dir escaped isolation');
+  assert.equal(config.activeBotToken, '', 'probe must not inherit messenger credentials');
   const db = await import(pathToFileURL(dbArtifact).href);
   db.initDatabase();
   return { db, storeDir: config.STORE_DIR, configDir: config.CLAUDECLAW_CONFIG };
@@ -130,24 +136,38 @@ class ProbeChild {
       const error = new Error(`probe child ${this.pid} exited code=${code} signal=${signal}: ${this.stderr.join('')}`);
       for (const waiter of this.waiters.splice(0)) waiter.reject(error);
     });
+    child.on('error', error => {
+      for (const waiter of this.waiters.splice(0)) waiter.reject(error);
+    });
   }
 
   static async start(environment: NodeJS.ProcessEnv): Promise<ProbeChild> {
-    const child = spawn(process.execPath, ['--import', 'tsx', scriptPath, '--child'], {
-      cwd: candidateRoot,
+    const child = spawn(process.execPath, ['--import', loader, scriptPath, '--child', ...(sourceMode ? ['--source'] : [])], {
+      cwd: environment.HOME,
       env: environment,
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     });
     const wrapper = new ProbeChild(child);
-    await wrapper.waitFor(message => message.event === 'ready');
+    ownedChildren.add(wrapper);
+    try { await wrapper.waitFor(message => message.event === 'ready'); }
+    catch (error) { await wrapper.terminate(); throw error; }
     return wrapper;
   }
 
   waitFor(predicate: (message: ChildMessage) => boolean): Promise<ChildMessage> {
     const known = this.messages.find(predicate);
     if (known) return Promise.resolve(known);
-    return new Promise((resolve, reject) => this.waiters.push({ predicate, resolve, reject }));
+    return new Promise((resolve, reject) => {
+      const waiter = { predicate,
+        resolve: (message: ChildMessage) => { clearTimeout(timer); resolve(message); },
+        reject: (error: Error) => { clearTimeout(timer); reject(error); } };
+      const timer = setTimeout(() => {
+        this.waiters = this.waiters.filter(item => item !== waiter);
+        reject(new Error(`probe child ${this.pid} response deadline exceeded`));
+      }, 10_000);
+      this.waiters.push(waiter);
+    });
   }
 
   async request(op: string, fields: JsonObject = {}): Promise<any> {
@@ -169,12 +189,15 @@ class ProbeChild {
   }
 
   async terminate(): Promise<void> {
+    ownedChildren.delete(this);
     if (this.process.exitCode !== null || this.process.signalCode !== null) return;
     const exited = new Promise<void>(resolve => this.process.once('exit', () => resolve()));
     this.process.kill();
     await exited;
   }
 }
+
+const ownedChildren = new Set<ProbeChild>();
 
 function assertSingleEdges(snapshot: any, expectedDispatchId?: string): void {
   assert.equal(snapshot.outcomes.length, 1, 'expected exactly one canonical outcome');
@@ -191,22 +214,30 @@ function assertSingleEdges(snapshot: any, expectedDispatchId?: string): void {
 }
 
 async function parentMain(): Promise<void> {
-  assert.equal(process.env.NODE_ENV, 'development', 'probe must run with NODE_ENV=development');
   assert.ok(fs.existsSync(dbArtifact), `candidate DB artifact missing: ${dbArtifact}`);
   const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeclaw-268-contention-'));
   const storeDir = path.join(runDir, 'store');
   const configDir = path.join(runDir, 'config');
+  const fixtureHome = path.join(runDir, 'home');
   fs.mkdirSync(storeDir, { recursive: true });
   fs.mkdirSync(configDir, { recursive: true });
+  fs.mkdirSync(fixtureHome);
   const environment: NodeJS.ProcessEnv = {
-    ...process.env,
+    SystemRoot: process.env.SystemRoot, PATH: process.env.PATH,
+    HOME: fixtureHome, USERPROFILE: fixtureHome, TEMP: runDir, TMP: runDir,
+    CODEX_HOME: path.join(fixtureHome, '.codex'), XDG_CONFIG_HOME: path.join(fixtureHome, '.config'),
     NODE_ENV: 'development',
     CLAUDECLAW_STORE_DIR: storeDir,
     CLAUDECLAW_CONFIG: configDir,
     CLAUDECLAW_AGENT_ID: 'probe-268',
     DB_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
+    CREW_MISSIONS_ENABLED: 'true', LOG_LEVEL: 'silent',
+    // Fixture-only allowance for 108 sequential DB races, never provider spend.
+    CREW_MISSION_TURN_BUDGET_5H: '1000',
   };
+  for (const key of Object.keys(process.env)) delete process.env[key];
   Object.assign(process.env, environment);
+  process.chdir(fixtureHome);
 
   const loadedDbSha256 = sha256(dbArtifact);
   const { db, storeDir: loadedStore, configDir: loadedConfig } = await loadDatabase();
@@ -216,7 +247,9 @@ async function parentMain(): Promise<void> {
   assert.equal(path.resolve(configDir), path.resolve(runDir, 'config'));
 
   const workerA = await ProbeChild.start(environment);
-  const workerB = await ProbeChild.start(environment);
+  let workerB: ProbeChild;
+  try { workerB = await ProbeChild.start(environment); }
+  catch (error) { await workerA.terminate(); throw error; }
   const busyFailures: JsonObject[] = [];
   const cycleEvidence: JsonObject[] = [];
   try {
@@ -230,7 +263,7 @@ async function parentMain(): Promise<void> {
         id: workflowId, rootTaskId, title: `Contention ${suffix}`,
         objective: 'Bounded isolated contention probe', initialPrompt: 'Return deterministic evidence.',
         ownerAgent, workerAgent, priority: 5,
-        maxDepth: 3, maxTasks: 3, maxFanout: 1, deadlineAt: null,
+        maxDepth: 1, maxTasks: 2, maxFanout: 1, deadlineAt: null,
       });
       assert.equal(db.claimNextMissionTask(workerAgent)?.id, rootTaskId);
 
@@ -280,6 +313,12 @@ async function parentMain(): Promise<void> {
       assertSingleEdges(snapshot, dispatchId);
       assert.equal(snapshot.tasks.some((task: any) => inputs.some(input => input.dispatches[0].id === task.id) && task.id !== dispatchId), false);
       cycleEvidence.push({ cycle, workflowId, completionChanged: completions.map(item => item.changed), transitionDuplicate: transitions.map(item => item.duplicate), outcomeId: snapshot.outcomes[0].id, coordinatorId, dispatchId });
+      db.completeMissionTask(coordinatorId, 'Race assessed', 'completed');
+      db.cancelMissionWorkflow(workflowId, ownerAgent);
+      // Materialize the cancelled, never-started follow-up's own outcome now,
+      // so later restart assertions concern only their dedicated crash case.
+      db.reconcileMissionControl();
+      assert.equal(db.getMissionGovernorStatus().activeReservations, 0);
     }
   } finally {
     await Promise.all([workerA.terminate(), workerB.terminate()]);
@@ -290,7 +329,7 @@ async function parentMain(): Promise<void> {
   // outcome, and coordinator wakeup. Pause only after that transaction returns.
   const crashOutcomeWorkflow = 'probe268-crash-outcome';
   const crashOutcomeTask = 'probe268-crash-outcome-root';
-  db.createMissionWorkflow({ id: crashOutcomeWorkflow, rootTaskId: crashOutcomeTask, title: 'Crash outcome', objective: 'Crash after outcome transaction', initialPrompt: 'Evidence', ownerAgent: 'probe268-crash-owner-1', workerAgent: 'probe268-crash-worker', priority: 5, maxDepth: 3, maxTasks: 3, maxFanout: 1, deadlineAt: null });
+  db.createMissionWorkflow({ id: crashOutcomeWorkflow, rootTaskId: crashOutcomeTask, title: 'Crash outcome', objective: 'Crash after outcome transaction', initialPrompt: 'Evidence', ownerAgent: 'probe268-crash-owner-1', workerAgent: 'probe268-crash-worker', priority: 5, maxDepth: 1, maxTasks: 2, maxFanout: 1, deadlineAt: null });
   assert.equal(db.claimNextMissionTask('probe268-crash-worker')?.id, crashOutcomeTask);
   const crashCompleter = await ProbeChild.start(environment);
   const outcomeCheckpoint = await crashCompleter.checkpoint('crash-complete', { taskId: crashOutcomeTask, report: 'durable outcome' });
@@ -301,12 +340,14 @@ async function parentMain(): Promise<void> {
   await outcomeReopener.terminate();
   assertSingleEdges(outcomeSnapshot);
   assert.deepEqual(outcomeReconcile, { expiredWorkflows: 0, recoveredOutcomes: 0, releasedJoins: 0, blockedJoins: 0, queuedCoordinators: 0, blockedOutcomes: 0 });
+  db.cancelMissionWorkflow(crashOutcomeWorkflow, 'probe268-crash-owner-1');
+  db.reconcileMissionControl();
 
   // Crash boundary 2: applyMissionWorkflowTransition atomically persists the
   // transition and dispatch. Pause only after that transaction returns.
   const crashTransitionWorkflow = 'probe268-crash-transition';
   const crashTransitionTask = 'probe268-crash-transition-root';
-  db.createMissionWorkflow({ id: crashTransitionWorkflow, rootTaskId: crashTransitionTask, title: 'Crash transition', objective: 'Crash after transition transaction', initialPrompt: 'Evidence', ownerAgent: 'probe268-crash-owner-2', workerAgent: 'probe268-crash-worker-2', priority: 5, maxDepth: 3, maxTasks: 3, maxFanout: 1, deadlineAt: null });
+  db.createMissionWorkflow({ id: crashTransitionWorkflow, rootTaskId: crashTransitionTask, title: 'Crash transition', objective: 'Crash after transition transaction', initialPrompt: 'Evidence', ownerAgent: 'probe268-crash-owner-2', workerAgent: 'probe268-crash-worker-2', priority: 5, maxDepth: 1, maxTasks: 2, maxFanout: 1, deadlineAt: null });
   assert.equal(db.claimNextMissionTask('probe268-crash-worker-2')?.id, crashTransitionTask);
   const completed = db.completeMissionTask(crashTransitionTask, 'durable input', 'completed');
   assert.equal(completed.changed, true);
@@ -325,9 +366,13 @@ async function parentMain(): Promise<void> {
   await transitionReopener.terminate();
   assertSingleEdges(transitionSnapshot, crashDispatchId);
   assert.deepEqual(transitionReconcile, { expiredWorkflows: 0, recoveredOutcomes: 0, releasedJoins: 0, blockedJoins: 0, queuedCoordinators: 0, blockedOutcomes: 0 });
+  db.completeMissionTask(completed.coordinatorTaskId, 'Crash recovery assessed', 'completed');
+  db.cancelMissionWorkflow(crashTransitionWorkflow, 'probe268-crash-owner-2');
+  assert.equal(db.getMissionGovernorStatus().activeReservations, 0);
 
   const evidence = {
     passed: true,
+    sourceMode, realProviderCalls: 0, messengerInstances: 0,
     nodeEnv: process.env.NODE_ENV,
     cycles: CYCLES,
     runDir,
@@ -356,5 +401,6 @@ async function parentMain(): Promise<void> {
 if (process.argv.includes('--child')) {
   await childMain();
 } else {
-  await parentMain();
+  try { await parentMain(); }
+  finally { await Promise.all([...ownedChildren].map(child => child.terminate())); }
 }

@@ -1,3 +1,4 @@
+import { outboundText } from '../outbound-payload.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -274,7 +275,7 @@ function applyCapabilityHardening(config: CodexConfigObject, profile: CodexCapab
 }
 
 function truncate(text: string, max: number): string {
-  const oneLine = text.replace(/\s+/g, ' ').trim();
+  const oneLine = outboundText(text, 'provider.preview').replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
@@ -306,11 +307,11 @@ function usageFromTurn(model: string, u: Usage, durationMs: number): AgentEngine
 function isStaleSessionError(message: string): boolean {
   // Codex's resume failure text has taken a few forms across CLI versions,
   // e.g. "thread/resume failed: no rollout found for thread id ...". Match the
-  // subject (session/thread/rollout/conversation) AND a not-found/failed signal
-  // in either word order ("not found" or "no rollout found").
-  const subject = /session|thread|conversation|rollout/i.test(message);
-  const missing = /not found|no (?:rollout|session|thread|record|conversation)[^.]*found|no such|missing|does not exist|failed to (?:load|read|resume)|resume failed/i.test(message);
-  return subject && missing;
+  // subject (session/thread/rollout/conversation) AND an explicit absence signal
+  // in either word order ("not found" or "no rollout found"). A bare "resume
+  // failed" is not enough: auth, rate and transport errors use that prefix too,
+  // and replaying those as though the saved thread were missing is unsafe.
+  return /(?:session|thread|conversation|rollout)(?:\s+(?:id|record))?\s+(?:was\s+)?(?:not found|missing|does not exist)|no\s+(?:such\s+)?(?:session|thread|conversation|rollout)(?:\s+(?:id|record))?[^.\n]*?found|missing\s+(?:session|thread|conversation|rollout)|could not find\s+(?:the\s+)?(?:session|thread|conversation|rollout)/i.test(message);
 }
 
 /**
@@ -557,9 +558,29 @@ export class CodexSdkEngineAdapter implements AgentEngine {
     // fresh thread once — provided nothing was streamed yet.
     for (let attempt = 0; attempt < 2; attempt++) {
       const resuming = attempt === 0 && !!input.sessionId;
-      const thread: Thread = resuming
-        ? codex.resumeThread(input.sessionId!, threadOptions)
-        : codex.startThread(threadOptions);
+      let thread: Thread;
+      try {
+        thread = resuming
+          ? codex.resumeThread(input.sessionId!, threadOptions)
+          : codex.startThread(threadOptions);
+      } catch (err) {
+        const failure = err instanceof Error ? err.message : String(err);
+        // Thread construction is synchronous in the SDK and happens before
+        // runStreamed receives the prompt. A stale saved id is therefore safe to
+        // replace once; every other setup failure is definitively not-started.
+        if (resuming && isStaleSessionError(failure)) {
+          logger.warn({ sessionId: input.sessionId }, 'Codex thread not resumable — starting a fresh thread');
+          continue;
+        }
+        const friendly = friendlyCodexError(failure);
+        logger.error({ model, failure }, 'Codex SDK thread setup failed');
+        yield { type: 'text_delta', delta: friendly, accumulatedText: friendly, raw: { message: failure } };
+        yield {
+          type: 'result', text: friendly, usage: null, stopReason: 'error',
+          failure: toProviderFailure(err, input.provider, 'not_started'),
+        };
+        return;
+      }
 
       // In-band persona: only on the first turn of a thread — Codex persists
       // the full transcript, so resumed threads already carry it.

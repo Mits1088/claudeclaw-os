@@ -1,7 +1,8 @@
+import { outboundText } from './outbound-payload.js';
 import fs from 'fs';
 import path from 'path';
 
-import { runAgentWithRetry, AgentProgressEvent } from './agent.js';
+import { runAgentWithRetry, emptyTurnReply, AgentProgressEvent } from './agent.js';
 import { AgentError } from './errors.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
 import type { ProviderConfig } from './provider.js';
@@ -322,7 +323,7 @@ export function createMattermostBot(): MattermostBot {
   try { fs.mkdirSync(path.dirname(auditPath), { recursive: true }); } catch { /* ok */ }
 
   const sendMessage = async (channelId: string, text: string, rootId?: string): Promise<void> => {
-    const formatted = formatForMattermost(text);
+    const formatted = formatForMattermost(outboundText(text, 'mattermost.format'));
     try {
       const entry = `[${new Date().toISOString()}] agent=${AGENT_ID} channel=${channelId} len=${formatted.length}\n${formatted}\n---\n`;
       fs.appendFileSync(auditPath, entry);
@@ -490,6 +491,7 @@ export function createMattermostBot(): MattermostBot {
     const typingInterval = setInterval(() => rpc.sendTyping(chatId), MATTERMOST_TYPING_REFRESH_MS);
     setProcessing(chatId, true);
 
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     try {
       const onProgress = (event: AgentProgressEvent): void => {
         emitChatEvent({ type: 'progress', chatId, description: event.description });
@@ -503,7 +505,7 @@ export function createMattermostBot(): MattermostBot {
 
       const abortCtrl = new AbortController();
       setActiveAbort(chatId, abortCtrl);
-      const timeoutId = setTimeout(() => {
+      timeoutId = setTimeout(() => {
         logger.warn({ chatId, timeoutMs: AGENT_TIMEOUT_MS }, 'Agent query timed out (Mattermost)');
         abortCtrl.abort();
       }, AGENT_TIMEOUT_MS);
@@ -546,7 +548,7 @@ export function createMattermostBot(): MattermostBot {
 
       if (result.newSessionId) setSession(chatId, result.newSessionId, AGENT_ID);
 
-      let rawResponse = result.text?.trim() || 'Done.';
+      let rawResponse = result.text?.trim() || emptyTurnReply(result);
 
       if (EXFILTRATION_GUARD_ENABLED) {
         const protectedValues = PROTECTED_ENV_VARS
@@ -602,6 +604,7 @@ export function createMattermostBot(): MattermostBot {
       logger.error({ err }, 'Agent run failed (Mattermost)');
       await sendMessage(chatId, `Error: ${errMsg}`, rootId);
     } finally {
+      if (timeoutId) clearTimeout(timeoutId);
       setProcessing(chatId, false);
     }
   }

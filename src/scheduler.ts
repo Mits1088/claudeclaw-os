@@ -26,6 +26,8 @@ import {
   isWorkerLeaseCurrent,
   markWorkerTaskScopeStarted,
   deactivateWorkerIfTaskScopeDrained,
+  authorizeMissionGovernorProvider,
+  reconcileMissionGovernorUsage,
   type MissionTask,
 } from './db.js';
 import type { AgentLifecycleMode } from './agent-config.js';
@@ -38,6 +40,7 @@ import { evaluateAcceptance } from './acceptance.js';
 import { TurnWatchdog, type TurnAbortReason } from './turn-watchdog.js';
 import { deliverMissionWorkflowReport } from './mission-reporting.js';
 import { missionProviderDeadlineDescription, prepareMissionProvider, recoverMissionProvider, settleMissionProviderHealth, type MissionProviderAttempt } from './mission-provider-execution.js';
+import { crewMissionGovernorPolicy } from './crew-mission-policy.js';
 import { runWithMissionExecutionContext } from './mission-execution-context.js';
 import type { ProviderFailure } from './agent-engine/types.js';
 import { missionCoordinatorToolPolicy } from './mission-coordinator-policy.js';
@@ -108,6 +111,26 @@ export function missionExecutionPrompt(
     '',
     mission.prompt,
   ].join('\n');
+}
+
+/**
+ * Durable workflow coordinators are control-plane turns: they can inspect
+ * persisted mission evidence and apply one transition, but cannot execute shell
+ * commands or edit the workspace. Give those turns their own per-agent FIFO so
+ * a long-running mission can advance while the Telegram chat remains usable.
+ *
+ * Ordinary, continuation, handback, and workflow-worker turns retain the chat
+ * lane. They currently run with the agent's normal workspace authority, so
+ * detaching them would allow two sessions to mutate the same checkout at once.
+ */
+export function missionExecutionQueueKey(
+  mission: Pick<MissionTask, 'role'> & Partial<Pick<MissionTask, 'workflow_id'>>,
+  agentId: string,
+  interactiveChatId: string | undefined,
+): string {
+  return mission.workflow_id && mission.role === 'coordinator'
+    ? `mission-control:${agentId}`
+    : interactiveChatId || 'mission';
 }
 
 export function initScheduler(
@@ -323,9 +346,22 @@ export async function runDueTasks(): Promise<void> {
   maybeDeactivateTaskScope();
 }
 
+function finalizeMission(mission: MissionTask, result: string | null, status: 'completed' | 'failed', error?: string): boolean {
+  const settled = schedulerWorkerInstanceId
+    ? completeMissionTask(mission.id, result, status, error, {
+      agentId: schedulerAgentId,
+      instanceId: schedulerWorkerInstanceId,
+      generation: mission.claim_generation,
+    })
+    : error === undefined ? completeMissionTask(mission.id, result, status)
+      : completeMissionTask(mission.id, result, status, error);
+  return settled.changed;
+}
+
 async function runDueMissionTasks(): Promise<void> {
   const mission = claimNextMissionTask(schedulerAgentId, schedulerWorkerInstanceId);
   if (!mission) return;
+  const workflowGovernor = mission.workflow_id ? crewMissionGovernorPolicy() : null;
   armTaskScope(mission.id);
 
   const missionKey = 'mission-' + mission.id;
@@ -334,13 +370,15 @@ async function runDueMissionTasks(): Promise<void> {
 
   logger.info({ missionId: mission.id, title: mission.title }, 'Running mission task');
 
-  const chatId = ALLOWED_CHAT_ID || 'mission';
-  messageQueue.enqueue(chatId, async () => {
+  const queueKey = missionExecutionQueueKey(mission, schedulerAgentId, ALLOWED_CHAT_ID);
+  messageQueue.enqueue(queueKey, async () => {
     const abortController = new AbortController();
     const watchdog = new TurnWatchdog(
       abortController,
       SCHEDULER_IDLE_TIMEOUT_MS,
-      SCHEDULER_MAX_RUNTIME_MS,
+      workflowGovernor
+        ? Math.min(SCHEDULER_MAX_RUNTIME_MS, workflowGovernor.maxRuntimeSeconds * 1000)
+        : SCHEDULER_MAX_RUNTIME_MS,
     );
     watchdog.start();
 
@@ -364,12 +402,23 @@ async function runDueMissionTasks(): Promise<void> {
       const prepared = prepareMissionProvider(mission, agentDefaultModel ? { ...primary, model: agentDefaultModel } : primary);
       if (prepared.kind === 'queued') return;
       if (prepared.kind === 'blocked') {
-        completeMissionTask(mission.id, null, 'failed', prepared.reason);
+        if (!finalizeMission(mission, null, 'failed', prepared.reason)) return;
         maybeReleaseJoinForMission({ ...mission, status: 'failed' });
         if (!mission.workflow_id) await sender(`Mission blocked: ${mission.title}: ${prepared.reason}`);
         return;
       }
       providerAttempt = prepared.attempt;
+      if (mission.workflow_id) {
+        const admission = authorizeMissionGovernorProvider(
+          mission.id,
+          providerAttempt.provider?.type ?? primary?.type ?? 'unknown',
+          providerAttempt.provider?.model,
+        );
+        if (!admission.allowed) {
+          logger.warn({ missionId: mission.id, retryAt: admission.retryAt }, admission.reason ?? 'Crew Mission provider admission denied');
+          return;
+        }
+      }
       // The default provider budget deliberately matches the scheduler's hard
       // runtime cap. Let the watchdog own that equal bound so normal healthy
       // execution reports max_runtime, while a shorter explicit/recovered bound
@@ -398,8 +447,22 @@ async function runDueMissionTasks(): Promise<void> {
         mission.role === 'coordinator' ? missionCoordinatorToolPolicy : undefined,
         undefined,
         watchdog,
+        workflowGovernor?.maxTurnsPerTask,
       ));
       clearInterval(cancelPoll);
+      if (mission.workflow_id) reconcileMissionGovernorUsage(mission.id, result.usage ? {
+        turns: result.usage.numTurns,
+        inputTokens: result.usage.inputTokens,
+        outputTokens: result.usage.outputTokens,
+        cacheReadTokens: result.usage.cacheReadInputTokens,
+        cacheCreationTokens: result.usage.cacheCreationInputTokens,
+        costUsd: result.usage.totalCostUsd,
+        durationMs: result.usage.durationMs,
+      } : null, schedulerWorkerInstanceId ? {
+        agentId: schedulerAgentId,
+        instanceId: schedulerWorkerInstanceId,
+        generation: mission.claim_generation,
+      } : undefined);
       try { if (result.usage) {
         const usage = result.usage;
         saveTokenUsage(`mission:${mission.workflow_id ?? mission.id}`, result.newSessionId,
@@ -430,7 +493,7 @@ async function runDueMissionTasks(): Promise<void> {
           const description = recoveryDeadlineExpired
             ? missionProviderDeadlineDescription(providerAttempt)
             : schedulerAbortDescription(result.abortReason);
-          completeMissionTask(mission.id, null, 'failed', description);
+          if (!finalizeMission(mission, null, 'failed', description)) return;
           maybeReleaseJoinForMission({ ...mission, status: 'failed' });
           logger.warn(
             { missionId: mission.id, abortReason: result.abortReason },
@@ -448,7 +511,7 @@ async function runDueMissionTasks(): Promise<void> {
         const reason = result.stopReason ?? 'unknown error';
         // Codex adapter puts the error message in result.text — keep it as the
         // error, never as the result.
-        completeMissionTask(mission.id, null, 'failed', `Agent run failed (${reason})${result.text ? `: ${result.text.slice(0, 400)}` : ''}`);
+        if (!finalizeMission(mission, null, 'failed', `Agent run failed (${reason})${result.text ? `: ${result.text.slice(0, 400)}` : ''}`)) return;
         maybeReleaseJoinForMission({ ...mission, status: 'failed' });
         logger.error({ missionId: mission.id, stopReason: result.stopReason }, 'Mission task run failed');
         try {
@@ -466,7 +529,7 @@ async function runDueMissionTasks(): Promise<void> {
         const rawText = result.text?.trim() ?? '';
         const hasOutput = rawText.length > 0;
         const text = hasOutput ? rawText : 'Task completed with no output.';
-        completeMissionTask(mission.id, text, 'completed');
+        if (!finalizeMission(mission, text, 'completed')) return;
         maybeReleaseJoinForMission({ ...mission, status: 'completed' });
         logger.info({ missionId: mission.id, hasOutput }, 'Mission task completed');
 
@@ -515,7 +578,7 @@ async function runDueMissionTasks(): Promise<void> {
       if (cancelledByUser) {
         logger.info({ missionId: mission.id }, 'Mission task cancelled by user (threw on abort)');
       } else {
-        completeMissionTask(mission.id, null, 'failed', errMsg.slice(0, 500));
+        if (!finalizeMission(mission, null, 'failed', errMsg.slice(0, 500))) return;
         maybeReleaseJoinForMission({ ...mission, status: 'failed' });
         logger.error({ err, missionId: mission.id }, 'Mission task failed');
         try {

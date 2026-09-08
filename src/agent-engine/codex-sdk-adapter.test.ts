@@ -18,6 +18,8 @@ const state = vi.hoisted(() => {
     // later, so it is the only way to prove the adapter handed runStreamed a
     // signal that was already aborted (i.e. the turn never starts).
     runs: [] as Array<{ input: any; turnOptions: any; signalAbortedAtCall: boolean }>,
+    startError: null as Error | null,
+    resumeError: null as Error | null,
     // One generator factory per expected runStreamed() call, consumed in order.
     scripts: [] as Array<() => AsyncGenerator<any>>,
     // Real (writable) dir so ensureIsolatedCodexHome's mkdir succeeds; the
@@ -41,13 +43,27 @@ vi.mock('@openai/codex-sdk', () => {
   }
   class Codex {
     constructor(options: any) { state.ctorOptions.push(options); }
-    startThread(options: any) { state.startCalls.push(options); return new FakeThread(); }
-    resumeThread(id: string, options: any) { state.resumeCalls.push({ id, options }); return new FakeThread(); }
+    startThread(options: any) {
+      state.startCalls.push(options);
+      const error = state.startError;
+      state.startError = null;
+      if (error) throw error;
+      return new FakeThread();
+    }
+    resumeThread(id: string, options: any) {
+      state.resumeCalls.push({ id, options });
+      const error = state.resumeError;
+      state.resumeError = null;
+      if (error) throw error;
+      return new FakeThread();
+    }
   }
   return { Codex };
 });
 
 vi.mock('../config.js', () => ({
+  EXFILTRATION_GUARD_ENABLED: true,
+  PROTECTED_ENV_VARS: [],
   OPENAI_API_KEY: 'sk-test-openai',
   DEFAULT_OPENAI_MODEL: 'gpt-5.5',
   CLAUDECLAW_CONFIG: state.configDir,
@@ -119,6 +135,8 @@ beforeEach(() => {
   state.resumeCalls.length = 0;
   state.runs.length = 0;
   state.scripts.length = 0;
+  state.startError = null;
+  state.resumeError = null;
   state.allowHiveRead = false;
 });
 
@@ -666,6 +684,50 @@ describe('CodexSdkEngineAdapter — configuration', () => {
 });
 
 describe('CodexSdkEngineAdapter — failure paths', () => {
+  it('classifies a synchronous thread setup failure before prompt submission as not_started', async () => {
+    state.startError = new Error('service unavailable while creating thread');
+
+    const events = await collect(baseInput());
+
+    expect(state.runs).toHaveLength(0);
+    expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.at(-1)).toMatchObject({
+      type: 'result',
+      stopReason: 'error',
+      failure: { provider: 'openai', category: 'unavailable', execution: 'not_started' },
+    });
+  });
+
+  it('replaces a synchronously rejected stale resume before submitting the prompt', async () => {
+    state.resumeError = new Error('thread/resume failed: no rollout found for thread id thread-old');
+    state.scripts.push(happyScript);
+
+    const events = await collect(baseInput({ sessionId: 'thread-old' }));
+
+    expect(state.resumeCalls).toHaveLength(1);
+    expect(state.startCalls).toHaveLength(1);
+    expect(state.runs).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'result', text: 'Hello', stopReason: 'end_turn' });
+  });
+
+  it.each([
+    'service unavailable while resuming thread',
+    'thread/resume failed: 401 missing API key',
+    'thread/resume failed: model not found',
+  ])('does not replace a synchronous non-stale resume failure: %s', async (message) => {
+    state.resumeError = new Error(message);
+
+    const events = await collect(baseInput({ sessionId: 'thread-old' }));
+
+    expect(state.resumeCalls).toHaveLength(1);
+    expect(state.startCalls).toHaveLength(0);
+    expect(state.runs).toHaveLength(0);
+    expect(events.at(-1)).toMatchObject({
+      type: 'result',
+      failure: { provider: 'openai', execution: 'not_started' },
+    });
+  });
+
   it('surfaces turn.failed as text_delta + result (never a bare error event)', async () => {
     state.scripts.push(async function* () {
       yield { type: 'thread.started', thread_id: 't' };

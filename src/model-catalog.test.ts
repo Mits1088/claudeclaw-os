@@ -64,6 +64,20 @@ describe('model catalog', () => {
       .toEqual(['', 'low', 'medium', 'high', 'xhigh']);
   });
 
+  it('keeps Low labels and low values across all OpenAI models and Claude', () => {
+    const claude = staticRuntimeOptionsFor({ type: 'claude', model: 'claude-opus-5' });
+
+    expect(claude?.modeOptions.find((option) => option.id === 'low'))
+      .toEqual({ id: 'low', label: 'Low' });
+    for (const { id: model } of OPENAI_MODEL_OPTIONS) {
+      const provider = { type: 'openai' as const, model };
+      const options = staticRuntimeOptionsFor(provider);
+      expect(options?.thinkingOptions.find((option) => option.id === 'low'))
+        .toEqual({ id: 'low', label: 'Low' });
+      expect(normalizedEffortForProvider(provider, 'low')).toBe('low');
+    }
+  });
+
   it('normalizes legacy speed names but drops values invalid for the model', () => {
     expect(normalizedEffortForProvider({ type: 'claude', model: 'claude-opus-5' }, 'deep')).toBe('high');
     expect(normalizedEffortForProvider({ type: 'claude', model: 'claude-sonnet-4-6' }, 'xhigh')).toBeUndefined();

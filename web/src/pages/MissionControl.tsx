@@ -52,6 +52,18 @@ interface MissionWorkflow {
   updated_at: number;
 }
 
+interface MissionGovernorStatus {
+  budgetTurns: number;
+  hardAllowanceTurns: number;
+  usedTurns: number;
+  remainingTurns: number;
+  activeReservations: number;
+  parkedWorkflowTasks: number;
+  budgetState: 'normal' | 'warning' | 'hard_stop';
+  totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number; durationMs: number };
+  limits: { maxDepth: number; maxTasks: number; maxFanout: number; maxCoordinatorReviews: number };
+}
+
 interface Agent { id: string; name: string; description: string; running: boolean; }
 
 const TERMINAL: MissionTask['status'][] = ['completed', 'failed', 'cancelled', 'blocked'];
@@ -97,7 +109,7 @@ function missionAvailability(task: MissionTask): string | null {
 export function MissionControl() {
   const [location, navigate] = useLocation();
   const tasks = useFetch<{ tasks: MissionTask[] }>('/api/mission/tasks', 15_000);
-  const workflows = useFetch<{ workflows: MissionWorkflow[] }>('/api/mission/workflows', 15_000);
+  const workflows = useFetch<{ workflows: MissionWorkflow[]; enabled: boolean; governor: MissionGovernorStatus }>('/api/mission/workflows', 15_000);
   const agents = useFetch<{ agents: Agent[] }>('/api/agents', 60_000);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -224,7 +236,7 @@ export function MissionControl() {
 
       {!loading && !error && (
         <div class="flex-1 min-h-0 flex flex-col">
-          <WorkflowStrip workflows={workflows.data?.workflows ?? []} onChange={() => { workflows.refresh(); tasks.refresh(); }} />
+          <WorkflowStrip workflows={workflows.data?.workflows ?? []} enabled={workflows.data?.enabled === true} governor={workflows.data?.governor} onChange={() => { workflows.refresh(); tasks.refresh(); }} />
           <div class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
             <div class="flex gap-3 p-4 h-full min-w-max">
               <InboxColumn tasks={inbox} onChange={tasks.refresh} agents={orderedAgents} />
@@ -246,6 +258,8 @@ export function MissionControl() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         agents={agents.data?.agents ?? []}
+        crewMissionsEnabled={workflows.data?.enabled === true}
+        governor={workflows.data?.governor}
         onCreated={() => { tasks.refresh(); workflows.refresh(); }}
       />
 
@@ -258,11 +272,11 @@ export function MissionControl() {
   );
 }
 
-function WorkflowStrip({ workflows, onChange }: { workflows: MissionWorkflow[]; onChange: () => void }) {
+function WorkflowStrip({ workflows, enabled, governor, onChange }: { workflows: MissionWorkflow[]; enabled: boolean; governor?: MissionGovernorStatus; onChange: () => void }) {
   const visible = workflows
     .filter((workflow) => !['completed', 'cancelled'].includes(workflow.status))
     .slice(0, 8);
-  if (visible.length === 0) return null;
+  if (visible.length === 0 && enabled) return null;
 
   async function cancel(workflow: MissionWorkflow) {
     if (!confirm(`Cancel crew mission ${workflow.id}? Queued work will be stopped.`)) return;
@@ -291,12 +305,25 @@ function WorkflowStrip({ workflows, onChange }: { workflows: MissionWorkflow[]; 
         <GitBranch size={13} class="text-[var(--color-accent)]" />
         <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Crew missions</span>
         <span class="text-[10px] text-[var(--color-text-faint)]">{visible.length} active or attention-needed</span>
+        {!enabled && <Pill tone="cancelled">disabled by operator policy</Pill>}
+        {governor && (
+          <span class={`text-[10px] ${governor.budgetState === 'normal' ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-warning)]'}`}>
+            5h budget {governor.usedTurns}/{governor.hardAllowanceTurns} turns
+            {' · '}{governor.remainingTurns} remaining
+            {' · '}{governor.activeReservations} active
+            {governor.parkedWorkflowTasks > 0 ? ` · ${governor.parkedWorkflowTasks} parked` : ''}
+            {` · ${governor.budgetState.replace('_', ' ')}`}
+            {governor.totals.inputTokens + governor.totals.outputTokens > 0
+              ? ` · ${(governor.totals.inputTokens + governor.totals.outputTokens).toLocaleString()} tokens`
+              : ''}
+          </span>
+        )}
       </div>
       <div class="flex gap-2 overflow-x-auto pb-0.5">
         {visible.map((workflow) => (
           <div key={workflow.id} class="min-w-[250px] max-w-[320px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2">
             <div class="flex items-center gap-1.5">
-              <span class="text-[10px] font-mono text-[var(--color-text-faint)]">{workflow.id}</span>
+              <span class="text-[10px] font-mono text-[var(--color-text-faint)]" title={workflow.id}>{workflow.id.slice(0, 6)}</span>
               <Pill tone={workflowStatusTone(workflow.status)}>{workflow.status}</Pill>
               <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">@{resolveAgentName(workflow.owner_agent)}</span>
             </div>
@@ -316,7 +343,7 @@ function WorkflowStrip({ workflows, onChange }: { workflows: MissionWorkflow[]; 
               <div class="mt-1 text-[10px] text-[var(--color-text-muted)] line-clamp-2">{workflow.terminal_reason}</div>
             )}
             <div class="mt-1.5 flex justify-end gap-1">
-              {workflow.status === 'waiting_human' && (
+              {enabled && workflow.status === 'waiting_human' && (
                 <button type="button" onClick={() => resume(workflow)} class="px-2 py-1 rounded text-[10px] text-white bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)]">
                   Answer
                 </button>
@@ -975,7 +1002,7 @@ function TaskCard({ task, onChange }: { task: MissionTask; onChange: () => void 
       <div class="flex items-center gap-1.5 flex-wrap">
         {task.priority > 0 && <Pill tone={priorityTone}>P{task.priority}</Pill>}
         <Pill tone={taskStatusTone(task.status)}>{task.status}</Pill>
-        {task.workflow_id && <Pill tone="accent">crew mission {task.workflow_id} · step {task.workflow_depth ?? 0}</Pill>}
+        {task.workflow_id && <span title={task.workflow_id}><Pill tone="accent">crew mission {task.workflow_id.slice(0, 6)} · step {task.workflow_depth ?? 0}</Pill></span>}
         <div class="ml-auto flex items-center gap-1">
           {(task.status === 'queued' || task.status === 'running') && (
             <button
@@ -1041,9 +1068,9 @@ function BoundInput({ label, value, min, max, onChange }: {
 }
 
 function CreateTaskModal({
-  open, onClose, agents, onCreated,
+  open, onClose, agents, onCreated, crewMissionsEnabled, governor,
 }: {
-  open: boolean; onClose: () => void; agents: Agent[]; onCreated: () => void;
+  open: boolean; onClose: () => void; agents: Agent[]; onCreated: () => void; crewMissionsEnabled: boolean; governor?: MissionGovernorStatus;
 }) {
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
@@ -1053,16 +1080,18 @@ function CreateTaskModal({
   const [durable, setDurable] = useState(false);
   const [objective, setObjective] = useState('');
   const [owner, setOwner] = useState('main');
-  const [maxDepth, setMaxDepth] = useState(5);
-  const [maxTasks, setMaxTasks] = useState(10);
-  const [maxFanout, setMaxFanout] = useState(4);
+  const [maxDepth, setMaxDepth] = useState(1);
+  const [maxTasks, setMaxTasks] = useState(2);
+  const [maxFanout, setMaxFanout] = useState(1);
   const [deadline, setDeadline] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   function close() {
     setTitle(''); setPrompt(''); setAgent(''); setPriority(5); setAutoAssign(true);
-    setDurable(false); setObjective(''); setOwner('main'); setMaxDepth(5); setMaxTasks(10); setMaxFanout(4); setDeadline(''); setErr(null);
+    setDurable(false); setObjective(''); setOwner('main');
+    setMaxDepth(governor?.limits.maxDepth ?? 1); setMaxTasks(governor?.limits.maxTasks ?? 2);
+    setMaxFanout(governor?.limits.maxFanout ?? 1); setDeadline(''); setErr(null);
     onClose();
   }
 
@@ -1117,7 +1146,7 @@ function CreateTaskModal({
       }
     >
       <div class="space-y-3">
-        <label class="flex items-start gap-2 rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 cursor-pointer">
+        {crewMissionsEnabled ? <label class="flex items-start gap-2 rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 cursor-pointer">
           <input
             type="checkbox"
             checked={durable}
@@ -1135,7 +1164,11 @@ function CreateTaskModal({
             <span class="block text-[12px] font-medium text-[var(--color-text)]">Crew mission</span>
             <span class="block text-[10.5px] text-[var(--color-text-muted)]">Have a lead agent review results and assign follow-up work within your limits.</span>
           </span>
-        </label>
+        </label> : (
+          <div class="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 text-[10.5px] text-[var(--color-text-muted)]">
+            Crew Missions are disabled by operator policy. Ordinary one-shot Missions remain available.
+          </div>
+        )}
         {durable && (
           <div>
             <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Goal and allowed work</label>
@@ -1210,9 +1243,9 @@ function CreateTaskModal({
                   {agents.map((a) => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
                 </select>
               </div>
-              <BoundInput label="Follow-up limit" value={maxDepth} min={1} max={100} onChange={setMaxDepth} />
-              <BoundInput label="Tasks" value={maxTasks} min={1} max={500} onChange={setMaxTasks} />
-              <BoundInput label="Parallel limit" value={maxFanout} min={1} max={50} onChange={setMaxFanout} />
+              <BoundInput label="Follow-up limit" value={maxDepth} min={1} max={governor?.limits.maxDepth ?? 1} onChange={setMaxDepth} />
+              <BoundInput label="Tasks" value={maxTasks} min={1} max={governor?.limits.maxTasks ?? 2} onChange={setMaxTasks} />
+              <BoundInput label="Parallel limit" value={maxFanout} min={1} max={governor?.limits.maxFanout ?? 1} onChange={setMaxFanout} />
             </div>
             <div>
               <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Deadline (optional RFC 3339)</label>

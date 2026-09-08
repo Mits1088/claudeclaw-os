@@ -1,3 +1,4 @@
+import { serializeOutboundJson } from './outbound-payload.js';
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
 import { streamSSE } from 'hono/streaming';
@@ -73,6 +74,7 @@ import {
   getRecentlySuggestedSplits,
   getWorkerRuntime,
   isWorkerLeaseCurrent,
+  getMissionGovernorStatus,
 } from './db.js';
 import { actionCancelMissionWorkflow, actionCreateMissionWorkflow, actionListMissionWorkflows, actionMissionWorkflowResult, actionResumeMissionWorkflow, CliActionError } from './cli-actions.js';
 import { computeNextRun } from './scheduler.js';
@@ -1972,7 +1974,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.get('/api/mission/workflows', (c) => {
     const status = c.req.query('status') || undefined;
     try {
-      return c.json({ workflows: actionListMissionWorkflows({ status }) });
+      const governor = getMissionGovernorStatus();
+      return c.json({
+        workflows: actionListMissionWorkflows({ status }),
+        enabled: governor.enabled,
+        governor,
+      });
     } catch (err) {
       if (err instanceof CliActionError) return c.json({ error: err.message }, 400);
       throw err;
@@ -3913,7 +3920,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         try {
           await stream.writeSSE({
             event: event.type,
-            data: JSON.stringify(event),
+            data: serializeOutboundJson(event, 'dashboard.sse'),
           });
         } catch {
           // Client disconnected

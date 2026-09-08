@@ -51,6 +51,20 @@ const envConfig = readEnvFile([
   'MODEL_FALLBACK_CHAIN',
   'SMART_ROUTING_ENABLED',
   'SMART_ROUTING_CHEAP_MODEL',
+  'CREW_MISSIONS_ENABLED',
+  'CREW_MISSION_MAX_ACTIVE',
+  'CREW_MISSION_MAX_RUNNING_WORKERS',
+  'CREW_MISSION_MAX_RUNNING_COORDINATORS',
+  'CREW_MISSION_MAX_TURNS',
+  'CREW_MISSION_MAX_RUNTIME_SECONDS',
+  'CREW_MISSION_TURN_BUDGET_5H',
+  'CREW_MISSION_BUDGET_HARD_PERCENT',
+  'CREW_MISSION_PROVIDER_TURN_BUDGET_5H',
+  'CREW_MISSION_BUDGET_WARNING_PERCENT',
+  'CREW_MISSION_MAX_DEPTH',
+  'CREW_MISSION_MAX_TASKS',
+  'CREW_MISSION_MAX_FANOUT',
+  'CREW_MISSION_MAX_COORDINATOR_REVIEWS',
   'SHOW_COST_FOOTER',
   'MEMORY_NOTIFY',
   'MEMORY_RECALL_MODE',
@@ -364,6 +378,61 @@ export const SMART_ROUTING_ENABLED =
   (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || 'false').toLowerCase() === 'true';
 export const SMART_ROUTING_CHEAP_MODEL =
   process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-4-5';
+
+// Recovery-safe default. Ordinary one-shot Missions remain available while
+// durable Crew Mission workflows require an explicit operator opt-in.
+export function parseCrewMissionsEnabled(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === 'true';
+}
+
+export const CREW_MISSIONS_ENABLED = parseCrewMissionsEnabled(
+  process.env.CREW_MISSIONS_ENABLED || envConfig.CREW_MISSIONS_ENABLED,
+);
+
+export function parsePositiveInteger(value: string | undefined, fallback: number): number {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+export const CREW_MISSION_MAX_ACTIVE = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_ACTIVE || envConfig.CREW_MISSION_MAX_ACTIVE, 1,
+);
+export const CREW_MISSION_MAX_RUNNING_WORKERS = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_RUNNING_WORKERS || envConfig.CREW_MISSION_MAX_RUNNING_WORKERS, 1,
+);
+export const CREW_MISSION_MAX_RUNNING_COORDINATORS = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_RUNNING_COORDINATORS || envConfig.CREW_MISSION_MAX_RUNNING_COORDINATORS, 1,
+);
+export const CREW_MISSION_MAX_TURNS = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_TURNS || envConfig.CREW_MISSION_MAX_TURNS, 3,
+);
+export const CREW_MISSION_MAX_RUNTIME_SECONDS = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_RUNTIME_SECONDS || envConfig.CREW_MISSION_MAX_RUNTIME_SECONDS, 600,
+);
+export const CREW_MISSION_TURN_BUDGET_5H = parsePositiveInteger(
+  process.env.CREW_MISSION_TURN_BUDGET_5H || envConfig.CREW_MISSION_TURN_BUDGET_5H, 12,
+);
+export const CREW_MISSION_BUDGET_HARD_PERCENT = Math.min(100, parsePositiveInteger(
+  process.env.CREW_MISSION_BUDGET_HARD_PERCENT || envConfig.CREW_MISSION_BUDGET_HARD_PERCENT, 75,
+));
+export const CREW_MISSION_PROVIDER_TURN_BUDGET_5H = parsePositiveInteger(
+  process.env.CREW_MISSION_PROVIDER_TURN_BUDGET_5H || envConfig.CREW_MISSION_PROVIDER_TURN_BUDGET_5H, 12,
+);
+export const CREW_MISSION_BUDGET_WARNING_PERCENT = Math.min(100, parsePositiveInteger(
+  process.env.CREW_MISSION_BUDGET_WARNING_PERCENT || envConfig.CREW_MISSION_BUDGET_WARNING_PERCENT, 60,
+));
+export const CREW_MISSION_MAX_DEPTH = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_DEPTH || envConfig.CREW_MISSION_MAX_DEPTH, 1,
+);
+export const CREW_MISSION_MAX_TASKS = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_TASKS || envConfig.CREW_MISSION_MAX_TASKS, 2,
+);
+export const CREW_MISSION_MAX_FANOUT = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_FANOUT || envConfig.CREW_MISSION_MAX_FANOUT, 1,
+);
+export const CREW_MISSION_MAX_COORDINATOR_REVIEWS = parsePositiveInteger(
+  process.env.CREW_MISSION_MAX_COORDINATOR_REVIEWS || envConfig.CREW_MISSION_MAX_COORDINATOR_REVIEWS, 2,
+);
 
 // ── Claude model selection ──────────────────────────────────────────
 // The /model opus|sonnet|haiku Telegram shortcuts and the fresh-install

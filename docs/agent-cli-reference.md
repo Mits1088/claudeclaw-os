@@ -85,6 +85,9 @@ Binary: `node dist/mission-cli.js`
 - `continue <task-id> "Next-step prompt" --key <idempotency-key> [--max-steps N]` — Queue one next step from the currently running task in an explicitly bounded self-directed chain. The first step fixes the chain limit; every request requires a stable idempotency key, and repeated calls from the same parent return its canonical child.
 - `cancel-chain <chain-id>` — Persistently stop a self-directed continuation chain and cancel its queued next steps. A running step may finish but cannot advance the cancelled chain.
 - `transition <coordinator-task-id> <disposition> --key <idempotency-key> [--agent <id>] [--task "agent:prompt" ...] [--reason "Text"] "Next prompt"` — Apply exactly one validated transition to a durable workflow outcome. Dispositions: complete, dispatch, gather, continue_self, retry, wait_for_human, block, fail. Dispatch-like transitions are checked against workflow bounds before any task is queued.
+- `governor-status` — Show read-only Crew Mission governor state, five-hour turn allowance, active reservations, parked work, and provider/model usage.
+- `governor-enable --reason "Operator reason" [--for-minutes N]` — Enable Crew Missions for 1-1440 minutes. Main operator only. Every change is durably audited and automatically expires.
+- `governor-disable --reason "Operator reason"` — Immediately disable Crew Missions. Main operator only. The change is durably audited.
 - `workflow-list [--status <status>]` — List durable workflows with owner, status, objective, and persisted bounds.
 - `workflow-result <workflow-id>` — Show one durable workflow with its tasks, outcomes, bounds, and terminal reason.
 - `workflow-cancel <workflow-id>` — Durably cancel a workflow and its queued work. A running task may finish recording its outcome but cannot advance the workflow.

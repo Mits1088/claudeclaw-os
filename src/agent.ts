@@ -1,3 +1,5 @@
+import { AGENT_ID } from './config.js';
+import { sanitizePresentation } from './outbound-payload.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -27,6 +29,9 @@ import type { ProviderFailure } from './agent-engine/types.js';
 import { missionExecutionEnv, getMissionExecutionContext } from './mission-execution-context.js';
 import { missionEntryEnv } from './mission-entry-key.js';
 import { missionCoordinatorToolPolicy } from './mission-coordinator-policy.js';
+import { outboundOptionsForSeam } from './outbound-policy.js';
+import { sanitizeOutboundText } from './outbound-sanitizer.js';
+import { OutboundStreamGuard } from './outbound-stream-guard.js';
 
 // ── MCP server loading ──────────────────────────────────────────────
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
@@ -250,6 +255,7 @@ export async function runAgent(
   toolPolicy?: AgentToolPolicy,
   onAskUserQuestion?: AskUserQuestionResolver,
   sharedWatchdog?: TurnWatchdog,
+  maxTurnsOverride?: number,
 ): Promise<AgentResult> {
   // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
   // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
@@ -301,6 +307,8 @@ export async function runAgent(
   let preCompactTokens: number | null = null;
   let lastCallCacheRead = 0;
   let lastCallInputTokens = 0;
+  const outboundOptions = outboundOptionsForSeam('agent.output');
+  const streamGuard = new OutboundStreamGuard(outboundOptions);
 
   // Refresh typing indicator on an interval while Claude works.
   // Telegram's "typing..." action expires after ~5s.
@@ -355,7 +363,9 @@ export async function runAgent(
       }),
       permissionMode: effectiveSkipPermissions(provider) ? 'bypassPermissions' : 'default',
       allowDangerouslySkipPermissions: effectiveSkipPermissions(provider),
-      ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
+      ...((maxTurnsOverride ?? AGENT_MAX_TURNS) > 0
+        ? { maxTurns: maxTurnsOverride ?? AGENT_MAX_TURNS }
+        : {}),
       env: sdkEnv,
       ...(mcpServerNames.length > 0 ? { mcpServers } : {}),
       ...(trustedMcpServers.length > 0 ? { trustedMcpServers } : {}),
@@ -393,11 +403,14 @@ export async function runAgent(
       }
 
       if (event.type === 'progress') {
-        onProgress?.(event.progress);
+        onProgress?.(sanitizePresentation(event.progress, 'agent.progress'));
       }
 
       if (event.type === 'text_delta') {
-        onStreamText?.(event.accumulatedText);
+        if (onStreamText) {
+          const released = streamGuard.pushAccumulated(event.accumulatedText);
+          if (released) onStreamText(streamGuard.safeText);
+        }
       }
 
       if (event.type === 'usage') {
@@ -408,7 +421,7 @@ export async function runAgent(
 
       if (event.type === 'aborted') {
         return {
-          text: event.text,
+          text: event.text == null ? event.text : sanitizeOutboundText(event.text, outboundOptions),
           newSessionId: encodeProviderSession(provider, event.sessionId ?? newSessionId ?? providerSessionId),
           usage: event.usage,
           aborted: true,
@@ -466,8 +479,10 @@ export async function runAgent(
     if (ownsWatchdog) watchdog.dispose();
   }
 
+  const releasedTail = streamGuard.finalize();
+  if (releasedTail) onStreamText?.(streamGuard.safeText);
   return {
-    text: resultText,
+    text: resultText == null ? resultText : sanitizeOutboundText(resultText, outboundOptions),
     newSessionId: encodeProviderSession(provider, newSessionId),
     usage,
     stopReason: resultStopReason,
@@ -476,10 +491,6 @@ export async function runAgent(
 }
 
 // ── Retry wrapper ─────────────────────────────────────────────────
-
-const MAX_RETRIES = 2;
-const BACKOFF_BASE_MS = 2000;
-const BACKOFF_MULTIPLIER = 4; // 2s, 8s
 
 function sleepUntil(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
@@ -494,9 +505,11 @@ function sleepUntil(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+let warnedLegacyModelFallback = false;
+
 /**
- * Run the agent with automatic retry for transient errors.
- * Only retries errors where recovery.shouldRetry is true.
+ * Run interactive turns with durable health and explicit provider policy.
+ * Replay requires positive pre-execution evidence and an eligible failure.
  * Calls onRetry before each retry so the caller can notify the user.
  */
 export async function runAgentWithRetry(
@@ -508,76 +521,44 @@ export async function runAgentWithRetry(
   abortController?: AbortController,
   onStreamText?: (accumulatedText: string) => void,
   onRetry?: (attempt: number, error: AgentError) => void,
+  /** @deprecated Detection only; configure the agent.yaml fallback policy instead. */
   fallbackModels?: string[],
   mcpAllowlist?: string[],
   providerConfig?: ProviderConfig,
   toolPolicy?: AgentToolPolicy,
   onAskUserQuestion?: AskUserQuestionResolver,
 ): Promise<AgentResult> {
-  let lastError: AgentError | undefined;
   const turnAbort = abortController ?? new AbortController();
   const watchdog = new TurnWatchdog(turnAbort, AGENT_IDLE_TIMEOUT_MS, AGENT_MAX_RUNTIME_MS);
   watchdog.start();
-
   try {
-    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const currentModel =
-        attempt === 0 ? model
-        : lastError?.recovery.shouldSwitchModel && fallbackModels?.length
-          ? fallbackModels[Math.min(attempt - 1, fallbackModels.length - 1)]
-          : model;
-
-      return await runAgent(
-        message, sessionId, onTyping, onProgress,
-        currentModel, turnAbort, onStreamText,
-        mcpAllowlist,
-        providerConfig,
-        toolPolicy,
-        onAskUserQuestion,
-        watchdog,
-      );
-    } catch (err) {
-      if (!(err instanceof AgentError)) throw err;
-      lastError = err;
-
-      const failure = (err as AgentError & { failure?: ProviderFailure }).failure;
-
-      // Generic SDK throws do not prove that the request stayed client-side.
-      // The legacy recovery hint describes transience, not replay safety.
-      if (!err.recovery.shouldRetry || failure?.execution !== 'not_started' || turnAbort.signal.aborted) {
-        if (turnAbort.signal.aborted) {
-          return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
-        }
-        throw err;
-      }
-
-      // Don't retry past the limit
-      if (attempt >= MAX_RETRIES) {
-        throw err;
-      }
-
-      const delayMs = Math.min(
-        BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt),
-        60000,
-      );
-      // Add jitter (0-25% of delay)
-      const jitter = Math.random() * delayMs * 0.25;
-
-      logger.warn(
-        { attempt: attempt + 1, category: err.category, delayMs: Math.round(delayMs + jitter) },
-        'Retrying agent query',
-      );
-
-      onRetry?.(attempt + 1, err);
-      await sleepUntil(delayMs + jitter, turnAbort.signal);
-      if (turnAbort.signal.aborted) {
-        return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
-      }
+    // Legacy fallbackModels is retained in the API only. Provider authorization
+    // comes exclusively from the active agent's explicit fallback policy.
+    if (fallbackModels?.length && !warnedLegacyModelFallback) {
+      warnedLegacyModelFallback = true;
+      logger.warn('MODEL_FALLBACK_CHAIN is deprecated and ignored; configure the agent.yaml fallback policy instead');
     }
+    const { executeInteractiveProvider } = await import('./interactive-provider-execution.js');
+    const { getRecentMissionReportContext } = await import('./db.js');
+    const missionContext = getMissionExecutionContext() ? '' : getRecentMissionReportContext(AGENT_ID);
+    const interactiveMessage = missionContext ? `${missionContext}\n\n${message}` : message;
+    return await executeInteractiveProvider({
+      agent: AGENT_ID,
+      primary: { ...(providerConfig ?? getSelectedProviderConfig()), ...(model ? { model } : {}) },
+      signal: turnAbort.signal,
+      wait: ms => sleepUntil(ms, turnAbort.signal),
+      onRetry: (attempt, error) => { if (error instanceof AgentError) onRetry?.(attempt, error); },
+      invoke: (provider, fallback) => runAgent(
+        interactiveMessage, fallback ? undefined : sessionId, onTyping, onProgress,
+        provider.model, turnAbort, onStreamText, mcpAllowlist, provider,
+        toolPolicy, onAskUserQuestion, watchdog,
+      ),
+    });
+  } catch (error) {
+    if (turnAbort.signal.aborted) {
+      return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
     }
-
-    throw lastError ?? new Error('Retry loop exhausted');
+    throw error;
   } finally {
     watchdog.dispose();
   }

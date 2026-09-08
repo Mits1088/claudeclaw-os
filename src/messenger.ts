@@ -1,6 +1,7 @@
 // Imported first so the process-level uncaughtException guard is installed
 // before anything transitively pulls in @anthropic-ai/claude-agent-sdk.
 import './crash-guard.js';
+import { assertWorkerRuntimeContained } from './headless-worker-policy.js';
 
 import fs from 'fs';
 import path from 'path';
@@ -322,6 +323,7 @@ function startWarRoom(notify: (text: string) => Promise<void>): void {
  */
 export async function bootMessenger(factory: MessengerFactory): Promise<void> {
   const { agentId, interactive, runtimeMode, lifecycleMode } = loadAgentIdentity();
+  assertWorkerRuntimeContained(runtimeMode);
   let workerLease: WorkerLeaseHandle | undefined;
 
   const PID_FILE = agentPidFile(agentId);

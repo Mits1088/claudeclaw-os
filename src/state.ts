@@ -1,3 +1,4 @@
+import { sanitizePresentation } from './outbound-payload.js';
 import { EventEmitter } from 'node:events';
 
 // ── Bot info (set once from onStart, read by dashboard) ─────────────
@@ -54,7 +55,7 @@ export const chatEvents = new EventEmitter();
 chatEvents.setMaxListeners(20);
 
 export function emitChatEvent(event: Omit<ChatEvent, 'timestamp'>): void {
-  const full: ChatEvent = { ...event, timestamp: Date.now() };
+  const full: ChatEvent = { ...sanitizePresentation(event, 'dashboard.chat'), timestamp: Date.now() };
   chatEvents.emit('chat', full);
 }
 

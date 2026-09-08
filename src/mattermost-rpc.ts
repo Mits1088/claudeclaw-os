@@ -1,3 +1,4 @@
+import { outboundText } from './outbound-payload.js';
 import { EventEmitter } from 'events';
 
 import { logger } from './logger.js';
@@ -351,7 +352,7 @@ export class MattermostRpcClient extends EventEmitter {
   async postMessage(channelId: string, message: string, rootId?: string, fileIds?: string[]): Promise<void> {
     await this.rest('POST', '/posts', {
       channel_id: channelId,
-      message,
+      message: outboundText(message, 'mattermost.post'),
       ...(rootId ? { root_id: rootId } : {}),
       ...(fileIds && fileIds.length ? { file_ids: fileIds } : {}),
     });

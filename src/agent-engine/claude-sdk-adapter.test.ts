@@ -5,6 +5,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ClaudeSdkEngineAdapter } from './claude-sdk-adapter.js';
 import type { AgentEngineEvent, AgentTurnInput } from './types.js';
+import { missionCoordinatorToolPolicy } from '../mission-coordinator-policy.js';
 
 const queryMock = vi.mocked(query);
 
@@ -82,6 +83,37 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
     expect(results[0]).toMatchObject({ text: 'ok', stopReason: 'success' });
   });
 
+  it('removes only the stale session while preserving coordinator permissions and MCP on fallback', async () => {
+    queryMock
+      .mockImplementationOnce(unresumableSessionQuery as never)
+      .mockImplementationOnce(successQuery as never);
+    const mcpServers = {
+      'claudeclaw-dispatch': { command: process.execPath, args: ['dist/dispatch-mcp-server.js'] },
+    };
+
+    const adapter = new ClaudeSdkEngineAdapter();
+    await collect(adapter.invoke(turnInput({
+      sessionId: 'dead-session-id',
+      permissionMode: 'default',
+      allowDangerouslySkipPermissions: false,
+      ...missionCoordinatorToolPolicy,
+      mcpServers,
+    })));
+
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    const first = (queryMock.mock.calls[0][0] as { options: Record<string, unknown> }).options;
+    const fallback = (queryMock.mock.calls[1][0] as { options: Record<string, unknown> }).options;
+    expect(first.resume).toBe('dead-session-id');
+    expect(fallback.resume).toBeUndefined();
+    expect(fallback).toMatchObject({
+      permissionMode: 'default',
+      allowDangerouslySkipPermissions: false,
+      allowedTools: missionCoordinatorToolPolicy.allowedTools,
+      disallowedTools: missionCoordinatorToolPolicy.disallowedTools,
+      mcpServers,
+    });
+  });
+
   it('does not retry when the turn did not request a resume', async () => {
     queryMock.mockImplementationOnce(unresumableSessionQuery as never);
 
@@ -95,6 +127,26 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
       text: null,
       stopReason: 'error_during_execution',
       failure: { provider: 'claude', category: 'unknown', execution: 'started' },
+    });
+  });
+
+  it('keeps provider category separate from the positive started result', async () => {
+    queryMock.mockImplementationOnce((() => (async function* () {
+      yield {
+        type: 'result',
+        subtype: 'error_during_execution',
+        is_error: true,
+        result: '429 rate limit exceeded',
+      };
+    })()) as never);
+
+    const adapter = new ClaudeSdkEngineAdapter();
+    const events = await collect(adapter.invoke(turnInput()));
+
+    expect(events.at(-1)).toMatchObject({
+      type: 'result',
+      stopReason: 'error_during_execution',
+      failure: { provider: 'claude', category: 'rate_limit', execution: 'started' },
     });
   });
 

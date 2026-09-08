@@ -39,6 +39,14 @@ type RecordCategorizedProviderHealth = (
   failureCategory?: ProviderFailure['category'],
 ) => ReturnType<typeof recordProviderHealth>;
 
+function recordFailure(mission: MissionTask, failureJson: string, reason: string, deadlineAt: number): boolean {
+  if (mission.claiming_instance_id) {
+    return recordMissionProviderFailure(mission.id, failureJson, reason, deadlineAt,
+      { agentId: mission.assigned_agent!, instanceId: mission.claiming_instance_id, generation: mission.claim_generation });
+  }
+  return recordMissionProviderFailure(mission.id, failureJson, reason, deadlineAt);
+}
+
 export function prepareMissionProvider(mission: MissionTask, primary: ProviderConfig):
   { kind: 'run'; attempt: MissionProviderAttempt } | { kind: 'queued' } | { kind: 'blocked'; reason: string } {
   const policy = loadMissionProviderPolicy(mission.assigned_agent!);
@@ -68,11 +76,11 @@ export function prepareMissionProvider(mission: MissionTask, primary: ProviderCo
     deadlineSource = 'workflow';
   }
   if ((recovery?.attempts ?? 0) >= policy.maxAttempts) {
-    recordMissionProviderFailure(mission.id, recovery?.failure_json ?? '{}', 'attempts_exhausted', deadlineAt);
+    recordFailure(mission, recovery?.failure_json ?? '{}', 'attempts_exhausted', deadlineAt);
     return { kind: 'blocked', reason: 'Bounded provider recovery attempts exhausted' };
   }
   if (now >= deadlineAt) {
-    recordMissionProviderFailure(mission.id, recovery?.failure_json ?? '{}', 'deadline_exceeded', deadlineAt);
+    recordFailure(mission, recovery?.failure_json ?? '{}', 'deadline_exceeded', deadlineAt);
     return { kind: 'blocked', reason: missionProviderDeadlineDescription({ deadlineAt, deadlineSource }) };
   }
   const token = randomUUID();
@@ -94,24 +102,31 @@ export function prepareMissionProvider(mission: MissionTask, primary: ProviderCo
     return { kind: 'blocked', reason: 'blocked_capability: no explicitly authorized provider can execute mission_transition' };
   }
   const queued = deferMissionForProvider({ taskId: mission.id, providerJson: JSON.stringify(providers[start]), failureJson: JSON.stringify({ category: 'unavailable', execution: 'not_started' }),
-    deadlineAt, availableAt: retryAt, reason: 'provider_unavailable: circuit open; waiting for a bounded health probe', countAttempt: false });
+    deadlineAt, availableAt: retryAt, reason: 'provider_unavailable: circuit open; waiting for a bounded health probe', countAttempt: false,
+    ...(mission.claiming_instance_id ? { fence: { agentId: mission.assigned_agent!, instanceId: mission.claiming_instance_id, generation: mission.claim_generation } } : {}) });
   return queued ? { kind: 'queued' } : { kind: 'blocked', reason: missionProviderDeadlineDescription({ deadlineAt, deadlineSource }) };
 }
 
 export function recoverMissionProvider(mission: MissionTask, attempt: MissionProviderAttempt, failure: ProviderFailure): boolean {
   if (failure.category === 'rate_limit' && !attempt.policy.retryRateLimit) {
-    recordMissionProviderFailure(mission.id, JSON.stringify(failure), 'rate_limit_trigger_disabled', attempt.deadlineAt);
+    recordFailure(mission, JSON.stringify(failure), 'rate_limit_trigger_disabled', attempt.deadlineAt);
     return false;
   }
   const decision = decideProviderRecovery({ failure, currentProvider: attempt.provider, configuredProviders: attempt.providers,
     attempt: attempt.attempt, maxAttempts: attempt.policy.maxAttempts, deadlineAtMs: attempt.deadlineAt * 1000 });
-  recordMissionProviderFailure(mission.id, JSON.stringify(failure), decision.reason, attempt.deadlineAt);
+  recordFailure(mission, JSON.stringify(failure), decision.reason, attempt.deadlineAt);
   if (decision.action !== 'retry') return false;
   return deferMissionForProvider({ taskId: mission.id, providerJson: JSON.stringify(decision.provider), failureJson: JSON.stringify(failure),
-    deadlineAt: attempt.deadlineAt, availableAt: Math.ceil(decision.availableAtMs / 1000), reason: decision.reason });
+    deadlineAt: attempt.deadlineAt, availableAt: Math.ceil(decision.availableAtMs / 1000), reason: decision.reason,
+    ...(mission.claiming_instance_id ? { fence: { agentId: mission.assigned_agent!, instanceId: mission.claiming_instance_id, generation: mission.claim_generation } } : {}) });
 }
 
 export function settleMissionProviderHealth(mission: MissionTask, attempt: MissionProviderAttempt, failure?: ProviderFailure): string | null {
+  return settleSharedProviderHealth(mission.assigned_agent!, attempt, failure);
+}
+
+/** Shared durable event/report boundary for mission and interactive callers. */
+export function settleSharedProviderHealth(agent: string, attempt: Pick<MissionProviderAttempt, 'healthTracked' | 'policy' | 'key' | 'token' | 'provider'>, failure?: ProviderFailure): string | null {
   if (!attempt.healthTracked) return null;
   if (failure?.category === 'rate_limit' && !attempt.policy.retryRateLimit) return null;
   if (failure && !['unavailable', 'rate_limit'].includes(failure.category)) return null;
@@ -121,7 +136,7 @@ export function settleMissionProviderHealth(mission: MissionTask, attempt: Missi
     Math.floor(Date.now() / 1000), attempt.policy.cooldownSeconds, failure?.message, failure?.category);
   if (!event) return null;
   const message = `Provider ${event}: ${attempt.provider.type}. ${event === 'trip' ? 'Missions use configured fallback or wait within recovery limits.' : 'Primary provider is available again.'}`;
-  logToHiveMind(mission.assigned_agent!, 'mission', 'provider_health', message);
-  enqueueMissionSystemReport(`provider:${attempt.key}:${event}:${randomUUID()}`, mission.assigned_agent!, message);
+  logToHiveMind(agent, 'mission', 'provider_health', message);
+  enqueueMissionSystemReport(`provider:${attempt.key}:${event}:${randomUUID()}`, agent, message);
   return message;
 }
