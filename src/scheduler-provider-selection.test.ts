@@ -1,3 +1,5 @@
+vi.mock('./mission-provider-execution.js', () => ({ prepareMissionProvider: vi.fn((_mission, provider) => ({ kind: 'run', attempt: { provider } })), recoverMissionProvider: vi.fn(() => false), settleMissionProviderHealth: vi.fn(() => null) }));
+vi.mock('./mission-reporting.js', () => ({ deliverMissionWorkflowReport: vi.fn(async () => {}) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderConfig } from './provider.js';
 import { getDueTasks } from './db.js';
@@ -37,6 +39,7 @@ vi.mock('./message-queue.js', () => ({
 }));
 
 vi.mock('./db.js', () => ({
+  saveTokenUsage: vi.fn(),
   getDueTasks: vi.fn(() => state.dueTasks),
   getSession: vi.fn(() => undefined),
   logConversationTurn: vi.fn(),
@@ -46,6 +49,11 @@ vi.mock('./db.js', () => ({
   claimNextMissionTask: vi.fn(() => null),
   completeMissionTask: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
+  failStuckMissionTasks: vi.fn(() => 0),
+  reconcileMissionControl: vi.fn(() => ({
+    expiredWorkflows: 0, recoveredOutcomes: 0, releasedJoins: 0,
+    blockedJoins: 0, queuedCoordinators: 0, blockedOutcomes: 0,
+  })),
   getMissionTask: vi.fn(() => null),
 }));
 

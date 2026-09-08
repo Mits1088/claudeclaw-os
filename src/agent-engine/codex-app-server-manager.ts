@@ -234,8 +234,9 @@ const LAUNCH_CA_ENV_KEYS = [
  * fixed by it: what we RUN (PATH, CODEX_HOME, CODEX_MANAGED_PACKAGE_ROOT), what we
  * TRUST (`LAUNCH_CA_ENV_KEYS`, spliced in below), where we CONNECT (the proxy set,
  * CODEX_URL), and which account we connect under (OPENAI_ORGANIZATION, plus the
- * credentials above). Every name was read out of the pinned 0.144.6 executable, not
- * remembered.
+ * credentials above). Provider names were read out of the pinned 0.144.6 executable.
+ * Host execution-scope variables are also launch-fixed because native tool children
+ * inherit them from this process rather than receiving them in protocol requests.
  *
  * Both letter cases of each proxy variable are listed because POSIX honours both and
  * they can hold different values; on Windows the case-insensitive lookup below collapses
@@ -251,6 +252,13 @@ const LAUNCH_CA_ENV_KEYS = [
  * process.
  */
 const LAUNCH_ENV_KEYS = [
+  // Native shell children inherit these from the long-lived App Server process,
+  // not from per-turn protocol requests. Rotate on scope changes (including
+  // removal) so interactive turns cannot inherit a completed mission's identity.
+  'CLAUDECLAW_AGENT_ID',
+  'CLAUDECLAW_MISSION_TASK_ID',
+  'CLAUDECLAW_MISSION_ACTOR',
+  'CLAUDECLAW_MISSION_ENTRY_KEY',
   'CODEX_HOME',
   'PATH',
   'CODEX_MANAGED_PACKAGE_ROOT',

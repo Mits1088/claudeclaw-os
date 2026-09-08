@@ -44,6 +44,7 @@ import {
   assignMissionTask,
   getUnassignedMissionTasks,
   getMissionTaskHistory,
+  getMissionWorkflow,
   getAuditLog,
   getAuditLogCount,
   getRecentBlockedActions,
@@ -73,6 +74,7 @@ import {
   getWorkerRuntime,
   isWorkerLeaseCurrent,
 } from './db.js';
+import { actionCancelMissionWorkflow, actionCreateMissionWorkflow, actionListMissionWorkflows, actionMissionWorkflowResult, actionResumeMissionWorkflow, CliActionError } from './cli-actions.js';
 import { computeNextRun } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
@@ -126,6 +128,7 @@ import {
 } from './provider.js';
 import { PROVIDER_REGISTRY, providerDescriptor, providerRunnable, selectableProviders } from './provider-registry.js';
 import { getSelectedProviderConfig } from './active-provider.js';
+import { missionProviderStatuses } from './mission-provider-status.js';
 import { getMainModelOverride, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
@@ -1966,6 +1969,81 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // ── Mission Control endpoints ────────────────────────────────────────
 
+  app.get('/api/mission/workflows', (c) => {
+    const status = c.req.query('status') || undefined;
+    try {
+      return c.json({ workflows: actionListMissionWorkflows({ status }) });
+    } catch (err) {
+      if (err instanceof CliActionError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
+  });
+
+  app.get('/api/mission/workflows/:id', (c) => {
+    const id = c.req.param('id');
+    if (!getMissionWorkflow(id)) return c.json({ error: 'Not found' }, 404);
+    const { workflow, tasks, outcomes, transitions } = actionMissionWorkflowResult({ id });
+    return c.json({ workflow, tasks, outcomes, transitions });
+  });
+
+  app.post('/api/mission/workflows', async (c) => {
+    const body = await c.req.json<{
+      objective?: string;
+      prompt?: string;
+      title?: string;
+      assigned_agent?: string;
+      owner_agent?: string;
+      priority?: number;
+      max_depth?: number;
+      max_tasks?: number;
+      max_fanout?: number;
+      deadline?: string;
+    }>();
+    try {
+      const owner = body.owner_agent?.trim() || 'main';
+      const created = actionCreateMissionWorkflow({
+        objective: body.objective?.trim() ?? '',
+        prompt: body.prompt?.trim() ?? '',
+        title: body.title?.trim(),
+        agent: body.assigned_agent?.trim() ?? '',
+        owner,
+        priority: Math.max(0, Math.min(10, body.priority ?? 5)),
+        maxDepth: body.max_depth,
+        maxTasks: body.max_tasks,
+        maxFanout: body.max_fanout,
+        deadline: body.deadline?.trim() || undefined,
+        createdBy: owner,
+      });
+      return c.json(created, 201);
+    } catch (err) {
+      if (err instanceof CliActionError) return c.json({ error: err.message }, 400);
+      throw err;
+    }
+  });
+
+  app.post('/api/mission/workflows/:id/cancel', (c) => {
+    const id = c.req.param('id');
+    const workflow = getMissionWorkflow(id);
+    if (!workflow) return c.json({ error: 'Not found' }, 404);
+    const cancelled = actionCancelMissionWorkflow({ id, createdBy: workflow.owner_agent });
+    return c.json({ ok: true, found: true, alreadyCancelled: cancelled.alreadyCancelled, cancelledTasks: cancelled.cancelledTasks });
+  });
+
+  app.post('/api/mission/workflows/:id/resume', async (c) => {
+    const id = c.req.param('id');
+    const workflow = getMissionWorkflow(id);
+    if (!workflow) return c.json({ error: 'Not found' }, 404);
+    const body = await c.req.json<{ answer?: string }>();
+    const answer = body.answer?.trim();
+    if (!answer) return c.json({ error: 'answer required' }, 400);
+    try {
+      const resumed = actionResumeMissionWorkflow({ id, answer, createdBy: workflow.owner_agent });
+      return c.json({ ok: true, coordinatorTaskId: resumed.coordinatorTaskId, outcomeId: resumed.outcomeId });
+    } catch (err) {
+      return c.json({ error: err instanceof Error ? err.message : String(err) }, 409);
+    }
+  });
+
   app.get('/api/mission/tasks', (c) => {
     const agentId = c.req.query('agent') || undefined;
     const status = c.req.query('status') || undefined;
@@ -2352,6 +2430,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   app.get('/api/agents', (c) => {
     const agentIds = listAgentIds();
     const hasMain = agentIds.includes('main');
+    const recoveryByAgent = new Map<string, ReturnType<typeof missionProviderStatuses>>();
+    for (const status of missionProviderStatuses()) {
+      const current = recoveryByAgent.get(status.agentId) ?? [];
+      current.push(status);
+      recoveryByAgent.set(status.agentId, current);
+    }
     const agents = agentIds.map((id) => {
       try {
         const config = loadAgentConfig(id);
@@ -2403,11 +2487,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           running,
           todayTurns: stats.todayTurns,
           todayCost: stats.todayCost,
+          missionProviderRecovery: recoveryByAgent.get(id) ?? [],
           avatar_etag: avatarEtagForId(id),
         };
       } catch {
         const fallbackName = resolveAgentDisplayName(id);
-        return { id, name: fallbackName, description: '', model: 'unknown', modelLabel: 'unknown', provider: { type: 'opencode' }, executionMode: 'messenger', lifecycleMode: 'persistent', runtimeOptions: null, runtimeMode: '', thinkingMode: '', running: false, todayTurns: 0, todayCost: 0, avatar_etag: avatarEtagForId(id) };
+        return { id, name: fallbackName, description: '', model: 'unknown', modelLabel: 'unknown', provider: { type: 'opencode' }, executionMode: 'messenger', lifecycleMode: 'persistent', runtimeOptions: null, runtimeMode: '', thinkingMode: '', running: false, todayTurns: 0, todayCost: 0, missionProviderRecovery: recoveryByAgent.get(id) ?? [], avatar_etag: avatarEtagForId(id) };
       }
     });
 
@@ -2444,6 +2529,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
           running: mainRunning,
           todayTurns: mainStats.todayTurns,
           todayCost: mainStats.todayCost,
+          missionProviderRecovery: recoveryByAgent.get('main') ?? [],
           avatar_etag: avatarEtagForId('main'),
         },
         ...agents,

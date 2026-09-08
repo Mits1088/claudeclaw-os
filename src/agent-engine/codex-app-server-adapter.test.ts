@@ -1391,6 +1391,9 @@ describe('an uncertain turn/start is quarantined, not retried', () => {
     expect(result.stopReason).toBe('error');
     expect(result.text).toMatch(/cannot tell whether the turn began/);
     expect(result.text).toMatch(/NOT sent again/);
+    expect(result.failure).toMatchObject({
+      provider: 'openai', category: 'unavailable', execution: 'unknown',
+    });
     expect(events.some((e) => e.type === 'aborted')).toBe(false);
   });
 
@@ -1434,6 +1437,9 @@ describe('an uncertain turn/start is quarantined, not retried', () => {
     expect(server.quarantined).toEqual([]);
     const result = events.filter((e) => e.type === 'result').at(-1) as any;
     expect(result.text).toMatch(/model unavailable/);
+    expect(result.failure).toMatchObject({
+      provider: 'openai', category: 'unavailable', execution: 'not_started',
+    });
     expect(server.released).toEqual(['thread-1']);
   });
 

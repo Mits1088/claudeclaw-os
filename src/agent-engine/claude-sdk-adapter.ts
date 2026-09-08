@@ -16,6 +16,7 @@ import { STORE_DIR } from '../config.js';
 import { authError, isAuthErrorText } from '../errors.js';
 import { getScrubbedSdkEnv } from '../security.js';
 import { composeSystemPrompt } from '../runtime-identity.js';
+import { toProviderFailure } from '../provider-recovery.js';
 
 import type {
   AgentEngine,
@@ -623,7 +624,9 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         // "exited with code 1") loops on subprocess_crash. Raise a proper auth
         // error (no retry, deploy-aware message) at the source. (#48)
         if (ev.is_error === true && typeof resultText === 'string' && isAuthErrorText(resultText)) {
-          throw authError();
+          const error = authError();
+          Object.assign(error, { failure: toProviderFailure(error, input.provider, 'started') });
+          throw error;
         }
 
         const evUsage = ev.usage as Record<string, number> | undefined;
@@ -657,6 +660,13 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           text: resultText,
           usage,
           stopReason: typeof ev.subtype === 'string' ? ev.subtype : undefined,
+          ...(ev.is_error === true ? {
+            failure: toProviderFailure(
+              new Error(resultText ?? (typeof ev.subtype === 'string' ? ev.subtype : 'Claude SDK turn failed')),
+              input.provider,
+              'started',
+            ),
+          } : {}),
           raw: ev,
         };
         emittedResult = true;
@@ -676,7 +686,18 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         );
         return;
       }
-      throw err;
+      // The SDK exposes no request-delivery receipt. A throw before its first
+      // event therefore stays `unknown`; lack of visible output is not proof
+      // that the provider did not receive or begin the turn.
+      if (err instanceof Error) {
+        if (!(err as Error & { failure?: unknown }).failure) {
+          Object.assign(err, { failure: toProviderFailure(err, input.provider, 'unknown') });
+        }
+        throw err;
+      }
+      throw Object.assign(new Error(String(err)), {
+        failure: toProviderFailure(err, input.provider, 'unknown'),
+      });
     }
   }
 }

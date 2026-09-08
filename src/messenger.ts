@@ -461,6 +461,7 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
           // the normal graceful shutdown path and releases the lease.
           try { process.kill(process.pid, 'SIGTERM'); } catch { process.exit(0); }
         },
+        false, // Headless senders do no I/O; primary delivers their durable reports.
       );
       logger.info({ agentId, lifecycleMode }, 'Headless mission scheduler enabled');
     } else if (messenger.primaryRecipient) {

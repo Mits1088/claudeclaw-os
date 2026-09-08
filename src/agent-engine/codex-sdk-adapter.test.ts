@@ -677,6 +677,9 @@ describe('CodexSdkEngineAdapter — failure paths', () => {
     expect(result.type).toBe('result');
     expect(result.stopReason).toBe('error');
     expect(result.text).toContain('stream disconnected');
+    expect(result.failure).toMatchObject({
+      provider: 'openai', category: 'unknown', execution: 'started',
+    });
     expect(events.some((e) => e.type === 'text_delta')).toBe(true);
   });
 
@@ -698,6 +701,7 @@ describe('CodexSdkEngineAdapter — failure paths', () => {
       expect(result.stopReason).toBe('error');
       expect(result.text).toContain('will not start a Codex turn that could still read it');
       expect(result.text).not.toContain('Check that directory is writable');
+      expect(result.failure).toMatchObject({ provider: 'openai', execution: 'not_started' });
       // No thread was started: the SDK never saw the turn.
       expect(state.startCalls).toHaveLength(0);
     } finally {

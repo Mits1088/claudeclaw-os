@@ -54,6 +54,18 @@ describe('profile selection precedence', () => {
     expect(profile.networkAccess).toBe(false);
   });
 
+  it('mission-control denies win over allowDangerouslySkipPermissions', () => {
+    const profile = resolve({
+      allowDangerouslySkipPermissions: true,
+      disallowedTools: ['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Agent', 'Task', 'Workflow'],
+      mcpServers: { 'claudeclaw-dispatch': { command: 'dispatch' } },
+    });
+    expect(profile.mode).toBe('mission-control');
+    expect(profile.sandboxMode).toBe('read-only');
+    expect(profile.shellEnabled).toBe(false);
+    expect(profile.networkAccess).toBe(false);
+  });
+
   it('a read-only allow-list selects read-only-research', () => {
     const profile = resolve({ allowedTools: ['Read', 'Grep', 'Glob'] });
     expect(profile.mode).toBe('read-only-research');

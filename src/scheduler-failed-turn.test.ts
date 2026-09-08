@@ -1,5 +1,8 @@
+vi.mock('./mission-provider-execution.js', () => ({ prepareMissionProvider: vi.fn((_mission, provider) => ({ kind: 'run', attempt: { provider } })), recoverMissionProvider: vi.fn(() => false), settleMissionProviderHealth: vi.fn(() => null) }));
+vi.mock('./mission-reporting.js', () => ({ deliverMissionWorkflowReport: vi.fn(async () => {}) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { claimNextMissionTask, completeMissionTask, maybeReleaseJoinForMission, updateTaskAfterRun } from './db.js';
+import { claimNextMissionTask, completeMissionTask, maybeReleaseJoinForMission, updateTaskAfterRun, saveTokenUsage } from './db.js';
+import { settleMissionProviderHealth } from './mission-provider-execution.js';
 
 // Routing regression for failed turns: both engines can surface a failure as a
 // normal (non-thrown, non-aborted) result — Claude SDK via usage.isError /
@@ -39,6 +42,7 @@ vi.mock('./message-queue.js', () => ({
 }));
 
 vi.mock('./db.js', () => ({
+  saveTokenUsage: vi.fn(),
   getDueTasks: vi.fn(() => state.dueTasks),
   getSession: vi.fn(() => undefined),
   logConversationTurn: vi.fn(),
@@ -54,6 +58,10 @@ vi.mock('./db.js', () => ({
   maybeReleaseJoinForMission: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
   failStuckMissionTasks: vi.fn(() => 0),
+  reconcileMissionControl: vi.fn(() => ({
+    expiredWorkflows: 0, recoveredOutcomes: 0, releasedJoins: 0,
+    blockedJoins: 0, queuedCoordinators: 0, blockedOutcomes: 0,
+  })),
   getMissionTask: vi.fn(() => null),
   areAllGroupChildrenTerminal: vi.fn(() => false),
   getGroupChildren: vi.fn(() => []),
@@ -210,6 +218,29 @@ describe('scheduler failed-turn routing', () => {
     expect(send).toHaveBeenNthCalledWith(1, '🎯 Mission task running: "Report Y"\nTask ID: m2');
     expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith('m2', 'all good', 'completed');
     expect(send).toHaveBeenCalledWith('all good');
+  });
+
+  it('preserves completed execution and settles health when ancillary usage recording fails', async () => {
+    state.mission = { id: 'usage-busy', title: 'Executed work', prompt: 'go', role: 'task',
+      workflow_id: 'wf-usage', created_by: 'main', assigned_agent: 'research', status: 'running' };
+    state.agentResult = { text: 'completed evidence', usage: { inputTokens: 10, outputTokens: 4 } };
+    vi.mocked(saveTokenUsage).mockImplementationOnce(() => { throw new Error('SQLITE_BUSY'); });
+    await runSchedulerCycle(vi.fn(async () => {}));
+    expect(settleMissionProviderHealth).toHaveBeenCalledTimes(1);
+    expect(completeMissionTask).toHaveBeenCalledTimes(1);
+    expect(completeMissionTask).toHaveBeenCalledWith('usage-busy', 'completed evidence', 'completed');
+  });
+
+  it('persists workflow worker findings without publishing intermediate completion', async () => {
+    state.mission = {
+      id: 'workflow-worker', title: 'Verify missing evidence', prompt: 'verify',
+      role: 'task', workflow_id: 'wf-1', created_by: 'main', assigned_agent: 'research', status: 'running',
+    };
+    state.agentResult = { text: 'unverified intermediate finding', usage: null };
+    const send = vi.fn(async () => {});
+    await runSchedulerCycle(send);
+    expect(completeMissionTask).toHaveBeenCalledWith('workflow-worker', 'unverified intermediate finding', 'completed');
+    expect(send).not.toHaveBeenCalled();
   });
 
   it('arms a task-scoped worker and requests shutdown only after its mission completes', async () => {

@@ -22,6 +22,11 @@ import { claudeThinkingForModel, selectedEffortForProvider } from './model-catal
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { dispatchMcpServersForTurn } from './dispatch-registry.js';
 import { runtimeModelIdentity } from './runtime-identity.js';
+import { toProviderFailure } from './provider-recovery.js';
+import type { ProviderFailure } from './agent-engine/types.js';
+import { missionExecutionEnv, getMissionExecutionContext } from './mission-execution-context.js';
+import { missionEntryEnv } from './mission-entry-key.js';
+import { missionCoordinatorToolPolicy } from './mission-coordinator-policy.js';
 
 // ── MCP server loading ──────────────────────────────────────────────
 // The Agent SDK's settingSources loads CLAUDE.md and permissions from
@@ -179,6 +184,8 @@ export interface AgentResult {
   abortReason?: TurnAbortReason;
   /** SDK result subtype (e.g. 'success', 'error_during_execution'). */
   stopReason?: string;
+  /** Structured provider failure; absent on successful/aborted turns. */
+  failure?: ProviderFailure;
 }
 
 /**
@@ -283,11 +290,12 @@ export async function runAgent(
   // DB_ENCRYPTION_KEY, etc.) before handing process.env to the SDK
   // subprocess. A prompt-injected agent that calls `env` or `cat .env`
   // can otherwise read every credential the parent process holds.
-  const sdkEnv = getScrubbedSdkEnv(secrets);
+  const sdkEnv = { ...getScrubbedSdkEnv(secrets), ...missionExecutionEnv(), ...missionEntryEnv() };
 
   let newSessionId: string | undefined;
   let resultText: string | null = null;
   let resultStopReason: string | undefined;
+  let resultFailure: ProviderFailure | undefined;
   let usage: UsageInfo | null = null;
   let didCompact = false;
   let preCompactTokens: number | null = null;
@@ -313,6 +321,7 @@ export async function runAgent(
     // scheduled turns with a scrubbed env still see it.
     const dispatchServers = dispatchMcpServersForTurn({
       provider,
+      ...(toolPolicy === missionCoordinatorToolPolicy && getMissionExecutionContext() ? { dispatchAccess: 'grant' as const } : {}),
       ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
       ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
     });
@@ -344,7 +353,7 @@ export async function runAgent(
         ...(selectedEffort ? { effort: selectedEffort } : {}),
         ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
       }),
-      permissionMode: 'bypassPermissions',
+      permissionMode: effectiveSkipPermissions(provider) ? 'bypassPermissions' : 'default',
       allowDangerouslySkipPermissions: effectiveSkipPermissions(provider),
       ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
       env: sdkEnv,
@@ -410,6 +419,7 @@ export async function runAgent(
       if (event.type === 'result') {
         resultText = event.text;
         resultStopReason = event.stopReason;
+        resultFailure = event.failure;
         if (event.usage) {
           usage = event.usage;
           logger.info(
@@ -441,6 +451,11 @@ export async function runAgent(
     // Classify the error and attach context-aware metadata
     const contextTokens = lastCallInputTokens || lastCallCacheRead || 0;
     const classified = classifyError(err, contextTokens || undefined);
+    // Engine throws do not establish whether the SDK delivered the request.
+    // Preserve the familiar AgentError API while carrying a conservative
+    // failure envelope for callers that understand bounded recovery.
+    const carriedFailure = (err as { failure?: ProviderFailure } | null)?.failure;
+    Object.assign(classified, { failure: carriedFailure ?? toProviderFailure(err, provider, 'unknown') });
     logger.error(
       { category: classified.category, recovery: classified.recovery, originalMsg: (err as Error)?.message },
       'Agent query failed (classified)',
@@ -451,7 +466,13 @@ export async function runAgent(
     if (ownsWatchdog) watchdog.dispose();
   }
 
-  return { text: resultText, newSessionId: encodeProviderSession(provider, newSessionId), usage, stopReason: resultStopReason };
+  return {
+    text: resultText,
+    newSessionId: encodeProviderSession(provider, newSessionId),
+    usage,
+    stopReason: resultStopReason,
+    ...(resultFailure ? { failure: resultFailure } : {}),
+  };
 }
 
 // ── Retry wrapper ─────────────────────────────────────────────────
@@ -520,8 +541,11 @@ export async function runAgentWithRetry(
       if (!(err instanceof AgentError)) throw err;
       lastError = err;
 
-      // Don't retry non-retryable errors or if aborted
-      if (!err.recovery.shouldRetry || turnAbort.signal.aborted) {
+      const failure = (err as AgentError & { failure?: ProviderFailure }).failure;
+
+      // Generic SDK throws do not prove that the request stayed client-side.
+      // The legacy recovery hint describes transience, not replay safety.
+      if (!err.recovery.shouldRetry || failure?.execution !== 'not_started' || turnAbort.signal.aborted) {
         if (turnAbort.signal.aborted) {
           return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
         }

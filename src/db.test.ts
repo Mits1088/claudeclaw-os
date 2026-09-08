@@ -875,7 +875,7 @@ describe('migrateDbFile', () => {
     db.close();
   });
 
-  it('adds the mission availability gate without changing existing tasks', () => {
+  it('adds mission availability and transition gates without changing existing tasks', () => {
     const legacy = new Database(dbPath);
     legacy.exec(`
       CREATE TABLE mission_tasks (
@@ -896,6 +896,10 @@ describe('migrateDbFile', () => {
     const migrated = new Database(dbPath);
     const cols = migrated.prepare(`PRAGMA table_info(mission_tasks)`).all() as Array<{ name: string }>;
     expect(cols.some((c) => c.name === 'available_at')).toBe(true);
+    expect(cols.some((c) => c.name === 'transition_key')).toBe(true);
+    expect(cols.some((c) => c.name === 'workflow_id')).toBe(true);
+    expect(cols.some((c) => c.name === 'workflow_depth')).toBe(true);
+    expect(cols.some((c) => c.name === 'source_outcome_id')).toBe(true);
     expect(migrated.prepare(
       `SELECT id, status, available_at FROM mission_tasks WHERE id = 'legacy-mission'`,
     ).get()).toEqual({ id: 'legacy-mission', status: 'queued', available_at: null });
@@ -903,6 +907,17 @@ describe('migrateDbFile', () => {
       `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_mission_claimable'`,
     ).get() as { name: string } | undefined;
     expect(index?.name).toBe('idx_mission_claimable');
+    const transitionIndex = migrated.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_mission_transition_key'`,
+    ).get() as { name: string } | undefined;
+    expect(transitionIndex?.name).toBe('idx_mission_transition_key');
+    const workflowTables = migrated.prepare(
+      `SELECT name FROM sqlite_master WHERE type = 'table'
+       AND name IN ('mission_workflows', 'mission_outcomes', 'mission_transitions')`,
+    ).all() as Array<{ name: string }>;
+    expect(workflowTables.map((row) => row.name).sort()).toEqual([
+      'mission_outcomes', 'mission_transitions', 'mission_workflows',
+    ]);
     migrated.close();
   });
 });

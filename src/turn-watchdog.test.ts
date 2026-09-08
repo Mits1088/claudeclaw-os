@@ -2,6 +2,41 @@ import { describe, expect, it, vi } from 'vitest';
 import { TurnWatchdog, turnAbortMessage } from './turn-watchdog.js';
 
 describe('TurnWatchdog', () => {
+  it('keeps the 15-minute idle window sliding while enforcing 30 minutes absolutely', () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watchdog = new TurnWatchdog(controller, 900_000, 1_800_000);
+    watchdog.start();
+
+    vi.advanceTimersByTime(600_000);
+    watchdog.touch();
+    vi.advanceTimersByTime(600_000);
+    watchdog.touch();
+    vi.advanceTimersByTime(599_999);
+    expect(controller.signal.aborted).toBe(false);
+
+    vi.advanceTimersByTime(1);
+    expect(controller.signal.aborted).toBe(true);
+    expect(watchdog.reason()).toBe('max_runtime');
+    watchdog.dispose();
+    vi.useRealTimers();
+  });
+
+  it('still enforces 15 minutes of provider inactivity', () => {
+    vi.useFakeTimers();
+    const controller = new AbortController();
+    const watchdog = new TurnWatchdog(controller, 900_000, 1_800_000);
+    watchdog.start();
+
+    vi.advanceTimersByTime(899_999);
+    expect(controller.signal.aborted).toBe(false);
+    vi.advanceTimersByTime(1);
+    expect(controller.signal.aborted).toBe(true);
+    expect(watchdog.reason()).toBe('idle_timeout');
+    watchdog.dispose();
+    vi.useRealTimers();
+  });
+
   it('slides the idle deadline on provider activity', () => {
     vi.useFakeTimers();
     const controller = new AbortController();

@@ -91,7 +91,11 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
     const results = events.filter((e) => e.type === 'result');
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ text: null, stopReason: 'error_during_execution' });
+    expect(results[0]).toMatchObject({
+      text: null,
+      stopReason: 'error_during_execution',
+      failure: { provider: 'claude', category: 'unknown', execution: 'started' },
+    });
   });
 
   it('retries at most once and surfaces the second failure as a result', async () => {
@@ -105,6 +109,27 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
     expect(queryMock).toHaveBeenCalledTimes(2);
     const results = events.filter((e) => e.type === 'result');
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({ text: null, stopReason: 'error_during_execution' });
+    expect(results[0]).toMatchObject({
+      text: null,
+      stopReason: 'error_during_execution',
+      failure: { provider: 'claude', category: 'unknown', execution: 'started' },
+    });
+  });
+
+  it('marks a no-event SDK throw unknown instead of inferring safe replay', async () => {
+    queryMock.mockImplementationOnce((async function* () {
+      throw new Error('network disconnected before the first event');
+    }) as never);
+
+    const adapter = new ClaudeSdkEngineAdapter();
+    let caught: unknown;
+    try {
+      await collect(adapter.invoke(turnInput()));
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toMatchObject({
+      failure: { provider: 'claude', category: 'unavailable', execution: 'unknown' },
+    });
   });
 });

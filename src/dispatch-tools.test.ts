@@ -5,6 +5,8 @@ import {
   _initTestDatabase,
   createMissionTask,
   claimNextMissionTask,
+  completeMissionTask,
+  createMissionWorkflow,
   getAllScheduledTasks,
   getHiveMindEntries,
   getMissionTask,
@@ -21,8 +23,10 @@ import {
   dispatchToolEntries,
   dispatchToolNames,
   dispatchToolsAllowed,
+  workflowScopedDispatchToolDefinitions,
 } from './dispatch-tools.js';
-import { actionHandbackMission } from './cli-actions.js';
+import { actionCreateMission, actionHandbackMission } from './cli-actions.js';
+import { runWithMissionExecutionContext } from './mission-execution-context.js';
 
 interface ToolResult {
   content: Array<{ type: string; text: string }>;
@@ -128,6 +132,7 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
     expect(asText(r)).toContain('complete it directly without a handback');
     expect(getMissionTasks()).toHaveLength(1);
 
+    expect(claimNextMissionTask('main')?.id).toBe(parent.id);
     const continued = await callTool('mission_continue', {
       task_id: parent.id, prompt: 'next bounded step', idempotency_key: 'step-1', max_steps: 2,
     });
@@ -144,14 +149,17 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
   it('deduplicates continuation retries and enforces the fixed chain bound', async () => {
     await callTool('mission_create', { prompt: 'start', agent: 'main', title: 'Chain' });
     const [root] = getMissionTasks();
+    expect(claimNextMissionTask('main')?.id).toBe(root.id);
     const args = { task_id: root.id, prompt: 'step one', idempotency_key: 'one', max_steps: 1 };
     const first = await callTool('mission_continue', args);
-    const replay = await callTool('mission_continue', args);
+    const replay = await callTool('mission_continue', { ...args, idempotency_key: 'different-key' });
     expect(first.isError).toBeFalsy();
     expect(asText(replay)).toContain('Existing continuation');
     expect(getMissionTasks()).toHaveLength(2);
 
     const next = getMissionTasks().find((task) => task.role === 'continuation')!;
+    completeMissionTask(root.id, 'continued', 'completed');
+    expect(claimNextMissionTask('main')?.id).toBe(next.id);
     const exhausted = await callTool('mission_continue', {
       task_id: next.id, prompt: 'too far', idempotency_key: 'two',
     });
@@ -160,14 +168,41 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
     expect(getMissionTasks()).toHaveLength(2);
   });
 
+  it('requires a running parent for a new continuation but permits a later replay', async () => {
+    await callTool('mission_create', { prompt: 'start', agent: 'main', title: 'Eligibility' });
+    const [root] = getMissionTasks();
+
+    const queued = await callTool('mission_continue', {
+      task_id: root.id, prompt: 'not yet', idempotency_key: 'queued', max_steps: 2,
+    });
+    expect(queued.isError).toBe(true);
+    expect(asText(queued)).toContain('cannot continue while queued');
+
+    expect(claimNextMissionTask('main')?.id).toBe(root.id);
+    const first = await callTool('mission_continue', {
+      task_id: root.id, prompt: 'now', idempotency_key: 'first', max_steps: 2,
+    });
+    expect(first.isError).toBeFalsy();
+    completeMissionTask(root.id, 'continued', 'completed');
+
+    const replay = await callTool('mission_continue', {
+      task_id: root.id, prompt: 'retry after completion', idempotency_key: 'retry', max_steps: 2,
+    });
+    expect(replay.isError).toBeFalsy();
+    expect(asText(replay)).toContain('Existing continuation');
+    expect(getMissionTasks().filter((task) => task.role === 'continuation')).toHaveLength(1);
+  });
+
   it('cancels queued chain work idempotently and permanently blocks advancement', async () => {
     await callTool('mission_create', { prompt: 'start', agent: 'main', title: 'Cancelable' });
     const [root] = getMissionTasks();
+    expect(claimNextMissionTask('main')?.id).toBe(root.id);
     const first = await callTool('mission_continue', {
       task_id: root.id, prompt: 'queued next', idempotency_key: 'one', max_steps: 3,
     });
     expect(first.isError).toBeFalsy();
     expect(getMissionChain(root.id)?.status).toBe('active');
+    completeMissionTask(root.id, 'continued', 'completed');
 
     const cancelled = await callTool('mission_cancel_chain', { chain_id: root.id });
     expect(cancelled.isError).toBeFalsy();
@@ -188,10 +223,11 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
   it('leaves a running step alive but prevents it from recreating a cancelled chain', async () => {
     await callTool('mission_create', { prompt: 'root', agent: 'main', title: 'Running cancel' });
     const [root] = getMissionTasks();
+    expect(claimNextMissionTask('main')?.id).toBe(root.id);
     await callTool('mission_continue', {
       task_id: root.id, prompt: 'running step', idempotency_key: 'one', max_steps: 3,
     });
-    await callTool('mission_cancel', { id: root.id });
+    completeMissionTask(root.id, 'continued', 'completed');
     const running = claimNextMissionTask('main');
     expect(running?.role).toBe('continuation');
 
@@ -209,6 +245,7 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
   it('does not let another agent cancel a chain it does not own', async () => {
     await callTool('mission_create', { prompt: 'root', agent: 'main', title: 'Owned' });
     const [root] = getMissionTasks();
+    expect(claimNextMissionTask('main')?.id).toBe(root.id);
     await callTool('mission_continue', {
       task_id: root.id, prompt: 'next', idempotency_key: 'one', max_steps: 2,
     });
@@ -236,6 +273,7 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
 
   it('marks handback missions terminal and rejects a handback of a handback', async () => {
     createMissionTask('parent', 'Original', 'do work', 'main', 'dashboard', 5);
+    expect(claimNextMissionTask('main')?.id).toBe('parent');
     const first = await callTool('mission_handback', { task_id: 'parent', report: 'finished' });
     expect(first.isError).toBeFalsy();
 
@@ -250,10 +288,27 @@ describe('dispatch tool handlers reuse the db layer on an isolated store', () =>
 
   it('routes main to Amos work back to main as one terminal handback', () => {
     createMissionTask('delegated', 'Delegated', 'inspect', 'amos', 'main', 5);
+    expect(claimNextMissionTask('amos')?.id).toBe('delegated');
     const result = actionHandbackMission({ taskId: 'delegated', report: 'done', createdBy: 'amos' });
     expect(result).toMatchObject({ kind: 'agent', dest: 'main', parentId: 'delegated' });
     const relay = getMissionTask(result.missionId);
     expect(relay).toMatchObject({ assigned_agent: 'main', created_by: 'amos', role: 'handback' });
+  });
+
+  it('deduplicates repeated handbacks for one parent outcome', () => {
+    createMissionTask('delegated-retry', 'Delegated retry', 'inspect', 'amos', 'main', 5);
+
+    expect(() => actionHandbackMission({
+      taskId: 'delegated-retry', report: 'too early', createdBy: 'amos',
+    })).toThrow('cannot create a handback while queued');
+    expect(claimNextMissionTask('amos')?.id).toBe('delegated-retry');
+
+    const first = actionHandbackMission({ taskId: 'delegated-retry', report: 'done', createdBy: 'amos' });
+    completeMissionTask('delegated-retry', 'done', 'completed');
+    const replay = actionHandbackMission({ taskId: 'delegated-retry', report: 'done again', createdBy: 'amos' });
+
+    expect(replay).toMatchObject({ missionId: first.missionId, duplicate: true });
+    expect(getMissionTasks().filter((task) => task.role === 'handback')).toHaveLength(1);
   });
 
   it('schedule_create stores a recurring task', async () => {
@@ -329,6 +384,8 @@ describe('dispatch tool schemas are derived from the descriptor specs', () => {
         'hive_log', 'hive_path', 'hive_read',
         'mission_cancel', 'mission_cancel_chain', 'mission_create', 'mission_gather',
         'mission_continue', 'mission_handback', 'mission_list', 'mission_result',
+        'mission_transition', 'mission_workflow_cancel', 'mission_workflow_create',
+        'mission_workflow_list', 'mission_workflow_result', 'mission_workflow_resume',
         'schedule_create', 'schedule_delete', 'schedule_list',
         'schedule_pause', 'schedule_resume',
       ].sort(),
@@ -337,6 +394,98 @@ describe('dispatch tool schemas are derived from the descriptor specs', () => {
 
   it('every built SDK tool name matches a descriptor spec name', () => {
     expect(buildDispatchSdkTools().map((t) => t.name).sort()).toEqual(dispatchToolNames().sort());
+  });
+});
+
+describe('workflow execution dispatch boundary', () => {
+  beforeEach(() => _initTestDatabase());
+
+  function seedRunningCoordinator() {
+    createMissionWorkflow({
+      id: 'guard-wf', rootTaskId: 'guard-root', title: 'Guard', objective: 'Stay bounded',
+      initialPrompt: 'Work', ownerAgent: 'main', workerAgent: 'main', priority: 5,
+      maxDepth: 3, maxTasks: 5, maxFanout: 2, deadlineAt: null,
+    });
+    expect(claimNextMissionTask('main')?.id).toBe('guard-root');
+    completeMissionTask('guard-root', 'evidence', 'completed');
+    return claimNextMissionTask('main')!;
+  }
+
+  it('filters alternate orchestration tools from a workflow worker at the server boundary', () => {
+    createMissionWorkflow({
+      id: 'worker-wf', rootTaskId: 'worker-root', title: 'Worker', objective: 'Stay bounded',
+      initialPrompt: 'Work', ownerAgent: 'main', workerAgent: 'main', priority: 5,
+      maxDepth: 3, maxTasks: 5, maxFanout: 2, deadlineAt: null,
+    });
+    expect(claimNextMissionTask('main')?.id).toBe('worker-root');
+
+    runWithMissionExecutionContext({ taskId: 'worker-root', actor: 'main' }, () => {
+      const names = workflowScopedDispatchToolDefinitions().map((definition) => definition.name);
+      expect(names).not.toContain('mission_create');
+      expect(names).not.toContain('mission_gather');
+      expect(names).not.toContain('mission_transition');
+      expect(names).not.toContain('schedule_create');
+      expect(names).toContain('mission_result');
+    });
+  });
+
+  it('exposes only the transition path to a validated coordinator and rejects CLI bypasses', () => {
+    const coordinator = seedRunningCoordinator();
+    runWithMissionExecutionContext({ taskId: coordinator.id, actor: 'main' }, () => {
+      const names = buildDispatchSdkTools().map((definition) => definition.name);
+      expect(names).toContain('mission_transition');
+      expect(names).not.toContain('mission_create');
+      expect(names).not.toContain('mission_workflow_create');
+      expect(names).not.toContain('schedule_create');
+
+      expect(() => actionCreateMission({ prompt: 'escape', agent: 'main' }))
+        .toThrow(/not allowed from workflow task/);
+    });
+    expect(getMissionTasks().filter((task) => !task.workflow_id)).toHaveLength(0);
+  });
+
+  it('binds transition ownership to the propagated coordinator identity', async () => {
+    const coordinator = seedRunningCoordinator();
+    const result = await runWithMissionExecutionContext(
+      { taskId: coordinator.id, actor: 'main' },
+      () => callTool('mission_transition', {
+        coordinator_task_id: 'another-task', disposition: 'complete', idempotency_key: 'decision',
+      }),
+    );
+    expect(result.isError).toBe(true);
+    expect(asText(result)).toContain(`cannot transition as another-task`);
+  });
+
+  it('preserves the simple mission path and does not infer scope from another running task', () => {
+    createMissionTask('simple', 'Simple', 'work', 'main', 'main', 5);
+    expect(claimNextMissionTask('main')?.id).toBe('simple');
+    runWithMissionExecutionContext({ taskId: 'simple', actor: 'main' }, () => {
+      expect(workflowScopedDispatchToolDefinitions().map((definition) => definition.name))
+        .toContain('mission_create');
+      expect(() => actionCreateMission({ prompt: 'allowed', agent: 'main' })).not.toThrow();
+    });
+  });
+
+  it('propagates scoped identity explicitly to the native Codex stdio server', () => {
+    createMissionTask('codex-simple', 'Codex', 'work', 'main', 'main', 5);
+    expect(claimNextMissionTask('main')?.id).toBe('codex-simple');
+    runWithMissionExecutionContext({ taskId: 'codex-simple', actor: 'main' }, () => {
+      const servers = dispatchMcpServersFor({ provider: { type: 'openai' } });
+      const entry = servers[DISPATCH_STDIO_SERVER_NAME] as { env: Record<string, string> };
+      expect(entry.env.CLAUDECLAW_MISSION_TASK_ID).toBe('codex-simple');
+      expect(entry.env.CLAUDECLAW_MISSION_ACTOR).toBe('main');
+      expect(entry.env.CLAUDECLAW_DISPATCH_AGENT).toBe('main');
+    });
+  });
+
+  it('fails closed when propagated task and actor do not match the store', () => {
+    const coordinator = seedRunningCoordinator();
+    runWithMissionExecutionContext({ taskId: coordinator.id, actor: 'amos' }, () => {
+      const names = workflowScopedDispatchToolDefinitions().map((definition) => definition.name);
+      expect(names).not.toContain('mission_transition');
+      expect(names).not.toContain('mission_create');
+      expect(() => actionCreateMission({ prompt: 'escape', agent: 'main' })).toThrow(/not @amos/);
+    });
   });
 });
 

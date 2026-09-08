@@ -12,6 +12,8 @@ import { logger } from '../logger.js';
 import { normalizedEffortForProvider } from '../model-catalog.js';
 import { getScrubbedSdkEnv } from '../security.js';
 import { composeSystemPrompt } from '../runtime-identity.js';
+import { toProviderFailure } from '../provider-recovery.js';
+import type { ExecutionCertainty } from './types.js';
 import { resolveCodexCapabilityProfile, type CodexCapabilityProfile } from './codex-capability-policy.js';
 import { summarizeCommand } from './command-summary.js';
 import { requestDeliveryOf } from './codex-app-server-client.js';
@@ -295,6 +297,7 @@ export function buildThreadConfig(
   // Separate from `mcp_servers: {}`: the host-owned codex_apps server is materialized
   // from the ACCOUNT regardless of our MCP table (probe-verified).
   if (!profile.hostAppsEnabled) features.apps = false;
+  if (profile.mode === 'mission-control') features.multi_agent = false;
   if (Object.keys(features).length > 0) config.features = features;
   if (!profile.webSearchEnabled) config.web_search = 'disabled';
 
@@ -523,6 +526,9 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       // ~/.codex/config.toml is out of the picture.
       yield* this.terminalError(
         `OpenAI (Codex) turn aborted: ${err instanceof Error ? err.message : String(err)}`,
+        'not_started',
+        input.provider,
+        err,
       );
       return;
     }
@@ -544,6 +550,9 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         err instanceof CodexAuthPreparationError || err instanceof CodexWindowsSandboxPreparationError
           ? message
           : friendlyAppServerError(message),
+        'unknown',
+        input.provider,
+        err,
       );
     }
   }
@@ -605,6 +614,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         yield* this.terminalError(
           `OpenAI (Codex) turn refused: elevated Windows sandbox readiness is ${windowsSandbox.status}. `
           + 'Run `codex` once from an elevated terminal to repair the Windows sandbox, then restart ClaudeClaw.',
+          'not_started', input.provider, new Error('invalid request: Windows sandbox is not ready'),
         );
         return;
       }
@@ -620,7 +630,9 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       // held and `runTurn`'s finally gives it back exactly once.
       if (!(err instanceof TrustedMcpProvenanceError)) throw err;
       logger.error({ err: err.message, capabilityMode: profile.mode }, 'codex_trusted_mcp_collision');
-      yield* this.terminalError(`OpenAI (Codex) turn refused: ${err.message}`);
+      yield* this.terminalError(
+        `OpenAI (Codex) turn refused: ${err.message}`, 'not_started', input.provider, err,
+      );
       return;
     }
 
@@ -696,6 +708,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         logger.error({ requested: input.sessionId, returned: threadId }, 'codex_resume_thread_mismatch');
         yield* this.terminalError(
           `OpenAI (Codex) turn refused: thread/resume returned a different thread (${threadId}) than the requested session (${input.sessionId}).`,
+          'not_started', input.provider, new Error('invalid request: thread/resume returned the wrong thread'),
         );
         return;
       }
@@ -740,6 +753,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
           `OpenAI (Codex) turn refused: the host applied a different SANDBOX or AUTHORIZATION policy than ClaudeClaw requested.\n`
           + verdict.blocking.map((m) => `  • ${m}`).join('\n')
           + '\nCheck the Codex host or managed policy layer.',
+          'not_started', input.provider, new Error('invalid request: effective policy mismatch'),
         );
         return;
       }
@@ -769,6 +783,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
             'OpenAI (Codex) turn refused: ClaudeClaw could not read the resumed thread\'s effective MCP servers, '
             + 'so it cannot prove the turn runs with only the servers it authorized '
             + `(${err instanceof Error ? err.message : String(err)}).`,
+            'not_started', input.provider, err,
           );
           return;
         }
@@ -785,6 +800,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
             'OpenAI (Codex) turn refused: the resumed Codex thread\'s MCP servers are not the set this turn authorized.\n'
             + mcpVerdict.blocking.map((m) => `  • ${m}`).join('\n')
             + '\nStart a new chat to run this turn under the requested set.',
+            'not_started', input.provider, new Error('invalid request: effective MCP authority mismatch'),
           );
           return;
         }
@@ -1038,7 +1054,15 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         // outer handler renders it as an ordinary failure and the connection stays
         // usable. Anything else — a timeout, a transport that died mid-flight — means
         // the turn may be running right now with no way to name or cancel it.
-        if (requestDeliveryOf(err) !== 'unknown') throw err;
+        if (requestDeliveryOf(err) !== 'unknown') {
+          yield* this.terminalError(
+            friendlyAppServerError(err instanceof Error ? err.message : String(err)),
+            'not_started',
+            input.provider,
+            err,
+          );
+          return;
+        }
         yield* this.quarantineUncertainStart(manager, threadId, turnId, err);
         return;
       }
@@ -1111,7 +1135,9 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       // corpse would report "could not confirm cancellation" about a turn that has
       // demonstrably ended.
       if (transportFailure) {
-        yield* this.terminalError(friendlyAppServerError(transportFailure));
+        yield* this.terminalError(
+          friendlyAppServerError(transportFailure), 'started', input.provider, new Error(transportFailure),
+        );
         return;
       }
       if (policyViolation) {
@@ -1193,7 +1219,10 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       ?? friendlyAppServerError(result?.error ?? 'the turn failed without an error message');
     const combined = text ? `${text}\n\n${failure}` : failure;
     yield { type: 'text_delta', delta: failure, accumulatedText: combined };
-    yield { type: 'result', text: combined, usage: turnUsage, stopReason: 'error' };
+    yield {
+      type: 'result', text: combined, usage: turnUsage, stopReason: 'error',
+      failure: toProviderFailure(new Error(failure), { type: 'openai', model }, 'started'),
+    };
   }
 
   /**
@@ -1225,6 +1254,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       + 'so it cannot tell whether the turn began. The prompt was NOT sent again — repeating it could repeat work '
       + 'that already started.',
       cause,
+      'unknown',
     );
   }
 
@@ -1248,6 +1278,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       'OpenAI (Codex) turn stopped: the Codex App Server started this turn but did not name it, so ClaudeClaw '
       + 'cannot follow or cancel it. The prompt was NOT sent again.',
       cause,
+      'started',
     );
   }
 
@@ -1328,6 +1359,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         'OpenAI (Codex) turn stopped: ClaudeClaw asked the Codex App Server to cancel this turn and the request '
         + 'failed, so the turn may still be running.',
         cause,
+        'started',
       );
       return;
     }
@@ -1339,6 +1371,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
       'OpenAI (Codex) turn stopped: the Codex App Server accepted the cancellation but never confirmed the turn '
       + 'ended, so it may still be running.',
       `no turn/completed for ${turnId} within the wait`,
+      'started',
     );
   }
 
@@ -1353,6 +1386,7 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
     reason: string,
     lede: string,
     cause: string,
+    execution: ExecutionCertainty,
   ): AsyncGenerator<AgentEngineEvent> {
     const replaceable = await manager.quarantine(reason);
     yield* this.terminalError(
@@ -1361,13 +1395,24 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         ? 'The connection was discarded and the next message starts a fresh one; send it again if nothing happened.'
         : 'The Codex process could not be terminated, so no new turns will start — restart ClaudeClaw.')
       + ` (${cause})`,
+      execution,
+      { type: 'openai' },
+      new Error(cause),
     );
   }
 
   /** Surface failures as text + result: agent.ts does not render bare `error` events. */
-  private async *terminalError(message: string): AsyncGenerator<AgentEngineEvent> {
+  private async *terminalError(
+    message: string,
+    execution: ExecutionCertainty = 'unknown',
+    provider: AgentTurnInput['provider'] = { type: 'openai' },
+    cause: unknown = new Error(message),
+  ): AsyncGenerator<AgentEngineEvent> {
     yield { type: 'text_delta', delta: message, accumulatedText: message };
-    yield { type: 'result', text: message, usage: emptyUsage(), stopReason: 'error' };
+    yield {
+      type: 'result', text: message, usage: emptyUsage(), stopReason: 'error',
+      failure: toProviderFailure(cause, provider, execution),
+    };
   }
 }
 

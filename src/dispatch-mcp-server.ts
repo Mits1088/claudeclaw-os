@@ -39,7 +39,12 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { DISPATCH_ALLOW_HIVE_READ } from './config.js';
 import { renderHelp } from './cli-reference.js';
 import { dispatchMcpServerDescriptor as descriptor } from './cli-descriptors.js';
-import { dispatchToolDefinitions, EGRESS_GATED_TOOLS, type DispatchToolDefinition } from './dispatch-tools.js';
+import {
+  dispatchToolDefinitions,
+  EGRESS_GATED_TOOLS,
+  workflowScopedDispatchToolDefinitions,
+  type DispatchToolDefinition,
+} from './dispatch-tools.js';
 
 /** Server name; tools surface to the model as `mcp__claudeclaw-dispatch__<name>`. */
 export const DISPATCH_MCP_SERVER_NAME = 'claudeclaw-dispatch';
@@ -62,7 +67,8 @@ export function dispatchMcpServerToolDefinitions(
   opts: { allowHiveRead?: boolean } = {},
 ): DispatchToolDefinition[] {
   const allowHiveRead = opts.allowHiveRead ?? DISPATCH_ALLOW_HIVE_READ;
-  return dispatchToolDefinitions().filter((d) => allowHiveRead || !EGRESS_GATED_TOOLS.has(d.name));
+  return workflowScopedDispatchToolDefinitions(dispatchToolDefinitions())
+    .filter((d) => allowHiveRead || !EGRESS_GATED_TOOLS.has(d.name));
 }
 
 /**

@@ -1585,12 +1585,38 @@ async function loadAgents() {
             '<div class="text-xs mt-1">' + dot + ' ' + statusText + executionPill + lifecyclePill + '</div>' +
             modelSelect +
             renderRuntimePills(a) +
+            renderMissionProviderRecovery(a) +
             (a.running ? '<div class="text-xs text-gray-400 mt-1">' + a.todayTurns + ' turns</div>' : '') +
           '</div>' +
         '</div>' +
       '</div>';
     }).join('');
   } catch {}
+}
+
+// Mission retries may use a configured fallback provider. Keep that execution
+// state visibly separate from the interactive model picker above it.
+function renderMissionProviderRecovery(a) {
+  var rows = a.missionProviderRecovery || [];
+  if (!rows.length) return '';
+  return '<div style="margin-top:6px;padding-top:5px;border-top:1px solid #292929;font-size:10px;color:#fbbf24" ' +
+    'title="Mission execution recovery is separate from the interactive provider selection">' +
+    '<div style="font-weight:600">Mission recovery</div>' +
+    rows.map(function(s) {
+      var provider = s.provider + (s.model ? '/' + s.model : '');
+      var retry = s.taskStatus === 'running' ? 'running' : 'queued' + (s.retryAt ? ' until ' + new Date(s.retryAt * 1000).toLocaleTimeString() : '');
+      var circuit = s.circuit.state === 'open' ? 'open (tripped)'
+        : s.circuit.state === 'probing' ? 'half-open (probing)'
+        : s.circuit.state === 'probe_ready' ? 'half-open (probe ready)'
+        : s.circuit.state === 'closed' ? 'closed (available)'
+        : 'not recorded';
+      return '<div style="margin-top:2px;color:#d1d5db">' +
+        escapeHtml(provider) + ' · ' + escapeHtml(retry) + ' · attempt ' + Number(s.attempt) + '<br>' +
+        escapeHtml(s.retryReason) + ' · deadline ' + new Date(s.deadlineAt * 1000).toLocaleString() + '<br>' +
+        'circuit ' + escapeHtml(circuit) +
+      '</div>';
+    }).join('') +
+  '</div>';
 }
 
 // Secondary dropdowns beside the model pill. One pill per option list the

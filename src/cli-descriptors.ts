@@ -149,9 +149,31 @@ export const missionDescriptor: CliDescriptor = {
       },
     },
     {
+      usage: 'workflow --agent <worker> [--owner <coordinator>] --objective "Outcome" [--title "Label"] [--max-depth N] [--max-tasks N] [--max-fanout N] [--deadline <RFC3339>] [--at <RFC3339>] [--key <idempotency-key>] "Initial task prompt"',
+      description:
+        'Create an explicit durable mission workflow and its initial worker task. The scheduler persists each outcome, wakes the owner with full workflow context, and enforces immutable depth, task, fan-out, and deadline bounds.',
+      tool: {
+        name: 'mission_workflow_create',
+        params: [
+          { name: 'objective', type: 'string', required: true, description: 'Durable workflow objective and authorization scope.' },
+          { name: 'at', type: 'string', required: false, description: 'Future initial-worker availability with explicit RFC 3339 timezone.' },
+          { name: 'idempotency_key', type: 'string', required: false, description: 'Stable root creation key. Scheduled and mission entry turns receive a host-owned key automatically.' },
+          { name: 'prompt', type: 'string', required: true, description: 'Prompt for the initial worker task.' },
+          { name: 'agent', type: 'string', required: true, description: 'Agent assigned the initial worker task.' },
+          { name: 'owner', type: 'string', required: false, description: 'Coordinator agent; defaults to the creating agent.' },
+          { name: 'title', type: 'string', required: false, description: 'Initial task title.' },
+          { name: 'priority', type: 'number', required: false, description: 'Initial task priority (default 5).' },
+          { name: 'max_depth', type: 'number', required: false, description: 'Maximum workflow dispatch depth (default 5).' },
+          { name: 'max_tasks', type: 'number', required: false, description: 'Maximum worker tasks across the workflow (default 10).' },
+          { name: 'max_fanout', type: 'number', required: false, description: 'Maximum tasks in one gather transition (default 4).' },
+          { name: 'deadline', type: 'string', required: false, description: 'Optional future RFC 3339 deadline with an explicit UTC offset.' },
+        ],
+      },
+    },
+    {
       usage: 'handback <task-id> "Report text"',
       description:
-        'Report back on a task you were assigned. Routes deterministically to the task\'s originator (created_by) — another agent, or the human via the primary agent. Use this to close the loop; never guess the recipient.',
+        'Report back on the running task you were assigned. Routes deterministically to the task\'s originator (created_by) — another agent, or the human via the primary agent. Repeated calls return the one canonical handback instead of queueing duplicates.',
       tool: {
         name: 'mission_handback',
         params: [
@@ -163,7 +185,7 @@ export const missionDescriptor: CliDescriptor = {
     },
     {
       usage: 'continue <task-id> "Next-step prompt" --key <idempotency-key> [--max-steps N]',
-      description: 'Queue the next step of an explicitly bounded self-directed chain. The first step fixes the chain limit; every request requires a stable idempotency key.',
+      description: 'Queue one next step from the currently running task in an explicitly bounded self-directed chain. The first step fixes the chain limit; every request requires a stable idempotency key, and repeated calls from the same parent return its canonical child.',
       tool: {
         name: 'mission_continue',
         params: [
@@ -182,6 +204,65 @@ export const missionDescriptor: CliDescriptor = {
         name: 'mission_cancel_chain',
         params: [
           { name: 'chain_id', type: 'string', required: true, description: 'Continuation chain id returned by mission_continue.' },
+        ],
+      },
+    },
+    {
+      usage: 'transition <coordinator-task-id> <disposition> --key <idempotency-key> [--agent <id>] [--task "agent:prompt" ...] [--reason "Text"] "Next prompt"',
+      description:
+        'Apply exactly one validated transition to a durable workflow outcome. Dispositions: complete, dispatch, gather, continue_self, retry, wait_for_human, block, fail. Dispatch-like transitions are checked against workflow bounds before any task is queued.',
+      tool: {
+        name: 'mission_transition',
+        params: [
+          { name: 'coordinator_task_id', type: 'string', required: true, description: 'Current coordinator task id.' },
+          { name: 'disposition', type: 'string', required: true, description: 'One allowed workflow disposition.' },
+          { name: 'idempotency_key', type: 'string', required: true, description: 'Stable transition key. One outcome accepts only one transition even if a different key is retried.' },
+          { name: 'agent', type: 'string', required: false, description: 'Target agent for dispatch.' },
+          { name: 'prompt', type: 'string', required: false, description: 'Next task prompt for dispatch, continue_self, or retry.' },
+          { name: 'tasks', type: 'string[]', required: false, description: 'Gather tasks, each as "agent:prompt".' },
+          { name: 'reason', type: 'string', required: false, description: 'Terminal reason, user question, or decision note.' },
+          { name: 'priority', type: 'number', required: false, description: 'Priority for dispatched tasks.' },
+        ],
+      },
+    },
+    {
+      usage: 'workflow-list [--status <status>]',
+      description: 'List durable workflows with owner, status, objective, and persisted bounds.',
+      tool: {
+        name: 'mission_workflow_list',
+        params: [
+          { name: 'status', type: 'string', required: false, description: 'Optional workflow status filter.' },
+        ],
+      },
+    },
+    {
+      usage: 'workflow-result <workflow-id>',
+      description: 'Show one durable workflow with its tasks, outcomes, bounds, and terminal reason.',
+      tool: {
+        name: 'mission_workflow_result',
+        params: [
+          { name: 'id', type: 'string', required: true, description: 'Workflow id.' },
+        ],
+      },
+    },
+    {
+      usage: 'workflow-cancel <workflow-id>',
+      description: 'Durably cancel a workflow and its queued work. A running task may finish recording its outcome but cannot advance the workflow.',
+      tool: {
+        name: 'mission_workflow_cancel',
+        params: [
+          { name: 'id', type: 'string', required: true, description: 'Workflow id.' },
+        ],
+      },
+    },
+    {
+      usage: 'workflow-resume <workflow-id> "Human answer"',
+      description: 'Resume a workflow in waiting_human by recording the answer durably and queueing one coordinator wake-up.',
+      tool: {
+        name: 'mission_workflow_resume',
+        params: [
+          { name: 'id', type: 'string', required: true, description: 'Workflow id.' },
+          { name: 'answer', type: 'string', required: true, description: 'Human answer or approval context.' },
         ],
       },
     },

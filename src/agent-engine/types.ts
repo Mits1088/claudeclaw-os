@@ -1,5 +1,24 @@
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import type { ProviderConfig } from '../provider.js';
+import type { ProviderType } from '../provider.js';
+
+export type ProviderFailureCategory = 'unavailable' | 'rate_limit' | 'auth' | 'request' | 'unknown';
+export type ExecutionCertainty = 'not_started' | 'started' | 'unknown';
+
+/**
+ * Machine-readable provider failure. `execution` is deliberately independent
+ * from the error category: a transient outage is replayable only when the
+ * adapter can positively prove the failed turn never started.
+ */
+export interface ProviderFailure {
+  category: ProviderFailureCategory;
+  execution: ExecutionCertainty;
+  provider: ProviderType;
+  model?: string;
+  retryAfterMs?: number;
+  code?: string | number;
+  message: string;
+}
 
 export interface McpStdioConfig {
   command: string;
@@ -187,9 +206,9 @@ export type AgentEngineEvent =
   | { type: 'progress'; progress: AgentEngineProgressEvent; raw?: unknown }
   | { type: 'usage'; usage: AgentEngineUsage; raw?: unknown }
   | { type: 'compact'; preCompactTokens: number | null; trigger?: string; raw?: unknown }
-  | { type: 'result'; text: string | null; usage: AgentEngineUsage | null; stopReason?: string; raw?: unknown }
+  | { type: 'result'; text: string | null; usage: AgentEngineUsage | null; stopReason?: string; failure?: ProviderFailure; raw?: unknown }
   | { type: 'aborted'; text: string | null; sessionId?: string; usage: AgentEngineUsage | null; raw?: unknown }
-  | { type: 'error'; error: unknown; raw?: unknown };
+  | { type: 'error'; error: unknown; failure?: ProviderFailure; raw?: unknown };
 
 export interface AgentEngine {
   invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent>;

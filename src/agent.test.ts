@@ -120,6 +120,9 @@ describe('runAgentWithRetry', () => {
       retryAfterMs: 100,
       userMessage: 'Rate limited. Retrying in 30s...',
     });
+    Object.assign(retryableError, { failure: {
+      category: 'rate_limit', execution: 'not_started', provider: 'claude', message: 'rate limit',
+    } });
 
     let callCount = 0;
     mockQuery.mockImplementation(() => {
@@ -165,6 +168,9 @@ describe('runAgentWithRetry', () => {
       retryAfterMs: 100,
       userMessage: 'Subprocess crashed',
     });
+    Object.assign(retryableError, { failure: {
+      category: 'unavailable', execution: 'not_started', provider: 'claude', message: 'subprocess failed before send',
+    } });
 
     mockQuery.mockImplementation(() => { throw retryableError; });
 
@@ -212,6 +218,24 @@ describe('runAgentWithRetry', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('does not replay a transient SDK throw when delivery is unknown', async () => {
+    const transient = new AgentError('network', {
+      shouldRetry: true,
+      shouldNewChat: false,
+      shouldSwitchModel: false,
+      retryAfterMs: 1,
+      userMessage: 'network unavailable',
+    });
+    mockQuery.mockImplementation(() => { throw transient; });
+
+    await expect(
+      runAgentWithRetry('hi', undefined, noop, undefined, undefined, undefined, undefined, undefined, undefined, undefined, claudeProvider),
+    ).rejects.toMatchObject({
+      failure: { category: 'unavailable', execution: 'unknown', provider: 'claude' },
+    });
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
   it('uses fallback model on shouldSwitchModel errors', async () => {
     const overloadedError = new AgentError('overloaded', {
       shouldRetry: true,
@@ -220,6 +244,9 @@ describe('runAgentWithRetry', () => {
       retryAfterMs: 100,
       userMessage: 'Overloaded',
     });
+    Object.assign(overloadedError, { failure: {
+      category: 'unavailable', execution: 'not_started', provider: 'claude', message: 'overloaded before send',
+    } });
 
     let callCount = 0;
     const capturedModels: (string | undefined)[] = [];

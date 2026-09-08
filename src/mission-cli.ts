@@ -30,12 +30,18 @@ import {
   CliActionError,
   actionCancelMission,
   actionCancelMissionChain,
+  actionCancelMissionWorkflow,
   actionContinueMission,
   actionCreateMission,
+  actionCreateMissionWorkflow,
   actionGather,
   actionHandbackMission,
   actionListMissions,
+  actionListMissionWorkflows,
   actionMissionResult,
+  actionMissionWorkflowResult,
+  actionResumeMissionWorkflow,
+  actionTransitionMissionWorkflow,
 } from './cli-actions.js';
 
 // Only run the CLI when invoked directly, so importing `descriptor` (for docs
@@ -120,6 +126,20 @@ function dispatch(): void {
   const maxStepsArg = maxStepsFlagIdx !== -1 ? parseInt(process.argv[maxStepsFlagIdx + 1] ?? '0', 10) : undefined;
   const atFlagIdx = process.argv.indexOf('--at');
   const atArg = atFlagIdx !== -1 ? process.argv[atFlagIdx + 1] ?? '' : undefined;
+  const ownerFlagIdx = process.argv.indexOf('--owner');
+  const ownerArg = ownerFlagIdx !== -1 ? process.argv[ownerFlagIdx + 1] ?? '' : undefined;
+  const objectiveFlagIdx = process.argv.indexOf('--objective');
+  const objectiveArg = objectiveFlagIdx !== -1 ? process.argv[objectiveFlagIdx + 1] ?? '' : '';
+  const maxDepthFlagIdx = process.argv.indexOf('--max-depth');
+  const maxDepthArg = maxDepthFlagIdx !== -1 ? parseInt(process.argv[maxDepthFlagIdx + 1] ?? '0', 10) : undefined;
+  const maxTasksFlagIdx = process.argv.indexOf('--max-tasks');
+  const maxTasksArg = maxTasksFlagIdx !== -1 ? parseInt(process.argv[maxTasksFlagIdx + 1] ?? '0', 10) : undefined;
+  const maxFanoutFlagIdx = process.argv.indexOf('--max-fanout');
+  const maxFanoutArg = maxFanoutFlagIdx !== -1 ? parseInt(process.argv[maxFanoutFlagIdx + 1] ?? '0', 10) : undefined;
+  const deadlineFlagIdx = process.argv.indexOf('--deadline');
+  const deadlineArg = deadlineFlagIdx !== -1 ? process.argv[deadlineFlagIdx + 1] ?? '' : undefined;
+  const reasonFlagIdx = process.argv.indexOf('--reason');
+  const reasonArg = reasonFlagIdx !== -1 ? process.argv[reasonFlagIdx + 1] ?? '' : undefined;
 
   // Parse --summary-agent flag (gather command's join assignee)
   const summaryAgentFlagIdx = process.argv.indexOf('--summary-agent');
@@ -134,7 +154,11 @@ function dispatch(): void {
 
   // Clean argv: remove all flag pairs
   const flagIndices = new Set<number>();
-  [agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx, keyFlagIdx, maxStepsFlagIdx, atFlagIdx].forEach(idx => {
+  [
+    agentFlagIdx, titleFlagIdx, statusFlagIdx, priorityFlagIdx, summaryAgentFlagIdx,
+    keyFlagIdx, maxStepsFlagIdx, atFlagIdx, ownerFlagIdx, objectiveFlagIdx,
+    maxDepthFlagIdx, maxTasksFlagIdx, maxFanoutFlagIdx, deadlineFlagIdx, reasonFlagIdx,
+  ].forEach(idx => {
     if (idx !== -1) { flagIndices.add(idx); flagIndices.add(idx + 1); }
   });
   taskFlagIndices.forEach((idx) => flagIndices.add(idx));
@@ -147,7 +171,8 @@ function dispatch(): void {
   // silently accepted as the prompt/report body and corrupt the task. See #162.
   const KNOWN_FLAGS = [
     '--agent', '--title', '--priority', '--status', '--summary-agent', '--task',
-    '--key', '--max-steps', '--at', '--help',
+    '--key', '--max-steps', '--at', '--owner', '--objective', '--max-depth',
+    '--max-tasks', '--max-fanout', '--deadline', '--reason', '--help',
   ];
   const unknownFlags = rest.filter((tok) => tok.startsWith('--'));
   if (unknownFlags.length > 0) {
@@ -181,6 +206,35 @@ function dispatch(): void {
       break;
     }
 
+    case 'workflow': {
+      const prompt = rest[0];
+      if (!targetAgent || !objectiveArg || !prompt) {
+        console.error('Usage: mission-cli workflow --agent <worker> [--owner <coordinator>] --objective "Outcome" [bounds] "Initial task prompt"');
+        process.exit(1);
+      }
+      const r = actionCreateMissionWorkflow({
+        objective: objectiveArg,
+        prompt,
+        agent: targetAgent,
+        owner: ownerArg,
+        title: titleArg,
+        priority: priorityArg,
+        maxDepth: maxDepthArg,
+        maxTasks: maxTasksArg,
+        maxFanout: maxFanoutArg,
+        deadline: deadlineArg,
+        at: atArg,
+        idempotencyKey: keyArg || undefined,
+        createdBy,
+      });
+      console.log(`Durable workflow created: ${r.workflow.id}`);
+      console.log(`  Initial task: ${r.task.id} -> @${r.task.assigned_agent}`);
+      console.log(`  Owner:        @${r.workflow.owner_agent}`);
+      console.log(`  Bounds:       depth ${r.workflow.max_depth}, tasks ${r.workflow.max_tasks}, fan-out ${r.workflow.max_fanout}`);
+      if (r.workflow.deadline_at) console.log(`  Deadline:     ${new Date(r.workflow.deadline_at * 1000).toISOString()}`);
+      break;
+    }
+
     case 'handback': {
       const parentId = rest[0];
       const report = rest[1];
@@ -190,12 +244,12 @@ function dispatch(): void {
       }
       const r = actionHandbackMission({ taskId: parentId, report, priority: priorityArg, createdBy });
       if (r.kind === 'agent') {
-        console.log(`Handback delivered to @${r.dest} (originator of ${r.parentId}).`);
+        console.log(`${r.duplicate ? 'Handback already delivered' : 'Handback delivered'} to @${r.dest} (originator of ${r.parentId}).`);
         console.log(`  Mission: ${r.missionId}`);
       } else {
         // Reserved origin (dashboard/human/scheduled) has no mission inbox —
         // surfaced to the human via the runtime's primary agent.
-        console.log(`Handback routed to @${r.dest} to surface to the human (${r.reason}).`);
+        console.log(`${r.duplicate ? 'Handback already routed' : 'Handback routed'} to @${r.dest} to surface to the human (${r.reason}).`);
         console.log(`  Mission: ${r.missionId}`);
       }
       break;
@@ -227,6 +281,93 @@ function dispatch(): void {
       console.log(r.alreadyCancelled
         ? `Continuation chain ${r.chainId} is already cancelled.`
         : `Cancelled continuation chain ${r.chainId}; ${r.cancelledTasks} queued task(s) stopped.`);
+      break;
+    }
+
+    case 'transition': {
+      const coordinatorTaskId = rest[0];
+      const disposition = rest[1];
+      const prompt = rest[2];
+      if (!coordinatorTaskId || !disposition || !keyArg) {
+        console.error('Usage: mission-cli transition <coordinator-task-id> <disposition> --key <idempotency-key> [--agent <id>] [--task "agent:prompt" ...] [--reason "Text"] "Next prompt"');
+        process.exit(1);
+      }
+      const r = actionTransitionMissionWorkflow({
+        coordinatorTaskId,
+        disposition,
+        idempotencyKey: keyArg,
+        agent: targetAgent ?? undefined,
+        prompt,
+        tasks: taskArgs,
+        reason: reasonArg,
+        priority: priorityFlagIdx !== -1 ? priorityArg : undefined,
+        createdBy,
+      });
+      console.log(`${r.duplicate ? 'Existing' : 'Applied'} transition ${r.disposition}; workflow ${r.workflowId} is ${r.workflowStatus}.`);
+      if (r.createdTaskIds.length > 0) console.log(`  Tasks: ${r.createdTaskIds.join(', ')}`);
+      if (r.reason) console.log(`  Reason: ${r.reason}`);
+      break;
+    }
+
+    case 'workflow-list': {
+      const workflows = actionListMissionWorkflows({ status: statusFilter });
+      if (workflows.length === 0) {
+        console.log('No durable mission workflows.');
+        break;
+      }
+      for (const workflow of workflows) {
+        console.log(`${workflow.id} [${workflow.status}] @${workflow.owner_agent}`);
+        console.log(`  Objective: ${workflow.objective}`);
+        console.log(`  Tasks:     ${workflow.tasks_created}/${workflow.max_tasks}`);
+        console.log(`  Depth:     limit ${workflow.max_depth}`);
+        console.log(`  Control:   ${workflow.current_step} coordinator turn(s)`);
+        if (workflow.terminal_reason) console.log(`  Reason:    ${workflow.terminal_reason}`);
+        console.log();
+      }
+      break;
+    }
+
+    case 'workflow-result': {
+      const id = rest[0];
+      if (!id) { console.error('Usage: mission-cli workflow-result <workflow-id>'); process.exit(1); }
+      const r = actionMissionWorkflowResult({ id });
+      console.log(`Workflow: ${r.workflow.id} [${r.workflow.status}]`);
+      console.log(`Owner:    @${r.workflow.owner_agent}`);
+      console.log(`Objective: ${r.workflow.objective}`);
+      console.log(`Bounds:   depth limit ${r.workflow.max_depth}; tasks ${r.workflow.tasks_created}/${r.workflow.max_tasks}; fan-out ${r.workflow.max_fanout}`);
+      console.log(`Control:  ${r.workflow.current_step} coordinator turn(s)`);
+      if (r.workflow.deadline_at) console.log(`Deadline: ${new Date(r.workflow.deadline_at * 1000).toISOString()}`);
+      if (r.workflow.terminal_reason) console.log(`Reason:   ${r.workflow.terminal_reason}`);
+      console.log(`\nTasks (${r.tasks.length}):`);
+      for (const task of r.tasks) console.log(`  ${task.id} [${task.status}] ${task.role} @${task.assigned_agent} — ${task.title}`);
+      console.log(`\nOutcomes (${r.outcomes.length}):`);
+      for (const outcome of r.outcomes) console.log(`  ${outcome.id} [${outcome.orchestration_state}] task ${outcome.task_id}`);
+      console.log(`\nTransitions (${r.transitions.length}):`);
+      for (const transition of r.transitions) console.log(`  ${transition.id} [${transition.disposition}] outcome ${transition.source_outcome_id}`);
+      for (const recovery of r.recovery) {
+        console.log(`\nRecovery: ${recovery.task_id}; retries ${recovery.attempts}; ${recovery.reason}`);
+        console.log(`  Provider: ${recovery.provider_json ?? 'original selection'}; deadline ${new Date(recovery.deadline_at * 1000).toISOString()}`);
+        console.log(`  Failure: ${recovery.failure_json}`);
+      }
+      break;
+    }
+
+    case 'workflow-cancel': {
+      const id = rest[0];
+      if (!id) { console.error('Usage: mission-cli workflow-cancel <workflow-id>'); process.exit(1); }
+      const r = actionCancelMissionWorkflow({ id, createdBy });
+      console.log(r.alreadyCancelled
+        ? `Workflow ${r.workflowId} is already cancelled.`
+        : `Cancelled workflow ${r.workflowId}; ${r.cancelledTasks} queued task(s) stopped.`);
+      break;
+    }
+
+    case 'workflow-resume': {
+      const id = rest[0];
+      const answer = rest[1];
+      if (!id || !answer) { console.error('Usage: mission-cli workflow-resume <workflow-id> "Human answer"'); process.exit(1); }
+      const r = actionResumeMissionWorkflow({ id, answer, createdBy });
+      console.log(`Workflow ${r.workflowId} resumed. Coordinator task: ${r.coordinatorTaskId}`);
       break;
     }
 
@@ -297,7 +438,7 @@ function dispatch(): void {
     }
 
     default:
-      console.error('Commands: create | handback | continue | cancel-chain | list | result | cancel | gather');
+      console.error('Commands: create | workflow | handback | continue | cancel-chain | transition | workflow-list | workflow-result | workflow-cancel | workflow-resume | list | result | cancel | gather');
       process.exit(1);
   }
 }

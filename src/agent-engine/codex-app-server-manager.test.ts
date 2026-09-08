@@ -695,6 +695,45 @@ describe('one warm child per process', () => {
     await CodexAppServerManager.resetShared();
   });
 
+  it('retires mission-scoped children before interactive turns and subsequent missions', async () => {
+    await CodexAppServerManager.resetShared();
+    const base = {
+      env: { PATH: '/usr/bin', CODEX_HOME: '/tmp/home', CLAUDECLAW_AGENT_ID: 'main' },
+      expectedCodexHome: '/tmp/home',
+      clientVersion: '1.7.1',
+      rotationDrainMs: TEST_DRAIN_MS,
+      createClient: () => new FakeClient() as never,
+    };
+    try {
+      const mission = await CodexAppServerManager.shared({ ...base, env: { ...base.env,
+        CLAUDECLAW_MISSION_TASK_ID: 'mission-a', CLAUDECLAW_MISSION_ACTOR: 'main',
+        CLAUDECLAW_MISSION_ENTRY_KEY: 'mission:mission-a',
+      } });
+      await mission.ready();
+      const interactive = await CodexAppServerManager.shared(base);
+      expect(interactive).not.toBe(mission);
+      expect(await CodexAppServerManager.shared(base)).toBe(interactive);
+      const next = await CodexAppServerManager.shared({ ...base, env: { ...base.env,
+        CLAUDECLAW_MISSION_TASK_ID: 'mission-b', CLAUDECLAW_MISSION_ACTOR: 'main',
+      } });
+      expect(next).not.toBe(interactive);
+    } finally {
+      await CodexAppServerManager.resetShared();
+    }
+  });
+
+  it.each(['CLAUDECLAW_AGENT_ID', 'CLAUDECLAW_MISSION_TASK_ID', 'CLAUDECLAW_MISSION_ACTOR', 'CLAUDECLAW_MISSION_ENTRY_KEY'])(
+    'includes inherited execution scope %s in the launch identity', (key) => {
+      const options = { env: { [key]: 'first' }, expectedCodexHome: '/tmp/home', clientVersion: 'test' };
+      expect(CodexAppServerManager.fingerprintOf(options)).not.toBe(
+        CodexAppServerManager.fingerprintOf({ ...options, env: { [key]: 'second' } }),
+      );
+      expect(CodexAppServerManager.fingerprintOf(options)).not.toBe(
+        CodexAppServerManager.fingerprintOf({ ...options, env: {} }),
+      );
+    },
+  );
+
   it('replaces the instance when a LAUNCH-CRITICAL value changes', async () => {
     // A running child cannot adopt a new CODEX_HOME or credential, so the alternative
     // to replacing it is running turns under an environment they were not built for.

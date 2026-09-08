@@ -5,6 +5,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
+// A test store has its own mission identities. Never import the real mission
+// that launched the test subprocess. Scope-specific tests set their own values.
+delete process.env.CLAUDECLAW_MISSION_TASK_ID;
+delete process.env.CLAUDECLAW_MISSION_ACTOR;
+delete process.env.CLAUDECLAW_MISSION_ENTRY_KEY;
+
 process.env.DASHBOARD_TOKEN = 'test-contract-token';
 process.env.DASHBOARD_MUTATIONS_ENABLED = process.env.DASHBOARD_MUTATIONS_ENABLED || 'true';
 process.env.WARROOM_ENABLED = process.env.WARROOM_ENABLED || 'false';
