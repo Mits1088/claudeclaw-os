@@ -8,6 +8,7 @@ let tmpRoot: string;
 let projectRoot: string;
 let claudeclawConfig: string;
 let storeDir: string;
+let homeDir: string;
 
 // Mock config BEFORE importing agent-create so PROJECT_ROOT/CLAUDECLAW_CONFIG
 // point at tmp dirs.
@@ -29,6 +30,15 @@ vi.mock('./orchestrator.js', () => ({ refreshAgentRegistry: () => {} }));
 // env reader used by loadAgentConfig for the seeded existing agents.
 vi.mock('./env.js', () => ({ readEnvFile: () => ({ TEST_BOT_TOKEN: 'dummy' }) }));
 
+// createAgent writes the launchd plist under os.homedir(). Forcing IS_MACOS on
+// makes that write path run on every platform, so CI (ubuntu) exercises the
+// isolation test below instead of skipping the only branch that touches the
+// home directory. homedir itself is redirected in beforeEach.
+vi.mock('./platform.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./platform.js')>()),
+  IS_MACOS: true,
+}));
+
 function writeAgentYaml(agentId: string, content: Record<string, unknown>) {
   const dir = path.join(projectRoot, 'agents', agentId);
   fs.mkdirSync(dir, { recursive: true });
@@ -42,6 +52,12 @@ beforeEach(() => {
   storeDir = path.join(tmpRoot, 'store');
   fs.mkdirSync(path.join(projectRoot, 'agents'), { recursive: true });
   fs.mkdirSync(storeDir, { recursive: true });
+  // Keep the per-agent plist inside the temp root. Without this, every run of
+  // this file left com.claudeclaw.worker.plist and
+  // com.claudeclaw.temporary-worker.plist in the developer's real
+  // ~/Library/LaunchAgents, pointing at a temp dir that no longer exists.
+  homeDir = path.join(tmpRoot, 'home');
+  vi.spyOn(os, 'homedir').mockReturnValue(homeDir);
   process.env.TEST_BOT_TOKEN = 'dummy';
   // Existing roster: canonical id != display name, plus an alias.
   writeAgentYaml('naomi', {
@@ -130,6 +146,28 @@ describe('createAgent headless runtime', () => {
       runtimeMode: 'messenger',
       lifecycleMode: 'task-scoped',
     })).rejects.toThrow(/requires runtime mode 'headless'/);
+  });
+});
+
+describe('createAgent service config', () => {
+  it('writes the launchd plist under os.homedir() and nothing outside the temp root', async () => {
+    const { createAgent } = await import('./agent-create.js');
+    const writes = vi.spyOn(fs, 'writeFileSync');
+    const result = await createAgent({
+      id: 'boxed',
+      name: 'Boxed',
+      description: 'service config isolation',
+      runtimeMode: 'headless',
+    });
+
+    expect(result.plistPath).toBe(path.join(homeDir, 'Library', 'LaunchAgents', 'com.claudeclaw.boxed.plist'));
+    expect(fs.existsSync(String(result.plistPath))).toBe(true);
+    // Every write must stay under the OS temp dir: the suite's own temp root
+    // plus the War Room roster, which agent-config binds to the first temp
+    // root of the process at import time.
+    const tmpBase = os.tmpdir();
+    const escaped = writes.mock.calls.map(call => String(call[0])).filter(target => !target.startsWith(tmpBase));
+    expect(escaped).toEqual([]);
   });
 });
 
