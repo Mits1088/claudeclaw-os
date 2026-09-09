@@ -47,16 +47,10 @@ vi.mock('./memory-ingest.js', () => ({ setHighImportanceCallback: () => {} }));
 vi.mock('./message-queue.js', () => ({ messageQueue: { enqueue: (_key: string, task: () => Promise<void>) => fixture.pending.push(task()),
   queuedFor: () => 0 } }));
 vi.mock('./active-provider.js', () => ({ getSelectedProviderConfig: () => ({ type: 'claude', model: 'fixture' }), defaultModelForProvider: () => 'fixture' }));
-vi.mock('./mission-provider-policy.js', () => ({ loadMissionProviderPolicy: () => ({ fallbackProviders: [], maxAttempts: 2,
-  maxRuntimeSeconds: 60, cooldownSeconds: 60, retryRateLimit: false }) }));
 vi.mock('./voice.js', () => ({ voiceCapabilities: () => ({ tts: false, stt: false }) }));
 vi.mock('./agent-engine/index.js', () => ({ engineSupportsSystemPrompt: () => true, EngineFactory: { forProvider: () => ({
   async *invoke(_input: AgentTurnInput) {
     fixture.calls++;
-    if (fixture.mode === 'retry' && fixture.calls === 1) {
-      yield { type: 'result', text: null, usage: null, failure: { provider: 'claude', category: 'unavailable', execution: 'not_started', message: 'Synthetic unavailable' } };
-      return;
-    }
     yield { type: 'progress', progress: { type: 'tool_active', toolCallId: 'fixture', description: fixture.secret, kind: 'other' } };
     yield { type: 'text_delta', delta: fixture.secret.slice(0, 7), accumulatedText: fixture.secret.slice(0, 7) };
     yield { type: 'text_delta', delta: fixture.secret.slice(7), accumulatedText: fixture.secret };
@@ -74,7 +68,7 @@ beforeEach(() => { _initTestDatabase(); fixture.bytes = []; fixture.pending = []
   vi.stubEnv('HOME', '/nonexistent/fixture'); vi.stubEnv('USERPROFILE', '/nonexistent/fixture'); });
 afterEach(() => vi.unstubAllEnvs());
 
-it.each(['success', 'edit-fallback', 'abort', 'error', 'retry'])(
+it.each(['success', 'edit-fallback', 'abort', 'error'])(
   'captures actual Telegram handler %s from fake provider through API bytes and stored output', async mode => {
     fixture.mode = mode; fixture.failEdit = mode === 'edit-fallback';
     const events: string[] = [];
@@ -85,12 +79,12 @@ it.each(['success', 'edit-fallback', 'abort', 'error', 'retry'])(
       await bot.handleUpdate({ update_id: 1, message: { message_id: 1, date: 1,
         chat: { id: 7, type: 'private', first_name: 'User' }, from: { id: 7, is_bot: false, first_name: 'User' }, text: 'Synthetic request' } });
       await Promise.all(fixture.pending);
-      expect(fixture.calls).toBe(mode === 'retry' ? 2 : 1);
+      expect(fixture.calls).toBe(1);
       expect(fixture.bytes.join('')).not.toContain('alpha');
       expect(events.join('')).not.toContain('alpha');
       expect(JSON.stringify(getRecentConversation('7', 10))).not.toContain('alpha');
       expect(fixture.bytes.some(body => /sendMessage|editMessageText/.test(body))).toBe(true);
-      if (mode === 'success' || mode === 'edit-fallback' || mode === 'retry') {
+      if (mode === 'success' || mode === 'edit-fallback') {
         expect(fixture.bytes.join('')).toContain('[REDACTED]');
         expect(getRecentConversation('7', 10).some(row => row.content === '[REDACTED]')).toBe(true);
       }

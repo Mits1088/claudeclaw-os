@@ -2,15 +2,17 @@ import { describe, it, expect } from 'vitest';
 
 import { makeStderrRelay } from './claude-sdk-adapter.js';
 
-// One failing CLI hook produced 777 × ~5 KB stderr lines in a day: the relay
-// must bound each snippet and squelch identical repeats instead of logging all.
-describe('makeStderrRelay — truncation and repeat squelch', () => {
-  it('reports oversized chunk length without logging raw fragments', () => {
+// Provider stderr can contain credentials or fragments that no per-chunk detector
+// can recognize. Keep only content-free size/count diagnostics.
+describe('makeStderrRelay — content-free repeat squelch', () => {
+  it('reports only the original length', () => {
     const calls: Array<{ obj: Record<string, unknown>; msg: string }> = [];
     const relay = makeStderrRelay((obj, msg) => calls.push({ obj, msg }));
-    relay('x'.repeat(5000));
+    const secret = 'sk-secret-that-must-never-be-logged';
+    relay(secret);
     expect(calls).toHaveLength(1);
-    expect(calls[0].obj).toEqual({ stderrChars: 5000 });
+    expect(calls[0].obj).toEqual({ stderrChars: secret.length });
+    expect(JSON.stringify(calls)).not.toContain(secret);
   });
 
   it('logs an identical repeating message once, then every 50th with the count', () => {
@@ -32,5 +34,6 @@ describe('makeStderrRelay — truncation and repeat squelch', () => {
     relay('first error');
     expect(calls.map((c) => c.obj.stderrChars)).toEqual([11, 17, 11]);
     expect(JSON.stringify(calls)).not.toContain('first error');
+    expect(JSON.stringify(calls)).not.toContain('a different error');
   });
 });

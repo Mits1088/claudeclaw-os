@@ -1,9 +1,13 @@
-vi.mock('./mission-provider-execution.js', () => ({ prepareMissionProvider: vi.fn((_mission, provider) => ({ kind: 'run', attempt: { provider } })), recoverMissionProvider: vi.fn(() => false), settleMissionProviderHealth: vi.fn(() => null) }));
-vi.mock('./mission-reporting.js', () => ({ deliverMissionWorkflowReport: vi.fn(async () => {}) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { claimNextMissionTask, completeMissionTask, maybeReleaseJoinForMission, updateTaskAfterRun, saveTokenUsage } from './db.js';
-import { settleMissionProviderHealth } from './mission-provider-execution.js';
+import {
+  claimNextMissionTask,
+  completeMissionTask,
+  maybeReleaseJoinForMission,
+  missionClaimIsCurrent,
+  updateTaskAfterRun,
+} from './db.js';
 import { runAgent } from './agent.js';
+import { ingestConversationTurn } from './memory-ingest.js';
 
 // Routing regression for failed turns: both engines can surface a failure as a
 // normal (non-thrown, non-aborted) result — Claude SDK via usage.isError /
@@ -18,6 +22,8 @@ const state = vi.hoisted(() => ({
   agentResult: { text: 'ok', newSessionId: undefined, usage: null } as Record<string, unknown>,
   enqueued: [] as Array<() => Promise<void>>,
   missionCompleted: false,
+  currentMission: null as Record<string, unknown> | null,
+  cancelDuringRun: false,
 }));
 
 vi.mock('./config.js', () => ({
@@ -25,20 +31,6 @@ vi.mock('./config.js', () => ({
   ALLOWED_CHAT_ID: 'chat-1',
   SCHEDULER_IDLE_TIMEOUT_MS: 900_000,
   SCHEDULER_MAX_RUNTIME_MS: 1_800_000,
-  CREW_MISSIONS_ENABLED: true,
-  CREW_MISSION_MAX_ACTIVE: 1,
-  CREW_MISSION_MAX_RUNNING_WORKERS: 1,
-  CREW_MISSION_MAX_RUNNING_COORDINATORS: 1,
-  CREW_MISSION_MAX_TURNS: 3,
-  CREW_MISSION_MAX_RUNTIME_SECONDS: 600,
-  CREW_MISSION_TURN_BUDGET_5H: 12,
-  CREW_MISSION_BUDGET_HARD_PERCENT: 75,
-  CREW_MISSION_PROVIDER_TURN_BUDGET_5H: 12,
-  CREW_MISSION_BUDGET_WARNING_PERCENT: 60,
-  CREW_MISSION_MAX_DEPTH: 1,
-  CREW_MISSION_MAX_TASKS: 2,
-  CREW_MISSION_MAX_FANOUT: 1,
-  CREW_MISSION_MAX_COORDINATOR_REVIEWS: 2,
   agentMcpAllowlist: [],
   agentDefaultModel: undefined,
   agentProvider: undefined,
@@ -57,7 +49,6 @@ vi.mock('./message-queue.js', () => ({
 }));
 
 vi.mock('./db.js', () => ({
-  saveTokenUsage: vi.fn(),
   getDueTasks: vi.fn(() => state.dueTasks),
   getSession: vi.fn(() => undefined),
   logConversationTurn: vi.fn(),
@@ -67,17 +58,20 @@ vi.mock('./db.js', () => ({
   claimNextMissionTask: vi.fn(() => {
     const m = state.mission;
     state.mission = null;
+    state.currentMission = m ? { ...m, status: 'running' } : null;
     return m;
   }),
-  completeMissionTask: vi.fn(() => { state.missionCompleted = true; return { changed: true, outcomeId: null, coordinatorTaskId: null }; }),
+  completeMissionTask: vi.fn((_id: string, _result: string | null, status: string) => {
+    if (state.currentMission?.status !== 'running') return false;
+    state.currentMission.status = status;
+    state.missionCompleted = true;
+    return true;
+  }),
   maybeReleaseJoinForMission: vi.fn(),
   resetStuckMissionTasks: vi.fn(() => 0),
   failStuckMissionTasks: vi.fn(() => 0),
-  reconcileMissionControl: vi.fn(() => ({
-    expiredWorkflows: 0, recoveredOutcomes: 0, releasedJoins: 0,
-    blockedJoins: 0, queuedCoordinators: 0, blockedOutcomes: 0,
-  })),
-  getMissionTask: vi.fn(() => null),
+  getMissionTask: vi.fn(() => state.currentMission),
+  missionClaimIsCurrent: vi.fn(() => state.currentMission?.status === 'running'),
   areAllGroupChildrenTerminal: vi.fn(() => false),
   getGroupChildren: vi.fn(() => []),
   getJoinMission: vi.fn(() => null),
@@ -86,8 +80,6 @@ vi.mock('./db.js', () => ({
   isWorkerLeaseCurrent: vi.fn(() => true),
   markWorkerTaskScopeStarted: vi.fn(() => true),
   deactivateWorkerIfTaskScopeDrained: vi.fn(() => state.missionCompleted),
-  authorizeMissionGovernorProvider: vi.fn(() => ({ allowed: true, reason: null, retryAt: null })),
-  reconcileMissionGovernorUsage: vi.fn(() => true),
 }));
 
 vi.mock('./bot.js', () => ({
@@ -108,7 +100,10 @@ vi.mock('./agent.js', () => ({
   // actual module here would pull the whole engine tree under partial mocks.
   isFailedTurn: (r: { usage?: { isError?: boolean } | null; stopReason?: string }) =>
     r.usage?.isError === true || r.stopReason?.startsWith('error') === true,
-  runAgent: vi.fn(async () => state.agentResult),
+  runAgent: vi.fn(async () => {
+    if (state.cancelDuringRun && state.currentMission) state.currentMission.status = 'cancelled';
+    return state.agentResult;
+  }),
 }));
 
 async function runSchedulerCycle(
@@ -130,6 +125,8 @@ describe('scheduler failed-turn routing', () => {
     state.mission = null;
     state.enqueued.length = 0;
     state.missionCompleted = false;
+    state.currentMission = null;
+    state.cancelDuringRun = false;
   });
 
   afterEach(() => {
@@ -209,6 +206,7 @@ describe('scheduler failed-turn routing', () => {
       null,
       'failed',
       expect.stringContaining('Agent run failed (error_during_execution)'),
+      undefined,
     );
     expect(vi.mocked(maybeReleaseJoinForMission)).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'm1', status: 'failed' }),
@@ -233,43 +231,10 @@ describe('scheduler failed-turn routing', () => {
     await runSchedulerCycle(send);
 
     expect(send).toHaveBeenNthCalledWith(1, '🎯 Mission task running: "Report Y"\nTask ID: m2');
-    expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith('m2', 'all good', 'completed');
+    expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith(
+      'm2', 'all good', 'completed', undefined, undefined,
+    );
     expect(send).toHaveBeenCalledWith('all good');
-  });
-
-  it('does not publish completion or release a join when cancellation won the write', async () => {
-    state.mission = { id: 'cancel-race', title: 'Cancelled', prompt: 'go', role: 'task',
-      created_by: 'main', assigned_agent: 'research', status: 'running' };
-    state.agentResult = { text: 'must not publish', usage: null };
-    vi.mocked(completeMissionTask).mockReturnValueOnce({ changed: false, outcomeId: null, coordinatorTaskId: null });
-    const send = vi.fn(async () => {});
-    await runSchedulerCycle(send);
-    expect(send).not.toHaveBeenCalledWith('must not publish');
-    expect(maybeReleaseJoinForMission).not.toHaveBeenCalled();
-  });
-
-  it('preserves completed execution and settles health when ancillary usage recording fails', async () => {
-    state.mission = { id: 'usage-busy', title: 'Executed work', prompt: 'go', role: 'task',
-      workflow_id: 'wf-usage', created_by: 'main', assigned_agent: 'research', status: 'running' };
-    state.agentResult = { text: 'completed evidence', usage: { inputTokens: 10, outputTokens: 4 } };
-    vi.mocked(saveTokenUsage).mockImplementationOnce(() => { throw new Error('SQLITE_BUSY'); });
-    await runSchedulerCycle(vi.fn(async () => {}));
-    expect(settleMissionProviderHealth).toHaveBeenCalledTimes(1);
-    expect(completeMissionTask).toHaveBeenCalledTimes(1);
-    expect(completeMissionTask).toHaveBeenCalledWith('usage-busy', 'completed evidence', 'completed');
-  });
-
-  it('persists workflow worker findings without publishing intermediate completion', async () => {
-    state.mission = {
-      id: 'workflow-worker', title: 'Verify missing evidence', prompt: 'verify',
-      role: 'task', workflow_id: 'wf-1', created_by: 'main', assigned_agent: 'research', status: 'running',
-    };
-    state.agentResult = { text: 'unverified intermediate finding', usage: null };
-    const send = vi.fn(async () => {});
-    await runSchedulerCycle(send);
-    expect(completeMissionTask).toHaveBeenCalledWith('workflow-worker', 'unverified intermediate finding', 'completed');
-    expect(vi.mocked(runAgent).mock.calls[0]?.[12]).toBe(3);
-    expect(send).not.toHaveBeenCalled();
   });
 
   it('arms a task-scoped worker and requests shutdown only after its mission completes', async () => {
@@ -281,6 +246,8 @@ describe('scheduler failed-turn routing', () => {
       created_by: 'main',
       role: 'task',
       continuation_limit: 1,
+      claiming_instance_id: 'worker-instance',
+      claim_generation: 4,
     };
     state.agentResult = { text: 'done', newSessionId: undefined, usage: null };
     const send = vi.fn(async () => {});
@@ -294,6 +261,13 @@ describe('scheduler failed-turn routing', () => {
 
     const db = await import('./db.js');
     expect(vi.mocked(db.markWorkerTaskScopeStarted)).toHaveBeenCalledWith('main', 'worker-instance', 'scope-root');
+    expect(vi.mocked(db.missionClaimIsCurrent)).toHaveBeenCalledWith('scope-root', {
+      agentId: 'main', instanceId: 'worker-instance', generation: 4,
+    });
+    expect(vi.mocked(db.completeMissionTask)).toHaveBeenCalledWith(
+      'scope-root', 'done', 'completed', undefined,
+      { agentId: 'main', instanceId: 'worker-instance', generation: 4 },
+    );
     expect(vi.mocked(db.deactivateWorkerIfTaskScopeDrained)).toHaveBeenCalled();
     expect(onDrained).toHaveBeenCalledTimes(1);
   });
@@ -328,7 +302,71 @@ describe('scheduler failed-turn routing', () => {
       null,
       'failed',
       expected,
+      undefined,
     );
     expect(send).toHaveBeenCalledWith(expect.stringContaining(expected));
+  });
+
+  it('drops a queued callback when its claim was cancelled before execution', async () => {
+    state.mission = {
+      id: 'cancel-before-callback', title: 'Queued work', prompt: 'go', role: 'task',
+      group_id: 'g1', created_by: 'main', assigned_agent: 'research', status: 'running',
+    };
+    state.agentResult = { text: 'must not run', newSessionId: undefined, usage: null };
+    const send = vi.fn(async () => {});
+    const { initScheduler } = await import('./scheduler.js');
+    initScheduler(send, 'main');
+    await vi.runOnlyPendingTimersAsync();
+    for (let i = 0; i < 10; i++) await Promise.resolve();
+    expect(state.enqueued).toHaveLength(1);
+
+    state.currentMission!.status = 'cancelled';
+    await state.enqueued[0]!();
+
+    expect(vi.mocked(runAgent)).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
+    expect(vi.mocked(completeMissionTask)).not.toHaveBeenCalled();
+    expect(vi.mocked(maybeReleaseJoinForMission)).not.toHaveBeenCalled();
+  });
+
+  it('rechecks the claim after the awaited startup notification', async () => {
+    state.mission = {
+      id: 'cancel-during-startup', title: 'Queued work', prompt: 'go', role: 'task',
+      group_id: 'g1', created_by: 'main', assigned_agent: 'research', status: 'running',
+    };
+    state.agentResult = { text: 'must not run', newSessionId: undefined, usage: null };
+    const send = vi.fn(async () => {
+      if (state.currentMission) state.currentMission.status = 'cancelled';
+    });
+
+    await runSchedulerCycle(send);
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(missionClaimIsCurrent)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(runAgent)).not.toHaveBeenCalled();
+    expect(vi.mocked(completeMissionTask)).not.toHaveBeenCalled();
+    expect(vi.mocked(maybeReleaseJoinForMission)).not.toHaveBeenCalled();
+  });
+
+  it('suppresses output, follow-up, and join release when cancellation wins during execution', async () => {
+    state.mission = {
+      id: 'cancel-in-flight', title: 'In-flight work', prompt: 'go', role: 'task',
+      group_id: 'g1', created_by: 'main', assigned_agent: 'research', status: 'running',
+    };
+    state.agentResult = { text: 'late success', newSessionId: undefined, usage: null };
+    state.cancelDuringRun = true;
+    const send = vi.fn(async () => {});
+
+    await runSchedulerCycle(send);
+
+    expect(vi.mocked(runAgent)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(completeMissionTask)).toHaveBeenCalledWith(
+      'cancel-in-flight', 'late success', 'completed', undefined, undefined,
+    );
+    expect(state.missionCompleted).toBe(false);
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send).not.toHaveBeenCalledWith('late success');
+    expect(vi.mocked(maybeReleaseJoinForMission)).not.toHaveBeenCalled();
+    expect(vi.mocked(ingestConversationTurn)).not.toHaveBeenCalled();
   });
 });

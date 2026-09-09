@@ -17,7 +17,6 @@ import { STORE_DIR } from '../config.js';
 import { authError, isAuthErrorText } from '../errors.js';
 import { getScrubbedSdkEnv } from '../security.js';
 import { composeSystemPrompt } from '../runtime-identity.js';
-import { toProviderFailure } from '../provider-recovery.js';
 
 import type {
   AgentEngine,
@@ -25,6 +24,7 @@ import type {
   AgentTurnInput,
   AskUserQuestionRequest,
 } from './types.js';
+import { withExecutionCertainty } from './types.js';
 
 // Locate a system-installed `claude` on PATH, or undefined if none is found.
 function findSystemClaude(): string | undefined {
@@ -112,8 +112,8 @@ export function makeStderrRelay(
   let lastKey = '';
   let repeats = 0;
   return (data: string) => {
-    // Chunks can split any credential. Never log raw fragments, even when a
-    // complete-value detector would consider this individual chunk clean.
+    // Chunks can split credentials, so even a detector cannot safely inspect an
+    // individual fragment. Hash only for repeat suppression; never log content.
     const key = createHash('sha256').update(data).digest('hex');
     if (key === lastKey) {
       repeats++;
@@ -363,15 +363,12 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
     const turnTextBlocks: string[] = [];
     const activeTools = new Map<string, ClaudeToolActivity>();
 
-    // SDK 0.3.x requires `allowDangerouslySkipPermissions: true` whenever
-    // `permissionMode` is 'bypassPermissions'. Resolve the mode first, then default
-    // the flag to true for the bypass path when the caller didn't specify one — this
-    // preserves prior bypass behavior and keeps the adapter's own default self-consistent.
-    // An explicit `false` from the caller is respected (?? only fills nullish values).
-    const permissionMode = input.permissionMode ?? 'bypassPermissions';
-    const allowDangerouslySkipPermissions =
-      input.allowDangerouslySkipPermissions ??
-      (permissionMode === 'bypassPermissions' ? true : undefined);
+    // Bypass is an explicit grant, never an adapter default. A contradictory
+    // bypass mode + false flag is narrowed to the SDK's permission-aware mode.
+    const allowDangerouslySkipPermissions = input.allowDangerouslySkipPermissions === true;
+    const permissionMode = input.permissionMode === 'bypassPermissions' && !allowDangerouslySkipPermissions
+      ? 'default'
+      : input.permissionMode ?? (allowDangerouslySkipPermissions ? 'bypassPermissions' : 'default');
 
     // ── The anthropic-compatible seam ────────────────────────────────────
     // An anthropic-compatible endpoint is this same Claude Code subprocess
@@ -433,9 +430,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
             ? { systemPrompt: composeSystemPrompt(input.systemPrompt, input.runtimeIdentity) }
             : {}),
           permissionMode,
-          ...(allowDangerouslySkipPermissions !== undefined
-            ? { allowDangerouslySkipPermissions }
-            : {}),
+          ...(allowDangerouslySkipPermissions ? { allowDangerouslySkipPermissions: true } : {}),
           ...(canUseTool ? { canUseTool } : {}),
           ...(input.maxTurns && input.maxTurns > 0 ? { maxTurns: input.maxTurns } : {}),
           ...(turnEnv ? { env: turnEnv } : {}),
@@ -622,9 +617,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         // "exited with code 1") loops on subprocess_crash. Raise a proper auth
         // error (no retry, deploy-aware message) at the source. (#48)
         if (ev.is_error === true && typeof resultText === 'string' && isAuthErrorText(resultText)) {
-          const error = authError();
-          Object.assign(error, { failure: toProviderFailure(error, input.provider, 'started') });
-          throw error;
+          throw authError();
         }
 
         const evUsage = ev.usage as Record<string, number> | undefined;
@@ -658,13 +651,6 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
           text: resultText,
           usage,
           stopReason: typeof ev.subtype === 'string' ? ev.subtype : undefined,
-          ...(ev.is_error === true ? {
-            failure: toProviderFailure(
-              new Error(resultText ?? (typeof ev.subtype === 'string' ? ev.subtype : 'Claude SDK turn failed')),
-              input.provider,
-              'started',
-            ),
-          } : {}),
           raw: ev,
         };
         emittedResult = true;
@@ -684,18 +670,7 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         );
         return;
       }
-      // The SDK exposes no request-delivery receipt. A throw before its first
-      // event therefore stays `unknown`; lack of visible output is not proof
-      // that the provider did not receive or begin the turn.
-      if (err instanceof Error) {
-        if (!(err as Error & { failure?: unknown }).failure) {
-          Object.assign(err, { failure: toProviderFailure(err, input.provider, 'unknown') });
-        }
-        throw err;
-      }
-      throw Object.assign(new Error(String(err)), {
-        failure: toProviderFailure(err, input.provider, 'unknown'),
-      });
+      throw withExecutionCertainty(err, 'unknown');
     }
   }
 }

@@ -19,8 +19,6 @@ const state = vi.hoisted(() => {
 });
 
 vi.mock('../config.js', () => ({
-  EXFILTRATION_GUARD_ENABLED: true,
-  PROTECTED_ENV_VARS: [],
   OPENAI_API_KEY: 'sk-test-openai',
   DEFAULT_OPENAI_MODEL: 'gpt-5.5',
   CLAUDECLAW_CONFIG: state.configDir,
@@ -29,6 +27,8 @@ vi.mock('../config.js', () => ({
   CODEX_APP_SERVER_MAX_CONCURRENT_TURNS: 8,
   // Read by the shared capability policy; off so profiles resolve normally.
   CODEX_DANGER_WRITE: false,
+  EXFILTRATION_GUARD_ENABLED: false,
+  PROTECTED_ENV_VARS: [],
 }));
 
 vi.mock('../logger.js', () => ({
@@ -37,7 +37,7 @@ vi.mock('../logger.js', () => ({
 
 vi.mock('../security.js', () => ({ getScrubbedSdkEnv: () => ({ PATH: '/usr/bin' }) }));
 
-import { CodexAppServerEngineAdapter, askUserQuestion, buildAppServerLaunchEnv, buildThreadConfig, friendlyAppServerError, isStaleThreadError, summarizeCommand } from './codex-app-server-adapter.js';
+import { CodexAppServerEngineAdapter, askUserQuestion, buildThreadConfig, friendlyAppServerError, isStaleThreadError, summarizeCommand } from './codex-app-server-adapter.js';
 import type {
   JsonRpcNotification,
   JsonRpcRequest,
@@ -47,9 +47,25 @@ import { CodexAppServerRequestError } from './codex-app-server-client.js';
 import { resolveCodexCapabilityProfile } from './codex-capability-policy.js';
 import { CodexAppServerManager, type TurnSink } from './codex-app-server-manager.js';
 import type { AgentEngineEvent, AgentTurnInput, AskUserQuestionAnswer, AskUserQuestionRequest } from './types.js';
-import { missionCoordinatorToolPolicy } from '../mission-coordinator-policy.js';
 
 const CWD = path.resolve('/tmp/agent-cwd');
+
+describe('Codex App Server stale-session boundary', () => {
+  it.each([
+    'thread/resume failed: 401 unauthorized',
+    'thread/resume failed: 429 rate limit',
+    'thread/resume failed: model is not supported',
+    'thread/resume failed: transport disconnected',
+    'thread authentication missing',
+  ])('does not treat %s as missing-session evidence', (message) => {
+    expect(isStaleThreadError(message)).toBe(false);
+  });
+
+  it('accepts only explicit missing-session evidence', () => {
+    expect(isStaleThreadError('thread/resume failed: no rollout found for thread id abc')).toBe(true);
+    expect(isStaleThreadError('session id abc does not exist')).toBe(true);
+  });
+});
 
 /** A scripted App Server: records requests and pushes notifications into the sink. */
 class FakeServer {
@@ -312,71 +328,6 @@ describe('thread configuration per capability profile', () => {
     expect(config.features).toEqual({ apps: false });
   });
 
-  it('keeps coordinator identity on its per-turn MCP without rotating the shared child', async () => {
-    const missionIdentity = {
-      CLAUDECLAW_AGENT_ID: 'main',
-      CLAUDECLAW_MISSION_TASK_ID: 'coordinator-1',
-      CLAUDECLAW_MISSION_ACTOR: 'main',
-      CLAUDECLAW_MISSION_ENTRY_KEY: 'workflow:coordinator-1',
-    };
-    const input = baseInput({
-      ...missionCoordinatorToolPolicy,
-      env: { PATH: '/usr/bin', ...missionIdentity },
-      mcpServers: {
-        'claudeclaw-dispatch': {
-          command: 'node',
-          args: ['dispatch-mcp-server.js'],
-          env: { ...missionIdentity },
-        },
-      },
-      trustedMcpServers: ['claudeclaw-dispatch'],
-    });
-    const profile = resolveCodexCapabilityProfile(input, { dangerWriteEnabled: false });
-    expect(profile.mode).toBe('mission-control');
-
-    const coordinatorLaunchEnv = buildAppServerLaunchEnv(input, '/tmp/codex-home', profile);
-    const interactiveLaunchEnv = buildAppServerLaunchEnv(baseInput({
-      env: { PATH: '/usr/bin', CLAUDECLAW_AGENT_ID: 'main' },
-    }), '/tmp/codex-home');
-    expect(coordinatorLaunchEnv).toEqual(interactiveLaunchEnv);
-    expect(coordinatorLaunchEnv.CLAUDECLAW_AGENT_ID).toBe('main');
-    expect(coordinatorLaunchEnv.CLAUDECLAW_MISSION_TASK_ID).toBeUndefined();
-    expect(coordinatorLaunchEnv.CLAUDECLAW_MISSION_ACTOR).toBeUndefined();
-    expect(coordinatorLaunchEnv.CLAUDECLAW_MISSION_ENTRY_KEY).toBeUndefined();
-    // Launch-env normalization must not erase the identity from the caller or
-    // the per-turn MCP process that enforces coordinator ownership.
-    expect(input.env?.CLAUDECLAW_MISSION_TASK_ID).toBe('coordinator-1');
-
-    const workerLaunchEnv = buildAppServerLaunchEnv(baseInput({
-      env: { PATH: '/usr/bin', ...missionIdentity },
-    }), '/tmp/codex-home');
-    expect(workerLaunchEnv.CLAUDECLAW_MISSION_TASK_ID).toBe('coordinator-1');
-    expect(workerLaunchEnv.CLAUDECLAW_MISSION_ACTOR).toBe('main');
-    expect(workerLaunchEnv.CLAUDECLAW_MISSION_ENTRY_KEY).toBe('workflow:coordinator-1');
-
-    const config = buildThreadConfig(profile, undefined, input.trustedMcpServers) as any;
-    expect(config.features).toEqual({ shell_tool: false, apps: false, multi_agent: false });
-    expect(config.web_search).toBe('disabled');
-    expect(config.mcp_servers['claudeclaw-dispatch'].env).toEqual(missionIdentity);
-
-    await CodexAppServerManager.resetShared();
-    try {
-      const options = {
-        env: interactiveLaunchEnv,
-        expectedCodexHome: '/tmp/codex-home',
-        clientVersion: 'test',
-      };
-      const interactiveManager = await CodexAppServerManager.shared(options);
-      const coordinatorManager = await CodexAppServerManager.shared({
-        ...options,
-        env: coordinatorLaunchEnv,
-      });
-      expect(coordinatorManager).toBe(interactiveManager);
-    } finally {
-      await CodexAppServerManager.resetShared();
-    }
-  });
-
   it('workspace-agent REQUESTS both temp exclusions and network off', () => {
     // Without these, temp directories become implicit writable roots and the
     // "writes confined to the workspace" promise is broader than advertised.
@@ -508,9 +459,6 @@ describe('thread start and session handling', () => {
   it('classifies stale-thread errors without matching unrelated ones', () => {
     expect(isStaleThreadError('no rollout found for thread id abc')).toBe(true);
     expect(isStaleThreadError('thread not found')).toBe(true);
-    expect(isStaleThreadError('thread/resume failed: 401 unauthorized')).toBe(false);
-    expect(isStaleThreadError('thread/resume failed: 401 missing API key')).toBe(false);
-    expect(isStaleThreadError('thread/resume failed: model not found')).toBe(false);
     expect(isStaleThreadError('429 rate limit')).toBe(false);
     expect(isStaleThreadError('model overloaded')).toBe(false);
   });
@@ -1462,9 +1410,6 @@ describe('an uncertain turn/start is quarantined, not retried', () => {
     expect(result.stopReason).toBe('error');
     expect(result.text).toMatch(/cannot tell whether the turn began/);
     expect(result.text).toMatch(/NOT sent again/);
-    expect(result.failure).toMatchObject({
-      provider: 'openai', category: 'unavailable', execution: 'unknown',
-    });
     expect(events.some((e) => e.type === 'aborted')).toBe(false);
   });
 
@@ -1508,63 +1453,7 @@ describe('an uncertain turn/start is quarantined, not retried', () => {
     expect(server.quarantined).toEqual([]);
     const result = events.filter((e) => e.type === 'result').at(-1) as any;
     expect(result.text).toMatch(/model unavailable/);
-    expect(result.failure).toMatchObject({
-      provider: 'openai', category: 'unavailable', execution: 'not_started',
-    });
     expect(server.released).toEqual(['thread-1']);
-  });
-
-  it('classifies manager readiness failure as not_started before any prompt can be sent', async () => {
-    const server = new FakeServer();
-    const manager = server.asManager();
-    manager.ready = async () => { throw new Error('service unavailable before app-server startup'); };
-    const adapter = new CodexAppServerEngineAdapter({ manager });
-    const events: AgentEngineEvent[] = [];
-
-    for await (const event of adapter.invoke(baseInput())) events.push(event);
-
-    expect(server.requests).toEqual([]);
-    expect(server.slotsAcquired).toBe(1);
-    expect(server.slotsReleased).toBe(1);
-    expect(events.at(-1)).toMatchObject({
-      type: 'result',
-      failure: { provider: 'openai', category: 'unavailable', execution: 'not_started' },
-    });
-  });
-
-  it('classifies thread/start refusal as not_started and never submits turn/start', async () => {
-    const server = scriptedServer();
-    server.handlers['thread/start'] = () => {
-      throw new CodexAppServerRequestError('thread/start failed: service unavailable', 'refused', 'thread/start');
-    };
-
-    const events = await collect(server, baseInput());
-
-    expect(server.requests.map((request) => request.method)).toEqual(['thread/start']);
-    expect(server.quarantined).toEqual([]);
-    expect(server.slotsReleased).toBe(1);
-    expect(events.at(-1)).toMatchObject({
-      type: 'result',
-      failure: { provider: 'openai', category: 'unavailable', execution: 'not_started' },
-    });
-  });
-
-  it('classifies non-stale thread/resume failure as not_started without a fresh replay', async () => {
-    const server = scriptedServer();
-    server.handlers['thread/resume'] = () => {
-      throw new CodexAppServerRequestError('thread/resume failed: 401 unauthorized', 'refused', 'thread/resume');
-    };
-
-    const events = await collect(server, baseInput({ sessionId: 'thread-1' }));
-
-    expect(server.requests.map((request) => request.method)).toEqual(['thread/unsubscribe', 'thread/resume']);
-    expect(server.requests.some((request) => request.method === 'thread/start')).toBe(false);
-    expect(server.requests.some((request) => request.method === 'turn/start')).toBe(false);
-    expect(server.released).toEqual(['thread-1']);
-    expect(events.at(-1)).toMatchObject({
-      type: 'result',
-      failure: { provider: 'openai', category: 'auth', execution: 'not_started' },
-    });
   });
 
   it('treats an UNTAGGED turn/start failure as uncertain', async () => {

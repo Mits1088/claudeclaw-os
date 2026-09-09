@@ -293,9 +293,7 @@ describe('Agent Provider Engine', () => {
     expect(engineSupportsSystemPrompt(undefined)).toBe(false);
   });
 
-  it('defaults allowDangerouslySkipPermissions to true when defaulting to bypassPermissions', async () => {
-    // SDK 0.3.x requires the skip flag whenever permissionMode is 'bypassPermissions'.
-    // When the caller specifies neither, the adapter must default both consistently.
+  it('defaults direct engine calls to permission-aware mode', async () => {
     mockQuery.mockReturnValue(mockEvents([
       { type: 'result', subtype: 'success', result: '{}', usage: {}, total_cost_usd: 0 },
     ])());
@@ -309,12 +307,9 @@ describe('Agent Provider Engine', () => {
       out.push(ev);
     }
 
-    expect(mockQuery).toHaveBeenCalledWith(expect.objectContaining({
-      options: expect.objectContaining({
-        permissionMode: 'bypassPermissions',
-        allowDangerouslySkipPermissions: true,
-      }),
-    }));
+    const options = (mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }).options;
+    expect(options.permissionMode).toBe('default');
+    expect(options).not.toHaveProperty('allowDangerouslySkipPermissions');
   });
 
   it('keeps a completed Claude result when the SDK process errors after result', async () => {

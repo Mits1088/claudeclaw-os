@@ -1,4 +1,3 @@
-import { outboundText } from '../outbound-payload.js';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
@@ -38,10 +37,9 @@ import type {
   AgentTurnInput,
   McpServerConfig,
 } from './types.js';
+import { withExecutionCertainty } from './types.js';
 import { emptyUsage } from './types.js';
 import { composeSystemPrompt } from '../runtime-identity.js';
-import { toProviderFailure } from '../provider-recovery.js';
-import type { ExecutionCertainty } from './types.js';
 
 type CodexConfigObject = NonNullable<CodexOptions['config']>;
 
@@ -269,13 +267,12 @@ function applyCapabilityHardening(config: CodexConfigObject, profile: CodexCapab
   // `codex_apps` server is materialized from the account independently, so this
   // separate gate is mandatory — not redundant — for every untrusted-input turn.
   if (!profile.hostAppsEnabled) features.apps = false;
-  if (profile.mode === 'mission-control') features.multi_agent = false;
   if (Object.keys(features).length > 0) config.features = features;
   if (!profile.webSearchEnabled) config.web_search = 'disabled';
 }
 
 function truncate(text: string, max: number): string {
-  const oneLine = outboundText(text, 'provider.preview').replace(/\s+/g, ' ').trim();
+  const oneLine = text.replace(/\s+/g, ' ').trim();
   return oneLine.length <= max ? oneLine : `${oneLine.slice(0, max - 1)}…`;
 }
 
@@ -304,14 +301,12 @@ function usageFromTurn(model: string, u: Usage, durationMs: number): AgentEngine
   return usage;
 }
 
-function isStaleSessionError(message: string): boolean {
+export function isStaleSessionError(message: string): boolean {
   // Codex's resume failure text has taken a few forms across CLI versions,
   // e.g. "thread/resume failed: no rollout found for thread id ...". Match the
-  // subject (session/thread/rollout/conversation) AND an explicit absence signal
-  // in either word order ("not found" or "no rollout found"). A bare "resume
-  // failed" is not enough: auth, rate and transport errors use that prefix too,
-  // and replaying those as though the saved thread were missing is unsafe.
-  return /(?:session|thread|conversation|rollout)(?:\s+(?:id|record))?\s+(?:was\s+)?(?:not found|missing|does not exist)|no\s+(?:such\s+)?(?:session|thread|conversation|rollout)(?:\s+(?:id|record))?[^.\n]*?found|missing\s+(?:session|thread|conversation|rollout)|could not find\s+(?:the\s+)?(?:session|thread|conversation|rollout)/i.test(message);
+  // subject (session/thread/rollout/conversation) AND explicit absence. A bare
+  // "resume failed" may describe auth, rate, model, or transport failure.
+  return /(?:session|thread|conversation|rollout)(?:\s+(?:id|record)(?:\s+(?!not\b|missing\b|does\b|was\b)["'`]?[-\w]+["'`]?)?)?\s+(?:was\s+)?(?:not found|missing|does not exist)|no\s+(?:such\s+)?(?:session|thread|conversation|rollout)(?:\s+(?:id|record))?[^.\n]*?found|missing\s+(?:session|thread|conversation|rollout)|could not find\s+(?:the\s+)?(?:session|thread|conversation|rollout)/i.test(message);
 }
 
 /**
@@ -442,10 +437,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
           );
           const friendly = `OpenAI (Codex) turn aborted: MCP server "${safeTrusted}" is trusted for this turn, but its Codex id "${safeId}" is already held by "${safeOwner}". Rename one of them; ClaudeClaw will not transfer trusted approval to a different server.`;
           yield { type: 'text_delta', delta: friendly, accumulatedText: friendly };
-          yield {
-            type: 'result', text: friendly, usage: emptyUsage(), stopReason: 'error',
-            failure: toProviderFailure(new Error(friendly), input.provider, 'not_started'),
-          };
+          yield { type: 'result', text: friendly, usage: emptyUsage(), stopReason: 'error' };
           return;
         }
         const entry = mcpServers[id];
@@ -521,10 +513,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
         ? `OpenAI (Codex) turn aborted: ${msg}`
         : `OpenAI (Codex) turn aborted: could not set up the isolated Codex config directory under ${CLAUDECLAW_CONFIG} (${msg}). Check that directory is writable, then retry.`;
       yield { type: 'text_delta', delta: friendly, accumulatedText: friendly, raw: { message: msg } };
-      yield {
-        type: 'result', text: friendly, usage: emptyUsage(), stopReason: 'error',
-        failure: toProviderFailure(err, input.provider, 'not_started'),
-      };
+      yield { type: 'result', text: friendly, usage: emptyUsage(), stopReason: 'error' };
       return;
     }
 
@@ -564,22 +553,13 @@ export class CodexSdkEngineAdapter implements AgentEngine {
           ? codex.resumeThread(input.sessionId!, threadOptions)
           : codex.startThread(threadOptions);
       } catch (err) {
-        const failure = err instanceof Error ? err.message : String(err);
-        // Thread construction is synchronous in the SDK and happens before
-        // runStreamed receives the prompt. A stale saved id is therefore safe to
-        // replace once; every other setup failure is definitively not-started.
-        if (resuming && isStaleSessionError(failure)) {
+        const message = err instanceof Error ? err.message : String(err);
+        // SDK thread construction is synchronous and precedes runStreamed(prompt).
+        if (resuming && isStaleSessionError(message)) {
           logger.warn({ sessionId: input.sessionId }, 'Codex thread not resumable — starting a fresh thread');
           continue;
         }
-        const friendly = friendlyCodexError(failure);
-        logger.error({ model, failure }, 'Codex SDK thread setup failed');
-        yield { type: 'text_delta', delta: friendly, accumulatedText: friendly, raw: { message: failure } };
-        yield {
-          type: 'result', text: friendly, usage: null, stopReason: 'error',
-          failure: toProviderFailure(err, input.provider, 'not_started'),
-        };
-        return;
+        throw withExecutionCertainty(err, 'not_started');
       }
 
       // In-band persona: only on the first turn of a thread — Codex persists
@@ -604,10 +584,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
       // failures via text_delta + result (OpenRouter adapter precedent) so
       // the user sees an actionable message instead of silence.
       yield { type: 'text_delta', delta: friendly, accumulatedText: text, raw: { message: outcome.failure } };
-      yield {
-        type: 'result', text, usage: outcome.usage, stopReason: 'error',
-        failure: toProviderFailure(new Error(outcome.failure), input.provider, outcome.execution),
-      };
+      yield { type: 'result', text, usage: outcome.usage, stopReason: 'error' };
       return;
     }
   }
@@ -625,7 +602,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
     profile: CodexCapabilityProfile,
   ): AsyncGenerator<
     AgentEngineEvent,
-    { done: boolean; emitted: boolean; execution: ExecutionCertainty; failure: string; text: string; usage: AgentEngineUsage | null }
+    { done: boolean; emitted: boolean; failure: string; text: string; usage: AgentEngineUsage | null }
   > {
     const startedAt = Date.now();
     const signal = input.abortController?.signal;
@@ -651,9 +628,6 @@ export class CodexSdkEngineAdapter implements AgentEngine {
     let sessionId = input.sessionId;
     let usage: AgentEngineUsage | null = null;
     let failure: string | null = null;
-    // The SDK has no request-delivery receipt. Until it yields an event we
-    // cannot distinguish a local rejection from a delivered request.
-    let execution: ExecutionCertainty = 'unknown';
     // Set once turn.completed arrives. After that the turn is terminal and
     // SUCCESSFUL: trailing error events and the SDK's nonzero-exit wrapper throw
     // must NOT relatch a failure or flip the result to an error.
@@ -672,18 +646,15 @@ export class CodexSdkEngineAdapter implements AgentEngine {
       return joined || accumulated || null;
     };
 
-    const fail = (message: string) => ({ done: false, emitted, execution, failure: message, text: finalText() ?? '', usage });
+    const fail = (message: string) => ({ done: false, emitted, failure: message, text: finalText() ?? '', usage });
 
     try {
       const { events } = await thread.runStreamed(prompt, { signal: policyAbort.signal });
 
       for await (const ev of events) {
-        // Any streamed turn event establishes that Codex created/processed this
-        // turn. Absence of events does NOT establish the inverse.
-        execution = 'started';
         if (signal?.aborted) {
           yield { type: 'aborted', text: finalText(), sessionId, usage };
-          return { done: true, emitted, execution, failure: '', text: finalText() ?? '', usage };
+          return { done: true, emitted, failure: '', text: finalText() ?? '', usage };
         }
 
         // Tool budget check. A tool-less turn (maxToolItems: 0) that produces ANY
@@ -767,7 +738,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
       if (policyViolation) return fail(policyViolation);
       if (signal?.aborted || (err instanceof Error && err.name === 'AbortError')) {
         yield { type: 'aborted', text: finalText(), sessionId, usage };
-        return { done: true, emitted, execution, failure: '', text: finalText() ?? '', usage };
+        return { done: true, emitted, failure: '', text: finalText() ?? '', usage };
       }
       // If the turn already completed successfully, a trailing nonzero-exit
       // wrapper throw is not a real failure — emit the normal result.
@@ -778,7 +749,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
           usage: usage ?? emptyUsage(),
           stopReason: 'end_turn',
         };
-        return { done: true, emitted, execution, failure: '', text: finalText() ?? '', usage };
+        return { done: true, emitted, failure: '', text: finalText() ?? '', usage };
       }
       // Otherwise the SDK's generic "Codex Exec exited with code N" wrapper came
       // AFTER a structured turn.failed / error event. Prefer the specific
@@ -791,7 +762,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
 
     if (signal?.aborted) {
       yield { type: 'aborted', text: finalText(), sessionId, usage };
-      return { done: true, emitted, execution, failure: '', text: finalText() ?? '', usage };
+      return { done: true, emitted, failure: '', text: finalText() ?? '', usage };
     }
     // A policy stop that broke the loop cleanly (no throw) lands here.
     if (policyViolation) return fail(policyViolation);
@@ -803,7 +774,7 @@ export class CodexSdkEngineAdapter implements AgentEngine {
       usage: usage ?? usageFromTurn(model, { input_tokens: 0, cached_input_tokens: 0, cache_write_input_tokens: 0, output_tokens: 0, reasoning_output_tokens: 0 }, Date.now() - startedAt),
       stopReason: 'end_turn',
     };
-    return { done: true, emitted, execution, failure: '', text: finalText() ?? '', usage };
+    return { done: true, emitted, failure: '', text: finalText() ?? '', usage };
   }
 
   /** Translate one Codex item event into zero or more engine events. */

@@ -19,7 +19,8 @@ it.each(['success', 'error', 'abort'])('captures actual voice subprocess stdout 
   fs.writeFileSync(loader, `
     import { registerHooks } from 'node:module';
     const sources = {
-      'fixture:engine': ${JSON.stringify(`export const EngineFactory = { forProvider() { return { async *invoke() {
+      'fixture:engine': ${JSON.stringify(`export function executionCertaintyOf(error) { return error?.execution; }
+      export const EngineFactory = { forProvider() { return { async *invoke() {
         process.stderr.write('FIXTURE_ENGINE_USED\\n');
         const text = process.env.FIXTURE_SECRET;
         if (process.env.FIXTURE_MODE === 'error') throw new Error(text);

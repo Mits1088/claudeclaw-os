@@ -57,24 +57,4 @@ describe('missionExecutionPrompt', () => {
     expect(prompt).not.toContain('--max-steps');
     expect(prompt).not.toContain('mission-cli handback');
   });
-
-  it('makes workflow worker completion scheduler-managed', () => {
-    const prompt = missionExecutionPrompt({
-      id: 'worker-1', title: 'Research', created_by: 'main', assigned_agent: 'bobbi',
-      prompt: 'Find the evidence.', role: 'task', continuation_limit: null, workflow_id: 'wf-1',
-    });
-    expect(prompt).toContain('worker execution inside durable workflow wf-1');
-    expect(prompt).toContain('scheduler persists the outcome and wakes the coordinator');
-    expect(prompt).not.toContain('mission-cli handback');
-  });
-
-  it('requires one validated transition from a workflow coordinator', () => {
-    const prompt = missionExecutionPrompt({
-      id: 'coord-1', title: 'Coordinate', created_by: 'main', assigned_agent: 'main',
-      prompt: 'Review the durable outcome.', role: 'coordinator', continuation_limit: null, workflow_id: 'wf-1',
-    });
-    expect(prompt).toContain('Apply exactly one disposition with mission_transition');
-    expect(prompt).toContain('Do not create work through the ordinary mission_create');
-    expect(prompt).not.toContain('mission-cli handback');
-  });
 });

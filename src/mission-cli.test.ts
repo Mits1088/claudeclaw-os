@@ -3,17 +3,12 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'mission-cli.js');
 const PROJECT_DIR = path.resolve(__dirname, '..');
-const SOURCE_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
-const CLI_COMMAND = fs.existsSync(CLI_PATH)
-  ? `node "${CLI_PATH}"`
-  : `node --import "${SOURCE_LOADER}" "${path.resolve(__dirname, 'mission-cli.ts')}"`;
 
 // The CLI runs as a child process and loads real config, which requires a
 // DB_ENCRYPTION_KEY (>= 32 chars). Inject a throwaway key so these tests are
@@ -46,7 +41,7 @@ interface RunResult { status: number; stdout: string; stderr: string; }
 
 function run(args: string): RunResult {
   try {
-    const stdout = execSync(`${CLI_COMMAND} ${args}`, {
+    const stdout = execSync(`node "${CLI_PATH}" ${args}`, {
       cwd: PROJECT_DIR,
       env: childEnv(),
       encoding: 'utf-8',
@@ -138,41 +133,6 @@ describe('mission-cli create — resolve-then-store guard', () => {
     expect(created.status).not.toBe(0);
     expect(created.stderr).toContain('invalid --at timestamp');
     expect(run('list').stdout).toContain('No mission tasks');
-  });
-
-  it('creates and reads a durable bounded workflow', () => {
-    const created = run(
-      'workflow --agent amos --owner main --objective "Reach a verified answer" --title "Research" --max-depth 3 --max-tasks 6 --max-fanout 2 --deadline 2099-01-02T03:04:05-07:00 "Research the question"',
-    );
-    expect(created.status).toBe(0);
-    expect(created.stdout).toContain('Durable workflow created:');
-    expect(created.stdout).toContain('-> @amos');
-    expect(created.stdout).toContain('Owner:        @main');
-    expect(created.stdout).toContain('depth 3, tasks 6, fan-out 2');
-    expect(created.stdout).toContain('2099-01-02T10:04:05.000Z');
-
-    const workflowId = created.stdout.match(/Durable workflow created: ([a-f0-9]+)/)?.[1];
-    expect(workflowId).toBeTruthy();
-    const listed = run('workflow-list --status active');
-    expect(listed.status).toBe(0);
-    expect(listed.stdout).toContain(workflowId!);
-    expect(listed.stdout).toContain('Reach a verified answer');
-
-    const details = run(`workflow-result ${workflowId}`);
-    expect(details.status).toBe(0);
-    expect(details.stdout).toContain(`Workflow: ${workflowId} [active]`);
-    expect(details.stdout).toContain('Tasks (1):');
-    expect(details.stdout).toContain('Outcomes (0):');
-    expect(details.stdout).toContain('Transitions (0):');
-  });
-
-  it('rejects an invalid durable workflow bound before writing', () => {
-    const created = run(
-      'workflow --agent amos --objective "Bounded" --max-fanout 0 "Do work"',
-    );
-    expect(created.status).not.toBe(0);
-    expect(created.stderr).toContain('--max-fanout must be an integer from 1 to 50');
-    expect(run('workflow-list').stdout).toContain('No durable mission workflows');
   });
 
   it('resolves a gather summary display name to its canonical id', () => {

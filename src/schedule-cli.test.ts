@@ -3,17 +3,12 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'schedule-cli.js');
 const PROJECT_DIR = path.resolve(__dirname, '..');
-const SOURCE_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
-const CLI_COMMAND = fs.existsSync(CLI_PATH)
-  ? `node "${CLI_PATH}"`
-  : `node --import "${SOURCE_LOADER}" "${path.resolve(__dirname, 'schedule-cli.ts')}"`;
 
 // The CLI runs as a child process and loads real config, which requires a
 // DB_ENCRYPTION_KEY (>= 32 chars). A checkout without a populated .env (e.g. a
@@ -47,7 +42,7 @@ interface RunResult { status: number; stdout: string; stderr: string; }
 
 function run(args: string, envOverrides: Record<string, string | undefined> = {}): RunResult {
   try {
-    const stdout = execSync(`${CLI_COMMAND} ${args}`, {
+    const stdout = execSync(`node "${CLI_PATH}" ${args}`, {
       cwd: PROJECT_DIR,
       env: childEnv(envOverrides),
       encoding: 'utf-8',

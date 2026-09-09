@@ -7,7 +7,6 @@ import { Api, Bot, Context, InlineKeyboard, InputFile, RawApi } from 'grammy';
 
 import { runAgent, runAgentWithRetry, emptyTurnReply, UsageInfo, AgentProgressEvent, AgentToolPolicy } from './agent.js';
 import { turnAbortMessage } from './turn-watchdog.js';
-import { getRecentMissionReportContext } from './db.js';
 import { chatToolProfileFor } from './chat-tool-policy.js';
 import type {
   AskUserQuestionRequest,
@@ -54,7 +53,6 @@ import { trackUsage, getRateStatus } from './rate-tracker.js';
 import { buildCostFooter } from './cost-footer.js';
 import { COMPLETION_DONE_GLYPH, completionStatusGlyph } from './completion-glyph.js';
 import { DEFAULT_CLAUDE_MODEL, getMainProviderConfig, getProviderDisplay, ProviderConfig, setMainProviderConfig } from './provider.js';
-import { formatMissionProviderStatuses, missionProviderStatuses } from './mission-provider-status.js';
 import { defaultModelForProvider, getSelectedProviderConfig } from './active-provider.js';
 import { engineSupportsSystemPrompt } from './agent-engine/index.js';
 import {
@@ -2332,17 +2330,12 @@ export function createBot(): Bot {
     await ctx.reply(`Model changed: ${modelDisplayLabel(modelId)}\nPersisted to agent.yaml. Applies everywhere until changed again.${clearedLine}`);
   });
 
-  // /provider — keep interactive selection distinct from mission recovery.
+  // /provider — display active provider/model source only.
   bot.command('provider', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
     const provider = activeProvider();
     const modelLine = modelStatusLine(provider, ctx.chat!.id.toString());
-    const missionLines = formatMissionProviderStatuses(missionProviderStatuses(AGENT_ID));
-    const missionStatus = missionLines.length
-      ? missionLines.join('\n')
-      : 'No mission provider recovery is active.';
-    const reply = `Interactive selection (chat):\nProvider: ${getProviderDisplay(provider)}\n${modelLine}\n\nMission execution/recovery (separate from chat selection):\n${missionStatus}`;
-    for (const part of splitMessage(reply)) await ctx.reply(part);
+    await ctx.reply(`Provider: ${getProviderDisplay(provider)}\n${modelLine}`);
   });
 
   // /memory — show recent memories for this agent on this chat
@@ -3042,8 +3035,6 @@ async function processDashboardMessage(
       dashParts.push(`[Recent scheduled task context — the user may be replying to this]\n${taskLines.join('\n\n')}\n[End task context]`);
     }
 
-    const missionContext = getRecentMissionReportContext(AGENT_ID);
-    if (missionContext) dashParts.push(missionContext);
     dashParts.push(text);
     const fullMessage = dashParts.join('\n\n');
 

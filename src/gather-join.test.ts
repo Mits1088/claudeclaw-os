@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import {
   _initTestDatabase,
+  _testMarkLegacyWorkflowMission,
   cancelMissionTask,
   createMissionTask,
+  claimNextMissionTask,
   completeMissionTask,
   getGroupChildren,
   areAllGroupChildrenTerminal,
@@ -11,6 +13,7 @@ import {
   updateMissionPrompt,
   getMissionTask,
   maybeReleaseJoinForMission,
+  failStuckMissionTasks,
 } from './db.js';
 
 describe('gather / join primitive (Tier 3)', () => {
@@ -29,13 +32,19 @@ describe('gather / join primitive (Tier 3)', () => {
     return childIds;
   }
 
+  function settle(id: string, result: string | null, status: 'completed' | 'failed', error?: string): void {
+    const task = getMissionTask(id)!;
+    expect(claimNextMissionTask(task.assigned_agent!)?.id).toBe(id);
+    expect(completeMissionTask(id, result, status, error)).toBe(true);
+  }
+
   it('keeps the join waiting until all children are terminal', () => {
     const groupId = 'g1';
     const [c0, c1] = seedGroup(groupId);
 
     expect(areAllGroupChildrenTerminal(groupId)).toBe(false);
 
-    completeMissionTask(c0, 'result 0', 'completed');
+    settle(c0, 'result 0', 'completed');
     expect(areAllGroupChildrenTerminal(groupId)).toBe(false);
     // Release goes through maybeReleaseJoinForMission (scheduler terminal paths
     // and cancelMissionTask), which guards on areAllGroupChildrenTerminal before
@@ -46,15 +55,15 @@ describe('gather / join primitive (Tier 3)', () => {
     // outstanding, the join must stay parked.
     expect(getJoinMission(groupId)?.status).toBe('waiting');
 
-    completeMissionTask(c1, 'result 1', 'completed');
+    settle(c1, 'result 1', 'completed');
     expect(areAllGroupChildrenTerminal(groupId)).toBe(true);
   });
 
   it('releases the join exactly once (atomic race guard)', () => {
     const groupId = 'g2';
     const [c0, c1] = seedGroup(groupId);
-    completeMissionTask(c0, 'result 0', 'completed');
-    completeMissionTask(c1, 'result 1', 'completed');
+    settle(c0, 'result 0', 'completed');
+    settle(c1, 'result 1', 'completed');
 
     expect(areAllGroupChildrenTerminal(groupId)).toBe(true);
     expect(releaseJoinMission(groupId)).toBe(true);
@@ -67,8 +76,8 @@ describe('gather / join primitive (Tier 3)', () => {
   it('treats failed and cancelled children as terminal', () => {
     const groupId = 'g3';
     const [c0, c1] = seedGroup(groupId);
-    completeMissionTask(c0, null, 'failed', 'boom');
-    completeMissionTask(c1, 'ok', 'completed');
+    settle(c0, null, 'failed', 'boom');
+    settle(c1, 'ok', 'completed');
 
     expect(areAllGroupChildrenTerminal(groupId)).toBe(true);
     expect(releaseJoinMission(groupId)).toBe(true);
@@ -77,8 +86,8 @@ describe('gather / join primitive (Tier 3)', () => {
   it('releases a gather whose children are already terminal before the check runs', () => {
     const groupId = 'g4';
     const [c0, c1] = seedGroup(groupId);
-    completeMissionTask(c0, 'result 0', 'completed');
-    completeMissionTask(c1, 'result 1', 'completed');
+    settle(c0, 'result 0', 'completed');
+    settle(c1, 'result 1', 'completed');
 
     // Simulate a late-arriving check (e.g. scheduler restart) that only now
     // evaluates the group for the first time.
@@ -89,8 +98,8 @@ describe('gather / join primitive (Tier 3)', () => {
   it('assembles child results into the join prompt before release', () => {
     const groupId = 'g5';
     const [c0, c1] = seedGroup(groupId);
-    completeMissionTask(c0, 'finding A', 'completed');
-    completeMissionTask(c1, 'finding B', 'completed');
+    settle(c0, 'finding A', 'completed');
+    settle(c1, 'finding B', 'completed');
 
     const join = getJoinMission(groupId);
     expect(join).not.toBeNull();
@@ -111,7 +120,7 @@ describe('gather / join primitive (Tier 3)', () => {
   it('releases the join when the last non-terminal child is cancelled', () => {
     const groupId = 'g8';
     const [c0, c1] = seedGroup(groupId);
-    completeMissionTask(c0, 'result 0', 'completed');
+    settle(c0, 'result 0', 'completed');
     expect(getJoinMission(groupId)?.status).toBe('waiting');
 
     // Cancelling via the dashboard/CLI surface must release the parked join —
@@ -127,10 +136,39 @@ describe('gather / join primitive (Tier 3)', () => {
     expect(join?.prompt).toContain('(cancelled)');
   });
 
+  it('allows a parked join itself to be cancelled', () => {
+    seedGroup('waiting-cancel');
+    const join = getJoinMission('waiting-cancel')!;
+    expect(join.status).toBe('waiting');
+    expect(cancelMissionTask(join.id)).toBe(true);
+    expect(getMissionTask(join.id)?.status).toBe('cancelled');
+  });
+
+  it('releases an ordinary join when its last child is failed during restart recovery', () => {
+    const [interrupted, completed] = seedGroup('restart-failure');
+    expect(claimNextMissionTask('agent0')?.id).toBe(interrupted);
+    settle(completed, 'done', 'completed');
+
+    expect(failStuckMissionTasks('agent0', 'execution unknown')).toBe(1);
+    expect(getMissionTask(interrupted)?.status).toBe('failed');
+    expect(getJoinMission('restart-failure')?.status).toBe('queued');
+  });
+
+  it('does not release an old Crew join while quarantining interrupted history', () => {
+    const [interrupted, completed] = seedGroup('legacy-restart');
+    expect(claimNextMissionTask('agent0')?.id).toBe(interrupted);
+    _testMarkLegacyWorkflowMission(interrupted, 'retired-workflow');
+    settle(completed, 'done', 'completed');
+
+    expect(failStuckMissionTasks('agent0', 'execution unknown')).toBe(0);
+    expect(getMissionTask(interrupted)?.status).toBe('running');
+    expect(getJoinMission('legacy-restart')?.status).toBe('waiting');
+  });
+
   it('does not release or rewrite twice after repeated cancellation', () => {
     const groupId = 'g9';
     const [c0, c1] = seedGroup(groupId);
-    completeMissionTask(c0, 'result 0', 'completed');
+    settle(c0, 'result 0', 'completed');
 
     expect(cancelMissionTask(c1)).toBe(true);
     const released = getJoinMission(groupId);
@@ -147,7 +185,7 @@ describe('gather / join primitive (Tier 3)', () => {
 
     const groupId = 'g10';
     const [c0, c1] = seedGroup(groupId);
-    completeMissionTask(c0, 'result 0', 'completed');
+    settle(c0, 'result 0', 'completed');
     expect(cancelMissionTask(c1)).toBe(true);
     const released = getJoinMission(groupId);
     maybeReleaseJoinForMission(getMissionTask(c0)!);

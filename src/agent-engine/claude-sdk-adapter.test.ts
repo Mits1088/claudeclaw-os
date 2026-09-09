@@ -5,7 +5,6 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({ query: vi.fn() }));
 import { query } from '@anthropic-ai/claude-agent-sdk';
 import { ClaudeSdkEngineAdapter } from './claude-sdk-adapter.js';
 import type { AgentEngineEvent, AgentTurnInput } from './types.js';
-import { missionCoordinatorToolPolicy } from '../mission-coordinator-policy.js';
 
 const queryMock = vi.mocked(query);
 
@@ -83,35 +82,64 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
     expect(results[0]).toMatchObject({ text: 'ok', stopReason: 'success' });
   });
 
-  it('removes only the stale session while preserving coordinator permissions and MCP on fallback', async () => {
+  it('removes only the stale session while preserving explicit permissions and MCP config', async () => {
     queryMock
       .mockImplementationOnce(unresumableSessionQuery as never)
       .mockImplementationOnce(successQuery as never);
-    const mcpServers = {
-      'claudeclaw-dispatch': { command: process.execPath, args: ['dist/dispatch-mcp-server.js'] },
-    };
 
     const adapter = new ClaudeSdkEngineAdapter();
     await collect(adapter.invoke(turnInput({
       sessionId: 'dead-session-id',
       permissionMode: 'default',
       allowDangerouslySkipPermissions: false,
-      ...missionCoordinatorToolPolicy,
-      mcpServers,
+      allowedTools: ['Read'],
+      disallowedTools: ['Bash'],
+      mcpServers: { files: { command: 'safe-files' } },
     })));
 
-    expect(queryMock).toHaveBeenCalledTimes(2);
-    const first = (queryMock.mock.calls[0][0] as { options: Record<string, unknown> }).options;
-    const fallback = (queryMock.mock.calls[1][0] as { options: Record<string, unknown> }).options;
-    expect(first.resume).toBe('dead-session-id');
-    expect(fallback.resume).toBeUndefined();
-    expect(fallback).toMatchObject({
+    const secondOptions = (queryMock.mock.calls[1][0] as { options: Record<string, unknown> }).options;
+    expect(secondOptions).toMatchObject({
       permissionMode: 'default',
-      allowDangerouslySkipPermissions: false,
-      allowedTools: missionCoordinatorToolPolicy.allowedTools,
-      disallowedTools: missionCoordinatorToolPolicy.disallowedTools,
-      mcpServers,
+      allowedTools: ['Read'],
+      disallowedTools: ['Bash'],
+      mcpServers: { files: { command: 'safe-files' } },
     });
+    expect(secondOptions.resume).toBeUndefined();
+    expect(secondOptions).not.toHaveProperty('allowDangerouslySkipPermissions');
+  });
+
+  it('defaults direct calls to permission-aware mode and requires an explicit bypass grant', async () => {
+    queryMock.mockImplementation(successQuery as never);
+    const adapter = new ClaudeSdkEngineAdapter();
+
+    await collect(adapter.invoke(turnInput()));
+    await collect(adapter.invoke(turnInput({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    })));
+
+    const first = (queryMock.mock.calls[0][0] as { options: Record<string, unknown> }).options;
+    expect(first.permissionMode).toBe('default');
+    expect(first).not.toHaveProperty('allowDangerouslySkipPermissions');
+    const second = (queryMock.mock.calls[1][0] as { options: Record<string, unknown> }).options;
+    expect(second).toMatchObject({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: true,
+    });
+  });
+
+  it('narrows a contradictory bypass request instead of manufacturing the grant', async () => {
+    queryMock.mockImplementation(successQuery as never);
+    const adapter = new ClaudeSdkEngineAdapter();
+
+    await collect(adapter.invoke(turnInput({
+      permissionMode: 'bypassPermissions',
+      allowDangerouslySkipPermissions: false,
+    })));
+
+    const options = (queryMock.mock.calls[0][0] as { options: Record<string, unknown> }).options;
+    expect(options.permissionMode).toBe('default');
+    expect(options).not.toHaveProperty('allowDangerouslySkipPermissions');
   });
 
   it('does not retry when the turn did not request a resume', async () => {
@@ -123,31 +151,7 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
     const results = events.filter((e) => e.type === 'result');
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({
-      text: null,
-      stopReason: 'error_during_execution',
-      failure: { provider: 'claude', category: 'unknown', execution: 'started' },
-    });
-  });
-
-  it('keeps provider category separate from the positive started result', async () => {
-    queryMock.mockImplementationOnce((() => (async function* () {
-      yield {
-        type: 'result',
-        subtype: 'error_during_execution',
-        is_error: true,
-        result: '429 rate limit exceeded',
-      };
-    })()) as never);
-
-    const adapter = new ClaudeSdkEngineAdapter();
-    const events = await collect(adapter.invoke(turnInput()));
-
-    expect(events.at(-1)).toMatchObject({
-      type: 'result',
-      stopReason: 'error_during_execution',
-      failure: { provider: 'claude', category: 'rate_limit', execution: 'started' },
-    });
+    expect(results[0]).toMatchObject({ text: null, stopReason: 'error_during_execution' });
   });
 
   it('retries at most once and surfaces the second failure as a result', async () => {
@@ -161,27 +165,6 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
     expect(queryMock).toHaveBeenCalledTimes(2);
     const results = events.filter((e) => e.type === 'result');
     expect(results).toHaveLength(1);
-    expect(results[0]).toMatchObject({
-      text: null,
-      stopReason: 'error_during_execution',
-      failure: { provider: 'claude', category: 'unknown', execution: 'started' },
-    });
-  });
-
-  it('marks a no-event SDK throw unknown instead of inferring safe replay', async () => {
-    queryMock.mockImplementationOnce((async function* () {
-      throw new Error('network disconnected before the first event');
-    }) as never);
-
-    const adapter = new ClaudeSdkEngineAdapter();
-    let caught: unknown;
-    try {
-      await collect(adapter.invoke(turnInput()));
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toMatchObject({
-      failure: { provider: 'claude', category: 'unavailable', execution: 'unknown' },
-    });
+    expect(results[0]).toMatchObject({ text: null, stopReason: 'error_during_execution' });
   });
 });

@@ -1,5 +1,11 @@
 # Headless Workers
 
+Headless startup is currently blocked: process supervision alone is not OS
+isolation. The configuration and lifecycle reference below describes the retained
+worker primitives, not an enabled deployment path. Do not activate workers for
+testing or remove the startup guard without a separately reviewed isolation design.
+Messenger agents can still exchange ordinary mission tasks and handbacks.
+
 Headless workers are normal ClaudeClaw agents with a mission-only runtime. They use the same provider, model, agent instructions, mission scheduler, SQLite task state, and service lifecycle as messenger agents, but own no Telegram token and create no messenger transport.
 
 ## Configuration
@@ -36,7 +42,7 @@ graceful shutdown path. It does not delete the agent configuration, history,
 mission attribution, logs, or credentials. Deletion remains an explicit
 dashboard action.
 
-## Create and activate
+## Create and activate (reference only; startup is blocked)
 
 ```powershell
 node dist/agent-create-cli.js `
@@ -93,13 +99,12 @@ and stops. If a worker crashes while main remains running, its lease expires and
 it becomes unavailable for new work, but it is not automatically relaunched
 until explicit activation or the next main-process restart.
 
-The next hardening phase adds periodic reconciliation with bounded restart
-backoff and binds mission completion to the exact worker instance that claimed
-the mission. Desired activation state remains operator intent and will not be
-silently changed by crash-loop handling. See
+Mission completion is bound to the worker instance and claim generation that
+claimed the task. Periodic reconciliation and restart backoff remain outside this
+rollback's scope. Desired activation state remains operator intent. See
 [`docs/rfcs/headless-worker-supervision.md`](rfcs/headless-worker-supervision.md)
 for the accepted lifecycle and fencing specification.
 
-## Initial validation boundary
+## Future isolated-worker validation boundary
 
 The first production-style test should use two isolated headless workers with different provider paths, one Fable 5.1 and one OpenAI/Codex model. Give them bounded, read-only or disposable-worktree tasks, gather results back to `main`, and verify that no worker has a Telegram token or emits a direct notification. Commits, pushes, deployments, and external writes remain separately approved actions.

@@ -50,10 +50,8 @@ import {
   CliActionError,
   actionCancelMission,
   actionCancelMissionChain,
-  actionCancelMissionWorkflow,
   actionContinueMission,
   actionCreateMission,
-  actionCreateMissionWorkflow,
   actionCreateSchedule,
   actionDeleteSchedule,
   actionGather,
@@ -62,23 +60,11 @@ import {
   actionHivePath,
   actionHiveRead,
   actionListMissions,
-  actionListMissionWorkflows,
   actionListSchedules,
   actionMissionResult,
-  actionMissionWorkflowResult,
   actionPauseSchedule,
   actionResumeSchedule,
-  actionResumeMissionWorkflow,
-  actionTransitionMissionWorkflow,
-  resolveMissionDispatchScope,
 } from './cli-actions.js';
-import {
-  getMissionExecutionContext,
-  missionExecutionEnv,
-  runWithMissionExecutionContext,
-  type MissionExecutionContext,
-} from './mission-execution-context.js';
-import { missionEntryEnv, getMissionEntryKey, runWithMissionEntryKey } from './mission-entry-key.js';
 
 /** Name of the in-process MCP server. Tools surface as `mcp__claudeclaw__<name>`. */
 export const DISPATCH_SERVER_NAME = 'claudeclaw';
@@ -155,39 +141,15 @@ const HANDLERS: Record<string, Handler> = {
     ].join('\n');
   },
 
-  mission_workflow_create: (a) => {
-    const r = actionCreateMissionWorkflow({
-      objective: asStr(a.objective) ?? '',
-      prompt: asStr(a.prompt) ?? '',
-      agent: asStr(a.agent) ?? '',
-      owner: asStr(a.owner),
-      title: asStr(a.title),
-      priority: asNum(a.priority),
-      maxDepth: asNum(a.max_depth),
-      maxTasks: asNum(a.max_tasks),
-      maxFanout: asNum(a.max_fanout),
-      deadline: asStr(a.deadline),
-      at: asStr(a.at),
-      idempotencyKey: asStr(a.idempotency_key),
-    });
-    return [
-      `Durable workflow created: ${r.workflow.id}`,
-      `  Initial task: ${r.task.id} -> @${r.task.assigned_agent}`,
-      `  Owner:        @${r.workflow.owner_agent}`,
-      `  Bounds:       depth ${r.workflow.max_depth}, tasks ${r.workflow.max_tasks}, fan-out ${r.workflow.max_fanout}`,
-    ].join('\n');
-  },
-
   mission_handback: (a) => {
     const r = actionHandbackMission({
       taskId: asStr(a.task_id) ?? '',
       report: asStr(a.report) ?? '',
       priority: asNum(a.priority),
     });
-    const verb = r.duplicate ? 'Handback already delivered' : 'Handback delivered';
     return r.kind === 'agent'
-      ? `${verb} to @${r.dest} (originator of ${r.parentId}). Mission: ${r.missionId}`
-      : `${r.duplicate ? 'Handback already routed' : 'Handback routed'} to @${r.dest} to surface to the human (${r.reason}). Mission: ${r.missionId}`;
+      ? `Handback delivered to @${r.dest} (originator of ${r.parentId}). Mission: ${r.missionId}`
+      : `Handback routed to @${r.dest} to surface to the human (${r.reason}). Mission: ${r.missionId}`;
   },
 
   mission_continue: (a) => {
@@ -204,55 +166,6 @@ const HANDLERS: Record<string, Handler> = {
     return r.alreadyCancelled
       ? `Continuation chain ${r.chainId} is already cancelled.`
       : `Cancelled continuation chain ${r.chainId}; ${r.cancelledTasks} queued task(s) stopped.`;
-  },
-
-  mission_transition: (a) => {
-    const r = actionTransitionMissionWorkflow({
-      coordinatorTaskId: asStr(a.coordinator_task_id) ?? '',
-      disposition: asStr(a.disposition) ?? '',
-      idempotencyKey: asStr(a.idempotency_key) ?? '',
-      agent: asStr(a.agent),
-      prompt: asStr(a.prompt),
-      tasks: Array.isArray(a.tasks) ? (a.tasks as unknown[]).map(String) : undefined,
-      reason: asStr(a.reason),
-      priority: asNum(a.priority),
-    });
-    const suffix = r.createdTaskIds.length > 0 ? ` Tasks: ${r.createdTaskIds.join(', ')}` : '';
-    return `${r.duplicate ? 'Existing' : 'Applied'} workflow transition ${r.disposition}; workflow ${r.workflowId} is ${r.workflowStatus}.${suffix}`;
-  },
-
-  mission_workflow_list: (a) => {
-    const workflows = actionListMissionWorkflows({ status: asStr(a.status) });
-    if (workflows.length === 0) return 'No durable mission workflows.';
-    return [
-      `${workflows.length} durable mission workflow${workflows.length === 1 ? '' : 's'}:`,
-      ...workflows.map((workflow) => `${workflow.id} [${workflow.status}] @${workflow.owner_agent} — ${truncate(workflow.objective, 80)}`),
-    ].join('\n');
-  },
-
-  mission_workflow_result: (a) => {
-    const r = actionMissionWorkflowResult({ id: asStr(a.id) ?? '' });
-    return [
-      `Workflow: ${r.workflow.id} [${r.workflow.status}]`,
-      `Owner: @${r.workflow.owner_agent}`,
-      `Objective: ${r.workflow.objective}`,
-      `Bounds: depth limit ${r.workflow.max_depth}; tasks ${r.workflow.tasks_created}/${r.workflow.max_tasks}; fan-out ${r.workflow.max_fanout}`,
-      `Control turns: ${r.workflow.current_step}`,
-      `Tasks: ${r.tasks.length}; outcomes: ${r.outcomes.length}; transitions: ${r.transitions.length}`,
-      ...(r.workflow.terminal_reason ? [`Reason: ${r.workflow.terminal_reason}`] : []),
-    ].join('\n');
-  },
-
-  mission_workflow_cancel: (a) => {
-    const r = actionCancelMissionWorkflow({ id: asStr(a.id) ?? '' });
-    return r.alreadyCancelled
-      ? `Workflow ${r.workflowId} is already cancelled.`
-      : `Cancelled workflow ${r.workflowId}; ${r.cancelledTasks} queued task(s) stopped.`;
-  },
-
-  mission_workflow_resume: (a) => {
-    const r = actionResumeMissionWorkflow({ id: asStr(a.id) ?? '', answer: asStr(a.answer) ?? '' });
-    return `Workflow ${r.workflowId} resumed from human input. Coordinator task: ${r.coordinatorTaskId}`;
   },
 
   mission_gather: (a) => {
@@ -417,11 +330,7 @@ export interface DispatchToolDefinition {
  * Claude turns) and the standalone stdio server in `dispatch-mcp-server.ts` (for
  * out-of-process providers). One handler, one derived schema, zero drift.
  */
-export function dispatchToolDefinitions(
-  opts: { executionContext?: MissionExecutionContext } = {},
-): DispatchToolDefinition[] {
-  const capturedContext = opts.executionContext ?? getMissionExecutionContext();
-  const capturedEntryKey = getMissionEntryKey();
+export function dispatchToolDefinitions(): DispatchToolDefinition[] {
   return dispatchToolEntries().map((entry) => {
     const raw = HANDLERS[entry.spec.name];
     if (!raw) {
@@ -435,12 +344,7 @@ export function dispatchToolDefinitions(
       schema: entry.schema,
       handler: async (args: Record<string, unknown>): Promise<DispatchToolResult> => {
         try {
-          const invoke = () => capturedEntryKey
-            ? runWithMissionEntryKey(capturedEntryKey, () => textResult(raw(args)))
-            : textResult(raw(args));
-          return capturedContext
-            ? runWithMissionExecutionContext(capturedContext, invoke)
-            : invoke();
+          return textResult(raw(args));
         } catch (e) {
           if (e instanceof CliActionError) return textResult(e.message, true);
           return textResult(
@@ -462,48 +366,10 @@ export function dispatchToolDefinitions(
  */
 export const EGRESS_GATED_TOOLS = new Set<string>(['hive_read']);
 
-/**
- * Alternate orchestration surfaces a durable-workflow turn must not use. The
- * coordinator owns workflow progress solely through mission_transition; worker
- * outcomes are consumed by the scheduler. Filtering this list at registration
- * is required for Codex, whose MCP names do not honor Claude disallowedTools.
- */
-export const WORKFLOW_SCOPED_HIDDEN_TOOLS = new Set<string>([
-  'mission_create',
-  'mission_gather',
-  'mission_continue',
-  'mission_handback',
-  'mission_workflow_create',
-  'schedule_create',
-  'schedule_list',
-  'schedule_delete',
-  'schedule_pause',
-  'schedule_resume',
-]);
-
-export function workflowScopedDispatchToolDefinitions(
-  definitions: DispatchToolDefinition[] = dispatchToolDefinitions(),
-): DispatchToolDefinition[] {
-  const scope = resolveMissionDispatchScope();
-  if (scope.kind === 'unscoped' || scope.kind === 'simple') return definitions;
-  return definitions.filter((definition) => {
-    if (!['mission_transition', 'mission_result', 'mission_workflow_result', 'mission_workflow_list'].includes(definition.name)) return false;
-    if (WORKFLOW_SCOPED_HIDDEN_TOOLS.has(definition.name)) return false;
-    // Only a validated, currently-running coordinator receives the transition
-    // tool. A workflow worker (or invalid explicit identity) cannot impersonate
-    // a coordinator by supplying another task id in the arguments.
-    if (definition.name === 'mission_transition') {
-      return scope.kind === 'workflow-coordinator';
-    }
-    return true;
-  });
-}
-
 /** Build the Anthropic SDK tool definitions for every promoted command (in-process, Claude path). */
 export function buildDispatchSdkTools(opts: { allowHiveRead?: boolean } = {}) {
   const allowHiveRead = opts.allowHiveRead ?? true;
-  const executionContext = getMissionExecutionContext();
-  return workflowScopedDispatchToolDefinitions(dispatchToolDefinitions({ executionContext }))
+  return dispatchToolDefinitions()
     .filter((def) => allowHiveRead || !EGRESS_GATED_TOOLS.has(def.name))
     .map((def) => tool(def.name, def.description, def.schema, def.handler));
 }
@@ -528,16 +394,6 @@ export function getDispatchMcpServer(
   opts: { allowHiveRead?: boolean } = {},
 ): McpSdkServerConfigWithInstance {
   const allowHiveRead = opts.allowHiveRead ?? true;
-  const executionContext = getMissionExecutionContext();
-  // Scoped handlers capture a task identity, so never share their server with
-  // another concurrent turn. Unscoped interactive servers remain cacheable.
-  if (executionContext || getMissionEntryKey()) {
-    return createSdkMcpServer({
-      name: DISPATCH_SERVER_NAME,
-      version: '1.0.0',
-      tools: buildDispatchSdkTools({ allowHiveRead }),
-    });
-  }
   const key = allowHiveRead ? 'full' : 'no-hive-read';
   let server = cachedServers.get(key);
   if (!server) {
@@ -578,9 +434,8 @@ export const DISPATCH_STDIO_SERVER_NAME = 'claudeclaw-dispatch';
  * MCP server on its own (see `dispatchMcpServersFor`).
  */
 function codexDispatchStdioEntry(): McpStdioConfig {
-  const executionContext = getMissionExecutionContext();
   const env: Record<string, string> = {
-    CLAUDECLAW_DISPATCH_AGENT: executionContext?.actor ?? process.env.CLAUDECLAW_AGENT_ID ?? 'main',
+    CLAUDECLAW_DISPATCH_AGENT: process.env.CLAUDECLAW_AGENT_ID ?? 'main',
     CLAUDECLAW_CONFIG,
     // STORE_DIR and DB_ENCRYPTION_KEY resolve from the runtime-root .env INTO
     // config (envConfig), NOT into process.env. The spawned server runs with a
@@ -589,8 +444,6 @@ function codexDispatchStdioEntry(): McpStdioConfig {
     // the first DB-touching tool call (e.g. mission_create) fails while tool
     // listing, which needs no DB, still looks healthy.
     CLAUDECLAW_STORE_DIR: STORE_DIR,
-    ...missionExecutionEnv(executionContext),
-    ...missionEntryEnv(),
   };
   if (DB_ENCRYPTION_KEY) env.DB_ENCRYPTION_KEY = DB_ENCRYPTION_KEY;
   // Forward the CONFIG-resolved hive-read flag (reads process.env OR .env), not

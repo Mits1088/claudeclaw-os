@@ -6,7 +6,6 @@ import * as acp from '@agentclientprotocol/sdk';
 
 import { PROJECT_ROOT } from '../config.js';
 import { logger } from '../logger.js';
-import { outboundText } from '../outbound-payload.js';
 import { VERSION } from '../version.js';
 import type { ProviderConfig } from '../provider.js';
 import { getScrubbedSdkEnv } from '../security.js';
@@ -556,10 +555,8 @@ export class AcpEngineAdapter implements AgentEngine {
 
     let stderr = '';
     child.stderr?.on('data', (chunk: Buffer) => {
-      if (stderr === '[stderr withheld: buffer limit exceeded]') return;
-      const next = chunk.toString();
-      stderr = stderr.length + next.length <= 8000
-        ? stderr + next : '[stderr withheld: buffer limit exceeded]';
+      stderr += chunk.toString();
+      if (stderr.length > 8000) stderr = stderr.slice(-8000);
     });
 
     const client = new ClaudeClawAcpClient((event) => pending.push(event), {
@@ -830,10 +827,10 @@ export class AcpEngineAdapter implements AgentEngine {
 
       const errorMessage = err instanceof Error ? err.message : String(err);
       if (errorMessage.includes('connection closed') && stderr.includes('is not recognized as an internal or external command')) {
-        throw new Error(`Failed to start ACP provider command "${command}": ${outboundText(stderr, 'acp.stderr').trim()}`);
+        throw new Error(`Failed to start ACP provider command "${command}": ${stderr.trim()}`);
       }
 
-      logger.error({ err: outboundText(errorMessage, 'acp.error'), stderr: outboundText(stderr, 'acp.stderr') }, 'ACP provider query failed');
+      logger.error({ err, stderr }, 'ACP provider query failed');
       const data = (err as { data?: { details?: unknown } })?.data;
       if (typeof data?.details === 'string') throw new Error(data.details);
       throw err;

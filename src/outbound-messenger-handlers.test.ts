@@ -32,17 +32,11 @@ vi.mock('./memory.js', async () => {
 });
 vi.mock('./message-queue.js', () => ({ messageQueue: { enqueue: (_key: string, task: () => Promise<void>) => fixture.pending.push(task()), queuedFor: () => 0 } }));
 vi.mock('./active-provider.js', () => ({ getSelectedProviderConfig: () => ({ type: 'claude', model: 'fixture' }), defaultModelForProvider: () => 'fixture' }));
-vi.mock('./mission-provider-policy.js', () => ({ loadMissionProviderPolicy: () => ({ fallbackProviders: [], maxAttempts: 2,
-  maxRuntimeSeconds: 60, cooldownSeconds: 60, retryRateLimit: false }) }));
 vi.mock('./voice.js', () => ({ voiceCapabilities: () => ({ tts: fixture.voice, stt: false }),
   synthesizeSpeech: async () => { throw new Error('Synthetic TTS failure'); } }));
 vi.mock('./agent-engine/index.js', () => ({ engineSupportsSystemPrompt: () => true, EngineFactory: { forProvider: () => ({
   async *invoke() {
     fixture.calls++;
-    if (fixture.mode === 'retry' && fixture.calls === 1) {
-      yield { type: 'result', text: null, usage: null, failure: { provider: 'claude', category: 'unavailable', execution: 'not_started', message: 'Synthetic unavailable' } };
-      return;
-    }
     yield { type: 'progress', progress: { type: 'task_started', toolCallId: 'fixture', description: fixture.secret, kind: 'other' } };
     if (fixture.mode === 'error') throw new Error(fixture.secret);
     if (fixture.mode === 'failed-result') {
@@ -97,7 +91,7 @@ beforeEach(() => {
 });
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
 
-it.each(['signal', 'mattermost'] as const)('captures %s handler success/error/abort/retry and routing at physical transport boundaries', async transport => {
+it.each(['signal', 'mattermost'] as const)('captures %s handler success/error/abort and routing at physical transport boundaries', async transport => {
   const bot = transport === 'signal' ? createSignalBot() : createMattermostBot();
   const events: string[] = [];
   const capture = (event: unknown) => events.push(JSON.stringify(event));
@@ -106,7 +100,7 @@ it.each(['signal', 'mattermost'] as const)('captures %s handler success/error/ab
   chatEvents.on('chat', capture);
   try {
     await bot.start();
-    for (const mode of ['success', 'error', 'abort', 'failed-result', 'retry', ...(transport === 'signal' ? ['group', 'voice-fallback'] : [])]) {
+    for (const mode of ['success', 'error', 'abort', 'failed-result', ...(transport === 'signal' ? ['group', 'voice-fallback'] : [])]) {
       fixture.mode = mode; fixture.calls = 0; fixture.pending = []; fixture.bytes = [];
       if (mode === 'voice-fallback') {
         fixture.voice = true;
@@ -121,7 +115,7 @@ it.each(['signal', 'mattermost'] as const)('captures %s handler success/error/ab
       else fixture.mattermost.emit('message', { userId: 'owner', channelId: chat, teamId: 'team',
         channelType: 'O', message: 'Synthetic request', postId: 'post', rootId: 'thread', files: [], mentions: [] });
       await Promise.all(fixture.pending);
-      expect(fixture.calls, mode).toBe(mode === 'retry' ? 2 : 1);
+      expect(fixture.calls, mode).toBe(1);
       expect(fixture.bytes.length, mode).toBeGreaterThan(0);
       expect(fixture.bytes.join(''), mode).not.toContain('alpha');
       expect(fixture.audit.join(''), mode).not.toContain('alpha');

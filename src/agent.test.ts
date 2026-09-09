@@ -11,7 +11,6 @@ vi.mock('./env.js', () => ({
 }));
 
 vi.mock('./config.js', () => ({
-  AGENT_ID: 'fixture',
   AGENT_MAX_TURNS: 30,
   AGENT_IDLE_TIMEOUT_MS: 900000,
   AGENT_MAX_RUNTIME_MS: 3600000,
@@ -19,12 +18,12 @@ vi.mock('./config.js', () => ({
   agentCwd: undefined,
   agentSystemPrompt: undefined,
   ENABLE_ACP: true,
-  EXFILTRATION_GUARD_ENABLED: true,
-  PROTECTED_ENV_VARS: [],
   DEFAULT_CLAUDE_MODEL: 'claude-opus-4-8',
   CLAUDE_MODEL_OPUS: 'claude-opus-4-8',
   CLAUDE_MODEL_SONNET: 'claude-sonnet-4-6',
   CLAUDE_MODEL_HAIKU: 'claude-haiku-4-5',
+  EXFILTRATION_GUARD_ENABLED: false,
+  PROTECTED_ENV_VARS: [],
 }));
 
 vi.mock('./logger.js', () => ({
@@ -35,13 +34,9 @@ vi.mock('./logger.js', () => ({
   },
 }));
 
-vi.mock('./db.js', () => ({ claimProviderHealth: () => ({ allowed: true }), recordProviderHealth: () => null,
-  getRecentMissionReportContext: () => '' }));
-vi.mock('./mission-provider-policy.js', () => ({ loadMissionProviderPolicy: () => ({ fallbackProviders: [], maxAttempts: 3, maxRuntimeSeconds: 600, cooldownSeconds: 60, retryRateLimit: true }) }));
-
 import { emptyTurnReply, isFailedTurn, runAgentWithRetry, type AgentResult } from './agent.js';
+import { EngineFactory, withExecutionCertainty } from './agent-engine/index.js';
 import { query } from '@anthropic-ai/claude-agent-sdk';
-import { logger } from './logger.js';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const mockQuery = query as any;
@@ -71,6 +66,7 @@ function resultEvent(text: string) {
 
 describe('runAgentWithRetry', () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -84,6 +80,22 @@ describe('runAgentWithRetry', () => {
     const result = await runAgentWithRetry('hi', undefined, noop, undefined, undefined, undefined, undefined, undefined, undefined, undefined, claudeProvider);
     expect(result.text).toBe('Hello!');
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('honors an explicit no-bypass provider configuration', async () => {
+    mockQuery.mockReturnValue(mockQueryEvents([
+      { type: 'system', subtype: 'init', session_id: 'sess-1' },
+      resultEvent('Restricted'),
+    ])() as any);
+
+    await runAgentWithRetry(
+      'hi', undefined, noop, undefined, undefined, undefined, undefined, undefined,
+      undefined, undefined, { type: 'claude', dangerouslySkipPermissions: false },
+    );
+
+    const options = (mockQuery.mock.calls[0][0] as { options: Record<string, unknown> }).options;
+    expect(options.permissionMode).toBe('default');
+    expect(options).not.toHaveProperty('allowDangerouslySkipPermissions');
   });
 
   it('surfaces context compaction as a durable progress notice', async () => {
@@ -120,7 +132,7 @@ describe('runAgentWithRetry', () => {
     });
   });
 
-  it('retries on retryable error and succeeds on second attempt', async () => {
+  it('does not replay a retryable error without positive not-started evidence', async () => {
     const retryableError = new AgentError('rate_limit', {
       shouldRetry: true,
       shouldNewChat: false,
@@ -128,9 +140,6 @@ describe('runAgentWithRetry', () => {
       retryAfterMs: 100,
       userMessage: 'Rate limited. Retrying in 30s...',
     });
-    Object.assign(retryableError, { failure: {
-      category: 'rate_limit', execution: 'not_started', provider: 'claude', message: 'rate limit',
-    } });
 
     let callCount = 0;
     mockQuery.mockImplementation(() => {
@@ -143,15 +152,13 @@ describe('runAgentWithRetry', () => {
     });
 
     const onRetry = vi.fn();
-    const result = await runAgentWithRetry(
+    await expect(runAgentWithRetry(
       'hi', undefined, noop, undefined, undefined, undefined, undefined, onRetry, undefined, undefined, claudeProvider,
-    );
+    )).rejects.toThrow(AgentError);
 
-    expect(result.text).toBe('Recovered!');
-    expect(callCount).toBe(2);
-    expect(onRetry).toHaveBeenCalledTimes(1);
-    expect(onRetry).toHaveBeenCalledWith(1, expect.objectContaining({ category: 'rate_limit' }));
-  }, 15000);
+    expect(callCount).toBe(1);
+    expect(onRetry).not.toHaveBeenCalled();
+  });
 
   it('does not retry non-retryable errors', async () => {
     const authError = new AgentError('auth', {
@@ -168,7 +175,7 @@ describe('runAgentWithRetry', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('gives up after max retries', async () => {
+  it('retries a transient error only when the engine proves the prompt did not start', async () => {
     const retryableError = new AgentError('subprocess_crash', {
       shouldRetry: true,
       shouldNewChat: false,
@@ -176,27 +183,31 @@ describe('runAgentWithRetry', () => {
       retryAfterMs: 100,
       userMessage: 'Subprocess crashed',
     });
-    Object.assign(retryableError, { failure: {
-      category: 'unavailable', execution: 'not_started', provider: 'claude', message: 'subprocess failed before send',
-    } });
 
-    mockQuery.mockImplementation(() => { throw retryableError; });
+    let attempts = 0;
+    vi.spyOn(EngineFactory, 'forProvider').mockReturnValue({
+      async *invoke() {
+        attempts++;
+        if (attempts === 1) throw withExecutionCertainty(retryableError, 'not_started');
+        yield { type: 'result', text: 'Recovered safely', usage: null, stopReason: 'success' };
+      },
+    });
 
     const onRetry = vi.fn();
-    await expect(
-      runAgentWithRetry('hi', undefined, noop, undefined, undefined, undefined, undefined, onRetry, undefined, undefined, claudeProvider),
-    ).rejects.toThrow(AgentError);
+    const result = await runAgentWithRetry(
+      'hi', undefined, noop, undefined, undefined, undefined, undefined, onRetry, undefined, undefined, claudeProvider,
+    );
 
-    // 1 initial + 2 retries = 3 total calls
-    expect(mockQuery).toHaveBeenCalledTimes(3);
-    expect(onRetry).toHaveBeenCalledTimes(2);
-  }, 30000);
+    expect(result.text).toBe('Recovered safely');
+    expect(attempts).toBe(2);
+    expect(onRetry).toHaveBeenCalledTimes(1);
+  }, 15000);
 
   it('returns aborted result when abort controller is pre-aborted', async () => {
     const abortCtrl = new AbortController();
     abortCtrl.abort();
 
-    // Pre-aborted turns stop before health admission or SDK invocation.
+    // The SDK returns {aborted: true} when pre-aborted, runAgent returns it directly
     mockQuery.mockReturnValue(mockQueryEvents([
       { type: 'system', subtype: 'init', session_id: 'sess-1' },
       resultEvent('partial'),
@@ -212,7 +223,7 @@ describe('runAgentWithRetry', () => {
       'hi', undefined, noop, undefined, undefined, abortCtrl, undefined, undefined, undefined, undefined, claudeProvider,
     );
     expect(result.aborted).toBe(true);
-    expect(mockQuery).toHaveBeenCalledTimes(0);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
   it('non-AgentError exceptions are classified then thrown', async () => {
@@ -226,25 +237,7 @@ describe('runAgentWithRetry', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
-  it('does not replay a transient SDK throw when delivery is unknown', async () => {
-    const transient = new AgentError('network', {
-      shouldRetry: true,
-      shouldNewChat: false,
-      shouldSwitchModel: false,
-      retryAfterMs: 1,
-      userMessage: 'network unavailable',
-    });
-    mockQuery.mockImplementation(() => { throw transient; });
-
-    await expect(
-      runAgentWithRetry('hi', undefined, noop, undefined, undefined, undefined, undefined, undefined, undefined, undefined, claudeProvider),
-    ).rejects.toMatchObject({
-      failure: { category: 'unavailable', execution: 'unknown', provider: 'claude' },
-    });
-    expect(mockQuery).toHaveBeenCalledTimes(1);
-  });
-
-  it('warns once without legacy values and never authorizes legacy model switching', async () => {
+  it('uses a configured fallback model only after a proven not-started failure', async () => {
     const overloadedError = new AgentError('overloaded', {
       shouldRetry: true,
       shouldNewChat: false,
@@ -252,21 +245,16 @@ describe('runAgentWithRetry', () => {
       retryAfterMs: 100,
       userMessage: 'Overloaded',
     });
-    Object.assign(overloadedError, { failure: {
-      category: 'unavailable', execution: 'not_started', provider: 'claude', message: 'overloaded before send',
-    } });
 
     let callCount = 0;
     const capturedModels: (string | undefined)[] = [];
-    mockQuery.mockImplementation((opts: unknown) => {
+    vi.spyOn(EngineFactory, 'forProvider').mockReturnValue({
+      async *invoke(opts) {
       callCount++;
-      const options = (opts as Record<string, unknown>)?.options as Record<string, unknown> | undefined;
-      capturedModels.push(options?.model as string | undefined);
-      if (callCount === 1) throw overloadedError;
-      return mockQueryEvents([
-        { type: 'system', subtype: 'init', session_id: 'sess-1' },
-        resultEvent('Fallback worked'),
-      ])();
+        capturedModels.push(opts.model);
+        if (callCount === 1) throw withExecutionCertainty(overloadedError, 'not_started');
+        yield { type: 'result', text: 'Fallback worked', usage: null, stopReason: 'success' };
+      },
     });
 
     const result = await runAgentWithRetry(
@@ -277,19 +265,7 @@ describe('runAgentWithRetry', () => {
 
     expect(result.text).toBe('Fallback worked');
     expect(capturedModels[0]).toBe('claude-opus-4-6');
-    expect(capturedModels[1]).toBe('claude-opus-4-6');
-    const deprecationWarnings = () => vi.mocked(logger.warn).mock.calls
-      .filter((args) => String(args[0]).includes('MODEL_FALLBACK_CHAIN'));
-    expect(deprecationWarnings()).toEqual([[
-      'MODEL_FALLBACK_CHAIN is deprecated and ignored; configure the agent.yaml fallback policy instead',
-    ]]);
-    await runAgentWithRetry(
-      'hi again', undefined, noop, undefined,
-      'claude-opus-4-6', undefined, undefined, undefined,
-      ['private-legacy-value'], undefined, claudeProvider,
-    );
-    expect(deprecationWarnings()).toHaveLength(1);
-    expect(capturedModels[2]).toBe('claude-opus-4-6');
+    expect(capturedModels[1]).toBe('claude-sonnet-4-6');
   }, 15000);
 });
 

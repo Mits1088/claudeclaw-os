@@ -1,4 +1,3 @@
-import { outboundText } from '../outbound-payload.js';
 /**
  * Turn a raw shell command into a readable one-line progress label.
  *
@@ -36,3 +35,4 @@ export function summarizeCommand(command: string, max = 80): string {
   rest = rest.replace(/\s*2>&1\s*$/, '').trim();
   return truncate(rest || command, max);
 }
+import { outboundText } from '../outbound-payload.js';

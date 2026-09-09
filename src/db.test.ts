@@ -5,6 +5,7 @@ import os from 'os';
 import path from 'path';
 import {
   _initTestDatabase,
+  _testMarkLegacyWorkflowMission,
   migrateDbFile,
   setSession,
   getSession,
@@ -36,6 +37,9 @@ import {
   createMissionTask,
   claimNextMissionTask,
   completeMissionTask,
+  cancelMissionTask,
+  cleanupOldMissionTasks,
+  missionClaimIsCurrent,
   getMissionTask,
   beginWorkerSupervisorEpoch,
   ensureWorkerDesiredState,
@@ -43,6 +47,7 @@ import {
   heartbeatWorkerLease,
   isWorkerLeaseCurrent,
   getAgentDeletionBlockers,
+  resetStuckMissionTasks,
   failStuckMissionTasks,
   getWorkerRuntime,
   markWorkerTaskScopeStarted,
@@ -620,7 +625,7 @@ describe('mission task claim/complete', () => {
   it('completeMissionTask sets status and completed_at (no stuck running)', () => {
     createMissionTask('m3', 'T3', 'finish me', 'amos');
     claimNextMissionTask('amos');
-    completeMissionTask('m3', 'all done', 'completed');
+    expect(completeMissionTask('m3', 'all done', 'completed')).toBe(true);
     const t = getMissionTask('m3');
     expect(t?.status).toBe('completed');
     expect(t?.result).toBe('all done');
@@ -656,6 +661,30 @@ describe('mission task claim/complete', () => {
     expect(t?.error).toBe('boom');
     expect(t?.completed_at).toBeGreaterThan(0);
   });
+
+  it('rejects completion before claim and every late completion after terminal state', () => {
+    createMissionTask('terminal-guard', 'Guard', 'work', 'amos');
+    expect(completeMissionTask('terminal-guard', 'never ran', 'completed')).toBe(false);
+    expect(getMissionTask('terminal-guard')?.status).toBe('queued');
+
+    expect(claimNextMissionTask('amos')?.id).toBe('terminal-guard');
+    expect(cancelMissionTask('terminal-guard')).toBe(true);
+    expect(completeMissionTask('terminal-guard', 'late result', 'completed')).toBe(false);
+    expect(getMissionTask('terminal-guard')).toMatchObject({ status: 'cancelled', result: null });
+  });
+
+  it('quarantines legacy workflow rows without blocking ordinary one-shot work', () => {
+    createMissionTask('legacy-running', 'Old coordinator', 'do not run', 'amos');
+    expect(claimNextMissionTask('amos')?.id).toBe('legacy-running');
+    _testMarkLegacyWorkflowMission('legacy-running', 'retired-workflow');
+    createMissionTask('ordinary', 'Ordinary', 'run me', 'amos');
+    createMissionTask('legacy-queued', 'Old worker', 'do not run', 'amos');
+    _testMarkLegacyWorkflowMission('legacy-queued', 'retired-workflow');
+
+    expect(claimNextMissionTask('amos')?.id).toBe('ordinary');
+    expect(getMissionTask('legacy-running')?.status).toBe('running');
+    expect(getMissionTask('legacy-queued')?.status).toBe('queued');
+  });
 });
 
 describe('headless worker lease fencing', () => {
@@ -672,7 +701,27 @@ describe('headless worker lease fencing', () => {
     })).toBe(true);
     createMissionTask('lease-ok', 'leased', 'run it', 'ashford');
 
-    expect(claimNextMissionTask('ashford', 'worker-1')?.id).toBe('lease-ok');
+    const claimed = claimNextMissionTask('ashford', 'worker-1');
+    expect(claimed?.id).toBe('lease-ok');
+    const fence = { agentId: 'ashford', instanceId: 'worker-1', generation: claimed!.claim_generation };
+    expect(missionClaimIsCurrent('lease-ok', fence)).toBe(true);
+    expect(completeMissionTask('lease-ok', 'wrong owner', 'completed')).toBe(false);
+    expect(completeMissionTask('lease-ok', 'done', 'completed', undefined, fence)).toBe(true);
+  });
+
+  it('rejects completion from a replaced worker generation', () => {
+    acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-old', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    });
+    createMissionTask('stale-completion', 'Stale', 'work', 'ashford');
+    const claimed = claimNextMissionTask('ashford', 'worker-old')!;
+    const fence = { agentId: 'ashford', instanceId: 'worker-old', generation: claimed.claim_generation };
+
+    beginWorkerSupervisorEpoch('epoch-2', 'build-2');
+    expect(missionClaimIsCurrent('stale-completion', fence)).toBe(false);
+    expect(completeMissionTask('stale-completion', 'late', 'completed', undefined, fence)).toBe(false);
+    expect(getMissionTask('stale-completion')?.status).toBe('running');
   });
 
   it('fences the old process immediately when the supervisor epoch changes', () => {
@@ -755,6 +804,46 @@ describe('headless worker lease fencing', () => {
     });
   });
 
+  it('leaves retained Crew workflow rows inert during startup recovery', () => {
+    createMissionTask('legacy-running', 'Legacy Crew task', 'historical work', 'ashford');
+    expect(claimNextMissionTask('ashford')?.id).toBe('legacy-running');
+    _testMarkLegacyWorkflowMission('legacy-running', 'retained-workflow');
+
+    createMissionTask('ordinary-running', 'Ordinary task', 'work', 'ashford');
+    expect(claimNextMissionTask('ashford')?.id).toBe('ordinary-running');
+
+    expect(resetStuckMissionTasks('ashford')).toBe(1);
+    expect(getMissionTask('ordinary-running')?.status).toBe('failed');
+    expect(getMissionTask('legacy-running')?.status).toBe('running');
+  });
+
+  it('preserves retained Crew workflow history during ordinary cleanup', () => {
+    createMissionTask('legacy-history', 'Legacy Crew task', 'historical work', 'ashford');
+    expect(claimNextMissionTask('ashford')?.id).toBe('legacy-history');
+    _testMarkLegacyWorkflowMission('legacy-history', 'retained-workflow');
+    expect(completeMissionTask('legacy-history', 'historical result', 'completed')).toBe(true);
+
+    createMissionTask('ordinary-history', 'Ordinary task', 'work', 'ashford');
+    expect(claimNextMissionTask('ashford')?.id).toBe('ordinary-history');
+    expect(completeMissionTask('ordinary-history', 'done', 'completed')).toBe(true);
+
+    expect(cleanupOldMissionTasks(-1)).toBe(1);
+    expect(getMissionTask('ordinary-history')).toBeNull();
+    expect(getMissionTask('legacy-history')?.status).toBe('completed');
+  });
+
+  it('does not fail a running claim while its exact worker lease is current', () => {
+    acquireWorkerLease({
+      agentId: 'ashford', instanceId: 'worker-current', supervisorEpoch: 'epoch-1',
+      pid: 123, processStartedAt: 100, runtimeBuildId: 'build-1',
+    });
+    createMissionTask('still-running', 'Current', 'work', 'ashford');
+    expect(claimNextMissionTask('ashford', 'worker-current')?.id).toBe('still-running');
+
+    expect(failStuckMissionTasks('ashford', 'do not overwrite')).toBe(0);
+    expect(getMissionTask('still-running')?.status).toBe('running');
+  });
+
   it('deactivates an armed task scope after its assigned and delegated work drains', () => {
     expect(acquireWorkerLease({
       agentId: 'ashford', instanceId: 'worker-1', supervisorEpoch: 'epoch-1',
@@ -767,8 +856,10 @@ describe('headless worker lease fencing', () => {
     expect(deactivateWorkerIfTaskScopeDrained('ashford', 'worker-1')).toBe(false);
     expect(getWorkerRuntime('ashford')?.desired_state).toBe('active');
 
-    claimNextMissionTask('ashford', 'worker-1');
-    completeMissionTask('root', 'done', 'completed', undefined, { agentId: 'ashford', instanceId: 'worker-1', generation: 1 });
+    const claimed = claimNextMissionTask('ashford', 'worker-1')!;
+    completeMissionTask('root', 'done', 'completed', undefined, {
+      agentId: 'ashford', instanceId: 'worker-1', generation: claimed.claim_generation,
+    });
     claimNextMissionTask('dawes');
     completeMissionTask('child', 'done', 'completed');
 
@@ -889,7 +980,7 @@ describe('migrateDbFile', () => {
     db.close();
   });
 
-  it('adds mission availability and transition gates without changing existing tasks', () => {
+  it('adds mission safety and legacy quarantine columns without changing existing tasks', () => {
     const legacy = new Database(dbPath);
     legacy.exec(`
       CREATE TABLE mission_tasks (
@@ -912,8 +1003,8 @@ describe('migrateDbFile', () => {
     expect(cols.some((c) => c.name === 'available_at')).toBe(true);
     expect(cols.some((c) => c.name === 'transition_key')).toBe(true);
     expect(cols.some((c) => c.name === 'workflow_id')).toBe(true);
-    expect(cols.some((c) => c.name === 'workflow_depth')).toBe(true);
-    expect(cols.some((c) => c.name === 'source_outcome_id')).toBe(true);
+    expect(cols.some((c) => c.name === 'claiming_instance_id')).toBe(true);
+    expect(cols.some((c) => c.name === 'claim_generation')).toBe(true);
     expect(migrated.prepare(
       `SELECT id, status, available_at FROM mission_tasks WHERE id = 'legacy-mission'`,
     ).get()).toEqual({ id: 'legacy-mission', status: 'queued', available_at: null });
@@ -925,13 +1016,6 @@ describe('migrateDbFile', () => {
       `SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'idx_mission_transition_key'`,
     ).get() as { name: string } | undefined;
     expect(transitionIndex?.name).toBe('idx_mission_transition_key');
-    const workflowTables = migrated.prepare(
-      `SELECT name FROM sqlite_master WHERE type = 'table'
-       AND name IN ('mission_workflows', 'mission_outcomes', 'mission_transitions')`,
-    ).all() as Array<{ name: string }>;
-    expect(workflowTables.map((row) => row.name).sort()).toEqual([
-      'mission_outcomes', 'mission_transitions', 'mission_workflows',
-    ]);
     migrated.close();
   });
 });

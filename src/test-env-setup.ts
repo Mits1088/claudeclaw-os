@@ -5,29 +5,9 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 
-// A test store has its own mission identities. Never import the real mission
-// that launched the test subprocess. Scope-specific tests set their own values.
-delete process.env.CLAUDECLAW_MISSION_TASK_ID;
-delete process.env.CLAUDECLAW_MISSION_ACTOR;
-delete process.env.CLAUDECLAW_MISSION_ENTRY_KEY;
-
 process.env.DASHBOARD_TOKEN = 'test-contract-token';
 process.env.DASHBOARD_MUTATIONS_ENABLED = process.env.DASHBOARD_MUTATIONS_ENABLED || 'true';
 process.env.WARROOM_ENABLED = process.env.WARROOM_ENABLED || 'false';
-process.env.CREW_MISSIONS_ENABLED = process.env.CREW_MISSIONS_ENABLED || 'true';
-process.env.CREW_MISSION_MAX_ACTIVE = process.env.CREW_MISSION_MAX_ACTIVE || '100';
-process.env.CREW_MISSION_MAX_RUNNING_WORKERS = process.env.CREW_MISSION_MAX_RUNNING_WORKERS || '100';
-process.env.CREW_MISSION_MAX_RUNNING_COORDINATORS = process.env.CREW_MISSION_MAX_RUNNING_COORDINATORS || '100';
-process.env.CREW_MISSION_MAX_TURNS = process.env.CREW_MISSION_MAX_TURNS || '3';
-process.env.CREW_MISSION_MAX_RUNTIME_SECONDS = process.env.CREW_MISSION_MAX_RUNTIME_SECONDS || '600';
-process.env.CREW_MISSION_TURN_BUDGET_5H = process.env.CREW_MISSION_TURN_BUDGET_5H || '10000';
-process.env.CREW_MISSION_BUDGET_HARD_PERCENT = process.env.CREW_MISSION_BUDGET_HARD_PERCENT || '100';
-process.env.CREW_MISSION_PROVIDER_TURN_BUDGET_5H = process.env.CREW_MISSION_PROVIDER_TURN_BUDGET_5H || '10000';
-process.env.CREW_MISSION_BUDGET_WARNING_PERCENT = process.env.CREW_MISSION_BUDGET_WARNING_PERCENT || '60';
-process.env.CREW_MISSION_MAX_DEPTH = process.env.CREW_MISSION_MAX_DEPTH || '100';
-process.env.CREW_MISSION_MAX_TASKS = process.env.CREW_MISSION_MAX_TASKS || '500';
-process.env.CREW_MISSION_MAX_FANOUT = process.env.CREW_MISSION_MAX_FANOUT || '50';
-process.env.CREW_MISSION_MAX_COORDINATOR_REVIEWS = process.env.CREW_MISSION_MAX_COORDINATOR_REVIEWS || '100';
 
 // Sandbox CLAUDECLAW_CONFIG to a temp dir so tests that exercise
 // loadAgentConfig / resolveAgentDisplayName / setMainProviderConfig don't

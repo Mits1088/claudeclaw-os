@@ -6,8 +6,6 @@ import {
   getAllScheduledTasks,
   getHiveMindEntries,
   getMissionTasks,
-  claimNextMissionTask,
-  createMissionWorkflow,
 } from './db.js';
 import { dispatchToolEntries } from './dispatch-tools.js';
 import {
@@ -15,10 +13,6 @@ import {
   dispatchMcpServerToolDefinitions,
   resolveDispatchAgentId,
 } from './dispatch-mcp-server.js';
-import {
-  MISSION_ACTOR_ENV,
-  MISSION_TASK_ID_ENV,
-} from './mission-execution-context.js';
 
 interface ToolResult {
   content: Array<{ type: string; text: string }>;
@@ -62,32 +56,6 @@ describe('dispatch stdio bridge tool set', () => {
   it('the no-arg default follows the DISPATCH_ALLOW_HIVE_READ config flag', () => {
     const names = dispatchMcpServerToolDefinitions().map((d) => d.name);
     expect(names.includes('hive_read')).toBe(DISPATCH_ALLOW_HIVE_READ);
-  });
-
-  it('filters workflow escape hatches from the stdio server using explicit child env identity', () => {
-    _initTestDatabase();
-    createMissionWorkflow({
-      id: 'stdio-wf', rootTaskId: 'stdio-root', title: 'Stdio', objective: 'Stay bounded',
-      initialPrompt: 'Work', ownerAgent: 'main', workerAgent: 'main', priority: 5,
-      maxDepth: 3, maxTasks: 5, maxFanout: 2, deadlineAt: null,
-    });
-    expect(claimNextMissionTask('main')?.id).toBe('stdio-root');
-    const previousTask = process.env[MISSION_TASK_ID_ENV];
-    const previousActor = process.env[MISSION_ACTOR_ENV];
-    process.env[MISSION_TASK_ID_ENV] = 'stdio-root';
-    process.env[MISSION_ACTOR_ENV] = 'main';
-    try {
-      const names = dispatchMcpServerToolDefinitions({ allowHiveRead: true }).map((definition) => definition.name);
-      expect(names).not.toContain('mission_create');
-      expect(names).not.toContain('mission_transition');
-      expect(names).not.toContain('schedule_create');
-      expect(names).toContain('mission_result');
-    } finally {
-      if (previousTask === undefined) delete process.env[MISSION_TASK_ID_ENV];
-      else process.env[MISSION_TASK_ID_ENV] = previousTask;
-      if (previousActor === undefined) delete process.env[MISSION_ACTOR_ENV];
-      else process.env[MISSION_ACTOR_ENV] = previousActor;
-    }
   });
 });
 

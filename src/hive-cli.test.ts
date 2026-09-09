@@ -3,16 +3,11 @@ import { execSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { fileURLToPath, pathToFileURL } from 'url';
-import { createRequire } from 'node:module';
+import { fileURLToPath } from 'url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = path.resolve(__dirname, '..', 'dist', 'hive-cli.js');
 const PROJECT_DIR = path.resolve(__dirname, '..');
-const SOURCE_LOADER = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
-const CLI_COMMAND = fs.existsSync(CLI_PATH)
-  ? `node "${CLI_PATH}"`
-  : `node --import "${SOURCE_LOADER}" "${path.resolve(__dirname, 'hive-cli.ts')}"`;
 
 // A >=32 char throwaway key so the DB-opening subcommands are hermetic and
 // don't depend on a populated .env (matches schedule-cli.test.ts).
@@ -51,7 +46,7 @@ describe('hive-cli path (store resolution)', () => {
     delete env.CLAUDECLAW_STORE_DIR;
     delete env.DB_ENCRYPTION_KEY;
 
-    const out = execSync(`${CLI_COMMAND} path`, { cwd, env, encoding: 'utf-8' }).trim();
+    const out = execSync(`node "${CLI_PATH}" path`, { cwd, env, encoding: 'utf-8' }).trim();
 
     expect(out).toBe(path.join(storeDir, 'claudeclaw.db'));
   });
@@ -66,7 +61,7 @@ describe('hive-cli path (store resolution)', () => {
     fs.writeFileSync(path.join(cwd, '.env'), '', 'utf-8');
     tempDirs.push(cwd);
 
-    const out = execSync(`${CLI_COMMAND} path`, { cwd, env, encoding: 'utf-8' }).trim();
+    const out = execSync(`node "${CLI_PATH}" path`, { cwd, env, encoding: 'utf-8' }).trim();
 
     expect(out).toBe(path.join(PROJECT_DIR, 'store', 'claudeclaw.db'));
   });
@@ -80,10 +75,10 @@ describe('hive-cli log + read (round-trip against the pinned store)', () => {
     delete env.CLAUDECLAW_STORE_DIR;
 
     execSync(
-      `${CLI_COMMAND} log --action "unit-test" --summary "hive-cli round trip"`,
+      `node "${CLI_PATH}" log --action "unit-test" --summary "hive-cli round trip"`,
       { cwd, env, encoding: 'utf-8' },
     );
-    const readOut = execSync(`${CLI_COMMAND} read --limit 5`, { cwd, env, encoding: 'utf-8' });
+    const readOut = execSync(`node "${CLI_PATH}" read --limit 5`, { cwd, env, encoding: 'utf-8' });
 
     expect(readOut).toContain('@testbot');
     expect(readOut).toContain('unit-test');

@@ -66,13 +66,11 @@ describe('model catalog', () => {
 
   it('keeps Low labels and low values across all OpenAI models and Claude', () => {
     const claude = staticRuntimeOptionsFor({ type: 'claude', model: 'claude-opus-5' });
-
     expect(claude?.modeOptions.find((option) => option.id === 'low'))
       .toEqual({ id: 'low', label: 'Low' });
     for (const { id: model } of OPENAI_MODEL_OPTIONS) {
       const provider = { type: 'openai' as const, model };
-      const options = staticRuntimeOptionsFor(provider);
-      expect(options?.thinkingOptions.find((option) => option.id === 'low'))
+      expect(staticRuntimeOptionsFor(provider)?.thinkingOptions.find((option) => option.id === 'low'))
         .toEqual({ id: 'low', label: 'Low' });
       expect(normalizedEffortForProvider(provider, 'low')).toBe('low');
     }

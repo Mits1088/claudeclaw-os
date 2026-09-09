@@ -1,5 +1,3 @@
-import { AGENT_ID } from './config.js';
-import { sanitizePresentation } from './outbound-payload.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -12,6 +10,7 @@ import { getScrubbedSdkEnv } from './security.js';
 import { requireEnabled } from './kill-switches.js';
 import { EngineFactory } from './agent-engine/index.js';
 import type { AskUserQuestionResolver } from './agent-engine/index.js';
+import { executionCertaintyOf } from './agent-engine/types.js';
 import {
   ProviderConfig,
   decodeProviderSession,
@@ -24,11 +23,7 @@ import { claudeThinkingForModel, selectedEffortForProvider } from './model-catal
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import { dispatchMcpServersForTurn } from './dispatch-registry.js';
 import { runtimeModelIdentity } from './runtime-identity.js';
-import { toProviderFailure } from './provider-recovery.js';
-import type { ProviderFailure } from './agent-engine/types.js';
-import { missionExecutionEnv, getMissionExecutionContext } from './mission-execution-context.js';
-import { missionEntryEnv } from './mission-entry-key.js';
-import { missionCoordinatorToolPolicy } from './mission-coordinator-policy.js';
+import { sanitizePresentation } from './outbound-payload.js';
 import { outboundOptionsForSeam } from './outbound-policy.js';
 import { sanitizeOutboundText } from './outbound-sanitizer.js';
 import { OutboundStreamGuard } from './outbound-stream-guard.js';
@@ -189,8 +184,6 @@ export interface AgentResult {
   abortReason?: TurnAbortReason;
   /** SDK result subtype (e.g. 'success', 'error_during_execution'). */
   stopReason?: string;
-  /** Structured provider failure; absent on successful/aborted turns. */
-  failure?: ProviderFailure;
 }
 
 /**
@@ -255,7 +248,6 @@ export async function runAgent(
   toolPolicy?: AgentToolPolicy,
   onAskUserQuestion?: AskUserQuestionResolver,
   sharedWatchdog?: TurnWatchdog,
-  maxTurnsOverride?: number,
 ): Promise<AgentResult> {
   // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
   // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
@@ -296,12 +288,11 @@ export async function runAgent(
   // DB_ENCRYPTION_KEY, etc.) before handing process.env to the SDK
   // subprocess. A prompt-injected agent that calls `env` or `cat .env`
   // can otherwise read every credential the parent process holds.
-  const sdkEnv = { ...getScrubbedSdkEnv(secrets), ...missionExecutionEnv(), ...missionEntryEnv() };
+  const sdkEnv = getScrubbedSdkEnv(secrets);
 
   let newSessionId: string | undefined;
   let resultText: string | null = null;
   let resultStopReason: string | undefined;
-  let resultFailure: ProviderFailure | undefined;
   let usage: UsageInfo | null = null;
   let didCompact = false;
   let preCompactTokens: number | null = null;
@@ -329,7 +320,6 @@ export async function runAgent(
     // scheduled turns with a scrubbed env still see it.
     const dispatchServers = dispatchMcpServersForTurn({
       provider,
-      ...(toolPolicy === missionCoordinatorToolPolicy && getMissionExecutionContext() ? { dispatchAccess: 'grant' as const } : {}),
       ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
       ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
     });
@@ -347,6 +337,7 @@ export async function runAgent(
     );
 
     const engine = EngineFactory.forProvider(provider);
+    const skipPermissions = effectiveSkipPermissions(provider);
     for await (const event of engine.invoke({
       prompt: message,
       provider,
@@ -361,11 +352,9 @@ export async function runAgent(
         ...(selectedEffort ? { effort: selectedEffort } : {}),
         ...(effectiveThinking ? { thinking: effectiveThinking } : {}),
       }),
-      permissionMode: effectiveSkipPermissions(provider) ? 'bypassPermissions' : 'default',
-      allowDangerouslySkipPermissions: effectiveSkipPermissions(provider),
-      ...((maxTurnsOverride ?? AGENT_MAX_TURNS) > 0
-        ? { maxTurns: maxTurnsOverride ?? AGENT_MAX_TURNS }
-        : {}),
+      permissionMode: skipPermissions ? 'bypassPermissions' : 'default',
+      allowDangerouslySkipPermissions: skipPermissions,
+      ...(AGENT_MAX_TURNS > 0 ? { maxTurns: AGENT_MAX_TURNS } : {}),
       env: sdkEnv,
       ...(mcpServerNames.length > 0 ? { mcpServers } : {}),
       ...(trustedMcpServers.length > 0 ? { trustedMcpServers } : {}),
@@ -432,7 +421,6 @@ export async function runAgent(
       if (event.type === 'result') {
         resultText = event.text;
         resultStopReason = event.stopReason;
-        resultFailure = event.failure;
         if (event.usage) {
           usage = event.usage;
           logger.info(
@@ -463,12 +451,9 @@ export async function runAgent(
 
     // Classify the error and attach context-aware metadata
     const contextTokens = lastCallInputTokens || lastCallCacheRead || 0;
+    const execution = executionCertaintyOf(err);
     const classified = classifyError(err, contextTokens || undefined);
-    // Engine throws do not establish whether the SDK delivered the request.
-    // Preserve the familiar AgentError API while carrying a conservative
-    // failure envelope for callers that understand bounded recovery.
-    const carriedFailure = (err as { failure?: ProviderFailure } | null)?.failure;
-    Object.assign(classified, { failure: carriedFailure ?? toProviderFailure(err, provider, 'unknown') });
+    if (execution) Object.assign(classified, { execution });
     logger.error(
       { category: classified.category, recovery: classified.recovery, originalMsg: (err as Error)?.message },
       'Agent query failed (classified)',
@@ -486,11 +471,14 @@ export async function runAgent(
     newSessionId: encodeProviderSession(provider, newSessionId),
     usage,
     stopReason: resultStopReason,
-    ...(resultFailure ? { failure: resultFailure } : {}),
   };
 }
 
 // ── Retry wrapper ─────────────────────────────────────────────────
+
+const MAX_RETRIES = 2;
+const BACKOFF_BASE_MS = 2000;
+const BACKOFF_MULTIPLIER = 4; // 2s, 8s
 
 function sleepUntil(ms: number, signal: AbortSignal): Promise<void> {
   if (signal.aborted) return Promise.resolve();
@@ -505,11 +493,9 @@ function sleepUntil(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
-let warnedLegacyModelFallback = false;
-
 /**
- * Run interactive turns with durable health and explicit provider policy.
- * Replay requires positive pre-execution evidence and an eligible failure.
+ * Retry a transient failure only when the adapter positively proves that the
+ * prompt did not start. Unknown delivery is never replayed automatically.
  * Calls onRetry before each retry so the caller can notify the user.
  */
 export async function runAgentWithRetry(
@@ -521,44 +507,78 @@ export async function runAgentWithRetry(
   abortController?: AbortController,
   onStreamText?: (accumulatedText: string) => void,
   onRetry?: (attempt: number, error: AgentError) => void,
-  /** @deprecated Detection only; configure the agent.yaml fallback policy instead. */
   fallbackModels?: string[],
   mcpAllowlist?: string[],
   providerConfig?: ProviderConfig,
   toolPolicy?: AgentToolPolicy,
   onAskUserQuestion?: AskUserQuestionResolver,
 ): Promise<AgentResult> {
+  let lastError: AgentError | undefined;
   const turnAbort = abortController ?? new AbortController();
   const watchdog = new TurnWatchdog(turnAbort, AGENT_IDLE_TIMEOUT_MS, AGENT_MAX_RUNTIME_MS);
   watchdog.start();
+
   try {
-    // Legacy fallbackModels is retained in the API only. Provider authorization
-    // comes exclusively from the active agent's explicit fallback policy.
-    if (fallbackModels?.length && !warnedLegacyModelFallback) {
-      warnedLegacyModelFallback = true;
-      logger.warn('MODEL_FALLBACK_CHAIN is deprecated and ignored; configure the agent.yaml fallback policy instead');
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      const currentModel =
+        attempt === 0 ? model
+        : lastError?.recovery.shouldSwitchModel && fallbackModels?.length
+          ? fallbackModels[Math.min(attempt - 1, fallbackModels.length - 1)]
+          : model;
+
+      return await runAgent(
+        message, sessionId, onTyping, onProgress,
+        currentModel, turnAbort, onStreamText,
+        mcpAllowlist,
+        providerConfig,
+        toolPolicy,
+        onAskUserQuestion,
+        watchdog,
+      );
+    } catch (err) {
+      if (!(err instanceof AgentError)) throw err;
+      lastError = err;
+
+      // Transience is not proof that replay is safe. Retry only when the
+      // adapter positively established that the prompt never started.
+      if (
+        !err.recovery.shouldRetry
+        || executionCertaintyOf(err) !== 'not_started'
+        || turnAbort.signal.aborted
+      ) {
+        if (turnAbort.signal.aborted) {
+          return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
+        }
+        throw err;
+      }
+
+      // Don't retry past the limit
+      if (attempt >= MAX_RETRIES) {
+        throw err;
+      }
+
+      const delayMs = Math.min(
+        BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt),
+        60000,
+      );
+      // Add jitter (0-25% of delay)
+      const jitter = Math.random() * delayMs * 0.25;
+
+      logger.warn(
+        { attempt: attempt + 1, category: err.category, delayMs: Math.round(delayMs + jitter) },
+        'Retrying agent query',
+      );
+
+      onRetry?.(attempt + 1, err);
+      await sleepUntil(delayMs + jitter, turnAbort.signal);
+      if (turnAbort.signal.aborted) {
+        return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
+      }
     }
-    const { executeInteractiveProvider } = await import('./interactive-provider-execution.js');
-    const { getRecentMissionReportContext } = await import('./db.js');
-    const missionContext = getMissionExecutionContext() ? '' : getRecentMissionReportContext(AGENT_ID);
-    const interactiveMessage = missionContext ? `${missionContext}\n\n${message}` : message;
-    return await executeInteractiveProvider({
-      agent: AGENT_ID,
-      primary: { ...(providerConfig ?? getSelectedProviderConfig()), ...(model ? { model } : {}) },
-      signal: turnAbort.signal,
-      wait: ms => sleepUntil(ms, turnAbort.signal),
-      onRetry: (attempt, error) => { if (error instanceof AgentError) onRetry?.(attempt, error); },
-      invoke: (provider, fallback) => runAgent(
-        interactiveMessage, fallback ? undefined : sessionId, onTyping, onProgress,
-        provider.model, turnAbort, onStreamText, mcpAllowlist, provider,
-        toolPolicy, onAskUserQuestion, watchdog,
-      ),
-    });
-  } catch (error) {
-    if (turnAbort.signal.aborted) {
-      return { text: null, newSessionId: sessionId, usage: null, aborted: true, abortReason: watchdog.reason() };
     }
-    throw error;
+
+    throw lastError ?? new Error('Retry loop exhausted');
   } finally {
     watchdog.dispose();
   }

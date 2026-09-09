@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
 import { useLocation } from 'wouter-preact';
-import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2, LayoutGrid as LayoutIcon, Check, Clock3, GitBranch } from 'lucide-preact';
+import { Plus, Wand2, Trash2, X, History, Inbox, GripVertical, Maximize2, Minimize2, LayoutGrid as LayoutIcon, Check, Clock3 } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { Pill, StatusDot } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
@@ -24,7 +24,7 @@ interface MissionTask {
   title: string;
   prompt: string;
   assigned_agent: string | null;
-  status: 'queued' | 'waiting' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked';
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled';
   priority: number;
   created_by: string;
   created_at: number;
@@ -33,56 +33,12 @@ interface MissionTask {
   completed_at: number | null;
   result: string | null;
   error: string | null;
-  workflow_id: string | null;
-  workflow_depth: number | null;
-}
-
-interface MissionWorkflow {
-  id: string;
-  objective: string;
-  owner_agent: string;
-  status: 'active' | 'coordinating' | 'waiting_human' | 'blocked' | 'completed' | 'failed' | 'cancelled' | 'exhausted';
-  max_depth: number;
-  max_tasks: number;
-  max_fanout: number;
-  deadline_at: number | null;
-  tasks_created: number;
-  current_step: number;
-  terminal_reason: string | null;
-  updated_at: number;
-}
-
-interface MissionGovernorStatus {
-  budgetTurns: number;
-  hardAllowanceTurns: number;
-  usedTurns: number;
-  remainingTurns: number;
-  activeReservations: number;
-  parkedWorkflowTasks: number;
-  budgetState: 'normal' | 'warning' | 'hard_stop';
-  totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; costUsd: number; durationMs: number };
-  limits: { maxDepth: number; maxTasks: number; maxFanout: number; maxCoordinatorReviews: number };
 }
 
 interface Agent { id: string; name: string; description: string; running: boolean; }
 
-const TERMINAL: MissionTask['status'][] = ['completed', 'failed', 'cancelled', 'blocked'];
+const TERMINAL: MissionTask['status'][] = ['completed', 'failed', 'cancelled'];
 const DONE_VISIBLE_SECS = 30 * 60;
-
-function taskStatusTone(status: MissionTask['status']): 'queued' | 'running' | 'done' | 'failed' | 'cancelled' {
-  if (status === 'completed') return 'done';
-  if (status === 'blocked') return 'failed';
-  if (status === 'waiting') return 'queued';
-  return status;
-}
-
-function workflowStatusTone(status: MissionWorkflow['status']): 'queued' | 'running' | 'done' | 'failed' | 'cancelled' {
-  if (status === 'completed') return 'done';
-  if (status === 'cancelled') return 'cancelled';
-  if (status === 'waiting_human') return 'queued';
-  if (status === 'active' || status === 'coordinating') return 'running';
-  return 'failed';
-}
 
 function missionCountdown(seconds: number): string {
   if (seconds <= 0) return 'due now';
@@ -109,7 +65,6 @@ function missionAvailability(task: MissionTask): string | null {
 export function MissionControl() {
   const [location, navigate] = useLocation();
   const tasks = useFetch<{ tasks: MissionTask[] }>('/api/mission/tasks', 15_000);
-  const workflows = useFetch<{ workflows: MissionWorkflow[]; enabled: boolean; governor: MissionGovernorStatus }>('/api/mission/workflows', 15_000);
   const agents = useFetch<{ agents: Agent[] }>('/api/agents', 60_000);
 
   const [createOpen, setCreateOpen] = useState(false);
@@ -159,8 +114,8 @@ export function MissionControl() {
     } finally { setBulkAssigning(false); }
   }
 
-  const loading = (tasks.loading || agents.loading || workflows.loading) && !tasks.data;
-  const error = tasks.error || agents.error || workflows.error;
+  const loading = (tasks.loading || agents.loading) && !tasks.data;
+  const error = tasks.error || agents.error;
   const wsName = workspaceName.value;
   const headerTitle = wsName && wsName !== 'ClaudeClaw' ? `${wsName} · Tasks` : 'Mission Control';
 
@@ -235,21 +190,18 @@ export function MissionControl() {
       {loading && <PageState loading />}
 
       {!loading && !error && (
-        <div class="flex-1 min-h-0 flex flex-col">
-          <WorkflowStrip workflows={workflows.data?.workflows ?? []} enabled={workflows.data?.enabled === true} governor={workflows.data?.governor} onChange={() => { workflows.refresh(); tasks.refresh(); }} />
-          <div class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
-            <div class="flex gap-3 p-4 h-full min-w-max">
-              <InboxColumn tasks={inbox} onChange={tasks.refresh} agents={orderedAgents} />
-              {orderedAgents.map((a) => (
-                <AgentColumn
-                  key={a.id}
-                  agent={a}
-                  tasks={byAgent[a.id] ?? []}
-                  onChange={tasks.refresh}
-                  onColumnDrop={handleColumnDrop}
-                />
-              ))}
-            </div>
+        <div class="flex-1 min-h-0 overflow-x-auto overflow-y-hidden">
+          <div class="flex gap-3 p-4 h-full min-w-max">
+            <InboxColumn tasks={inbox} onChange={tasks.refresh} agents={orderedAgents} />
+            {orderedAgents.map((a) => (
+              <AgentColumn
+                key={a.id}
+                agent={a}
+                tasks={byAgent[a.id] ?? []}
+                onChange={tasks.refresh}
+                onColumnDrop={handleColumnDrop}
+              />
+            ))}
           </div>
         </div>
       )}
@@ -258,9 +210,7 @@ export function MissionControl() {
         open={createOpen}
         onClose={() => setCreateOpen(false)}
         agents={agents.data?.agents ?? []}
-        crewMissionsEnabled={workflows.data?.enabled === true}
-        governor={workflows.data?.governor}
-        onCreated={() => { tasks.refresh(); workflows.refresh(); }}
+        onCreated={tasks.refresh}
       />
 
       <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title="Task history">
@@ -268,95 +218,6 @@ export function MissionControl() {
             error doesn't leave the drawer stuck on an empty state. */}
         {historyOpen && <HistoryList />}
       </Drawer>
-    </div>
-  );
-}
-
-function WorkflowStrip({ workflows, enabled, governor, onChange }: { workflows: MissionWorkflow[]; enabled: boolean; governor?: MissionGovernorStatus; onChange: () => void }) {
-  const visible = workflows
-    .filter((workflow) => !['completed', 'cancelled'].includes(workflow.status))
-    .slice(0, 8);
-  if (visible.length === 0 && enabled) return null;
-
-  async function cancel(workflow: MissionWorkflow) {
-    if (!confirm(`Cancel crew mission ${workflow.id}? Queued work will be stopped.`)) return;
-    try {
-      await apiPost(`/api/mission/workflows/${workflow.id}/cancel`);
-      onChange();
-    } catch (err: any) {
-      pushToast({ tone: 'error', title: 'Crew mission cancellation failed', description: err?.message || String(err) });
-    }
-  }
-
-  async function resume(workflow: MissionWorkflow) {
-    const answer = prompt(workflow.terminal_reason || 'Enter the answer needed to resume this crew mission:');
-    if (!answer?.trim()) return;
-    try {
-      await apiPost(`/api/mission/workflows/${workflow.id}/resume`, { answer: answer.trim() });
-      onChange();
-    } catch (err: any) {
-      pushToast({ tone: 'error', title: 'Crew mission resume failed', description: err?.message || String(err) });
-    }
-  }
-
-  return (
-    <div class="shrink-0 border-b border-[var(--color-border)] bg-[var(--color-card)] px-4 py-2.5">
-      <div class="flex items-center gap-2 mb-2">
-        <GitBranch size={13} class="text-[var(--color-accent)]" />
-        <span class="text-[10px] uppercase tracking-wider text-[var(--color-text-faint)]">Crew missions</span>
-        <span class="text-[10px] text-[var(--color-text-faint)]">{visible.length} active or attention-needed</span>
-        {!enabled && <Pill tone="cancelled">disabled by operator policy</Pill>}
-        {governor && (
-          <span class={`text-[10px] ${governor.budgetState === 'normal' ? 'text-[var(--color-text-muted)]' : 'text-[var(--color-warning)]'}`}>
-            5h budget {governor.usedTurns}/{governor.hardAllowanceTurns} turns
-            {' · '}{governor.remainingTurns} remaining
-            {' · '}{governor.activeReservations} active
-            {governor.parkedWorkflowTasks > 0 ? ` · ${governor.parkedWorkflowTasks} parked` : ''}
-            {` · ${governor.budgetState.replace('_', ' ')}`}
-            {governor.totals.inputTokens + governor.totals.outputTokens > 0
-              ? ` · ${(governor.totals.inputTokens + governor.totals.outputTokens).toLocaleString()} tokens`
-              : ''}
-          </span>
-        )}
-      </div>
-      <div class="flex gap-2 overflow-x-auto pb-0.5">
-        {visible.map((workflow) => (
-          <div key={workflow.id} class="min-w-[250px] max-w-[320px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2">
-            <div class="flex items-center gap-1.5">
-              <span class="text-[10px] font-mono text-[var(--color-text-faint)]" title={workflow.id}>{workflow.id.slice(0, 6)}</span>
-              <Pill tone={workflowStatusTone(workflow.status)}>{workflow.status}</Pill>
-              <span class="ml-auto text-[10px] text-[var(--color-text-faint)]">@{resolveAgentName(workflow.owner_agent)}</span>
-            </div>
-            <div class="mt-1 text-[11.5px] leading-snug text-[var(--color-text)] line-clamp-2">{workflow.objective}</div>
-            <div class="mt-1.5 flex items-center gap-2 text-[10px] tabular-nums text-[var(--color-text-muted)]">
-              <span>tasks {workflow.tasks_created}/{workflow.max_tasks}</span>
-              <span>follow-up limit {workflow.max_depth}</span>
-              <span>parallel limit {workflow.max_fanout}</span>
-              <span>reviews {workflow.current_step}</span>
-            </div>
-            {workflow.deadline_at && (
-              <div class="mt-1 text-[10px] text-[var(--color-text-faint)]">
-                deadline {new Date(workflow.deadline_at * 1000).toLocaleString()}
-              </div>
-            )}
-            {workflow.terminal_reason && (
-              <div class="mt-1 text-[10px] text-[var(--color-text-muted)] line-clamp-2">{workflow.terminal_reason}</div>
-            )}
-            <div class="mt-1.5 flex justify-end gap-1">
-              {enabled && workflow.status === 'waiting_human' && (
-                <button type="button" onClick={() => resume(workflow)} class="px-2 py-1 rounded text-[10px] text-white bg-[var(--color-accent)] hover:bg-[var(--color-accent-hover)]">
-                  Answer
-                </button>
-              )}
-              {!['completed', 'failed', 'cancelled', 'exhausted'].includes(workflow.status) && (
-                <button type="button" onClick={() => cancel(workflow)} class="px-2 py-1 rounded text-[10px] text-[var(--color-text-muted)] hover:text-[var(--color-status-failed)]">
-                  Cancel
-                </button>
-              )}
-            </div>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }
@@ -979,7 +840,7 @@ function TaskCard({ task, onChange }: { task: MissionTask; onChange: () => void 
       ].join(' ')}
     >
       <div class="flex items-center gap-1.5 mb-1">
-        <StatusDot tone={taskStatusTone(task.status)} />
+        <StatusDot tone={task.status as any} />
         <span class="text-[10px] text-[var(--color-text-faint)] tabular-nums uppercase tracking-wider">
           {task.id.slice(0, 6)}
         </span>
@@ -1001,8 +862,7 @@ function TaskCard({ task, onChange }: { task: MissionTask; onChange: () => void 
       )}
       <div class="flex items-center gap-1.5 flex-wrap">
         {task.priority > 0 && <Pill tone={priorityTone}>P{task.priority}</Pill>}
-        <Pill tone={taskStatusTone(task.status)}>{task.status}</Pill>
-        {task.workflow_id && <span title={task.workflow_id}><Pill tone="accent">crew mission {task.workflow_id.slice(0, 6)} · step {task.workflow_depth ?? 0}</Pill></span>}
+        <Pill tone={task.status as any}>{task.status}</Pill>
         <div class="ml-auto flex items-center gap-1">
           {(task.status === 'queued' || task.status === 'running') && (
             <button
@@ -1049,49 +909,21 @@ function TaskCard({ task, onChange }: { task: MissionTask; onChange: () => void 
 
 // ── Create modal ───────────────────────────────────────────────────
 
-function BoundInput({ label, value, min, max, onChange }: {
-  label: string; value: number; min: number; max: number; onChange: (value: number) => void;
-}) {
-  return (
-    <div>
-      <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">{label}</label>
-      <input
-        type="number"
-        min={min}
-        max={max}
-        value={value}
-        onInput={(e) => onChange(Math.max(min, Math.min(max, Number((e.target as HTMLInputElement).value) || min)))}
-        class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2 py-1.5 text-[12px] tabular-nums"
-      />
-    </div>
-  );
-}
-
 function CreateTaskModal({
-  open, onClose, agents, onCreated, crewMissionsEnabled, governor,
+  open, onClose, agents, onCreated,
 }: {
-  open: boolean; onClose: () => void; agents: Agent[]; onCreated: () => void; crewMissionsEnabled: boolean; governor?: MissionGovernorStatus;
+  open: boolean; onClose: () => void; agents: Agent[]; onCreated: () => void;
 }) {
   const [title, setTitle] = useState('');
   const [prompt, setPrompt] = useState('');
   const [agent, setAgent] = useState<string>('');
   const [priority, setPriority] = useState(5);
   const [autoAssign, setAutoAssign] = useState(true);
-  const [durable, setDurable] = useState(false);
-  const [objective, setObjective] = useState('');
-  const [owner, setOwner] = useState('main');
-  const [maxDepth, setMaxDepth] = useState(1);
-  const [maxTasks, setMaxTasks] = useState(2);
-  const [maxFanout, setMaxFanout] = useState(1);
-  const [deadline, setDeadline] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
   function close() {
-    setTitle(''); setPrompt(''); setAgent(''); setPriority(5); setAutoAssign(true);
-    setDurable(false); setObjective(''); setOwner('main');
-    setMaxDepth(governor?.limits.maxDepth ?? 1); setMaxTasks(governor?.limits.maxTasks ?? 2);
-    setMaxFanout(governor?.limits.maxFanout ?? 1); setDeadline(''); setErr(null);
+    setTitle(''); setPrompt(''); setAgent(''); setPriority(5); setAutoAssign(true); setErr(null);
     onClose();
   }
 
@@ -1099,24 +931,11 @@ function CreateTaskModal({
     setBusy(true); setErr(null);
     try {
       const body: any = { title: title.trim(), prompt: prompt.trim(), priority };
-      let createdTask: MissionTask | null = null;
-      if (durable) {
-        body.objective = objective.trim();
-        body.assigned_agent = agent;
-        body.owner_agent = owner;
-        body.max_depth = maxDepth;
-        body.max_tasks = maxTasks;
-        body.max_fanout = maxFanout;
-        if (deadline.trim()) body.deadline = deadline.trim();
-        await apiPost('/api/mission/workflows', body);
-      } else {
-        if (!autoAssign && agent) body.assigned_agent = agent;
-        const created = await apiPost<{ task: MissionTask }>('/api/mission/tasks', body);
-        createdTask = created.task;
-      }
-      if (createdTask && autoAssign && !agent) {
+      if (!autoAssign && agent) body.assigned_agent = agent;
+      const created = await apiPost<{ task: MissionTask }>('/api/mission/tasks', body);
+      if (autoAssign && !agent) {
         // Fire auto-assign in background; don't block the modal close.
-        apiPost(`/api/mission/tasks/${createdTask.id}/auto-assign`).catch(() => {});
+        apiPost(`/api/mission/tasks/${created.task.id}/auto-assign`).catch(() => {});
       }
       onCreated();
       close();
@@ -1137,7 +956,7 @@ function CreateTaskModal({
           <button
             type="button"
             onClick={submit}
-            disabled={busy || !title.trim() || !prompt.trim() || (durable && (!objective.trim() || !agent || !owner))}
+            disabled={busy || !title.trim() || !prompt.trim()}
             class="ml-auto px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {busy ? 'Creating…' : 'Create'}
@@ -1146,42 +965,6 @@ function CreateTaskModal({
       }
     >
       <div class="space-y-3">
-        {crewMissionsEnabled ? <label class="flex items-start gap-2 rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 cursor-pointer">
-          <input
-            type="checkbox"
-            checked={durable}
-            onChange={(e) => {
-              const checked = (e.target as HTMLInputElement).checked;
-              setDurable(checked);
-              if (checked) {
-                setAutoAssign(false);
-                if (!agent && agents[0]) setAgent(agents[0].id);
-              }
-            }}
-            class="mt-0.5"
-          />
-          <span>
-            <span class="block text-[12px] font-medium text-[var(--color-text)]">Crew mission</span>
-            <span class="block text-[10.5px] text-[var(--color-text-muted)]">Have a lead agent review results and assign follow-up work within your limits.</span>
-          </span>
-        </label> : (
-          <div class="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 py-2 text-[10.5px] text-[var(--color-text-muted)]">
-            Crew Missions are disabled by operator policy. Ordinary one-shot Missions remain available.
-          </div>
-        )}
-        {durable && (
-          <div>
-            <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Goal and allowed work</label>
-            <textarea
-              value={objective}
-              onInput={(e) => setObjective((e.target as HTMLTextAreaElement).value)}
-              placeholder="What should the crew deliver, and what may it do? Existing approval requirements still apply."
-              rows={3}
-              maxLength={4000}
-              class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[var(--color-accent)] resize-none"
-            />
-          </div>
-        )}
         <div>
           <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Title</label>
           <input
@@ -1218,7 +1001,7 @@ function CreateTaskModal({
               }}
               class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] outline-none focus:border-[var(--color-accent)]"
             >
-              {!durable && <option value="__auto">Auto (Gemini classifier)</option>}
+              <option value="__auto">Auto (Gemini classifier)</option>
               {agents.map((a) => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
             </select>
           </div>
@@ -1234,31 +1017,6 @@ function CreateTaskModal({
             />
           </div>
         </div>
-        {durable && (
-          <div class="space-y-2">
-            <div class="grid grid-cols-4 gap-2">
-              <div>
-                <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Lead agent</label>
-                <select value={owner} onChange={(e) => setOwner((e.target as HTMLSelectElement).value)} class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2 py-1.5 text-[12px]">
-                  {agents.map((a) => <option key={a.id} value={a.id}>{a.name || a.id}</option>)}
-                </select>
-              </div>
-              <BoundInput label="Follow-up limit" value={maxDepth} min={1} max={governor?.limits.maxDepth ?? 1} onChange={setMaxDepth} />
-              <BoundInput label="Tasks" value={maxTasks} min={1} max={governor?.limits.maxTasks ?? 2} onChange={setMaxTasks} />
-              <BoundInput label="Parallel limit" value={maxFanout} min={1} max={governor?.limits.maxFanout ?? 1} onChange={setMaxFanout} />
-            </div>
-            <div>
-              <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">Deadline (optional RFC 3339)</label>
-              <input
-                type="text"
-                value={deadline}
-                onInput={(e) => setDeadline((e.target as HTMLInputElement).value)}
-                placeholder="2026-09-05T23:30:00-06:00"
-                class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12px] font-mono"
-              />
-            </div>
-          </div>
-        )}
         {err && <div class="text-[var(--color-status-failed)] text-[11px]">{err}</div>}
       </div>
     </Modal>
@@ -1324,7 +1082,7 @@ function HistoryList() {
         {items.map((t) => (
           <div key={t.id} class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded p-3">
             <div class="flex items-center gap-2 mb-1">
-              <Pill tone={taskStatusTone(t.status)}>{t.status}</Pill>
+              <Pill tone={t.status as any}>{t.status}</Pill>
               <span class="text-[10.5px] text-[var(--color-text-faint)] tabular-nums uppercase tracking-wider">{t.id.slice(0, 6)}</span>
               {t.assigned_agent && <span class="text-[11px] text-[var(--color-text-muted)]">@{resolveAgentName(t.assigned_agent)}</span>}
               <span class="ml-auto text-[10.5px] text-[var(--color-text-faint)]">

@@ -8,7 +8,7 @@
  * configured protected-value set — this module adds the *boundary*, the
  * *opt-out semantics*, and the *fail-safe behaviour*, not new detection.
  *
- * Design notes (see docs/rfcs/outbound-output-sanitization.md):
+ * Design notes:
  *
  *  - Idempotent: `redactSecrets` replaces every match with the literal
  *    `[REDACTED]`, which matches no detector pattern, so re-sanitizing already

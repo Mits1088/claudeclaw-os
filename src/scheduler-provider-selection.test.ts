@@ -1,5 +1,3 @@
-vi.mock('./mission-provider-execution.js', () => ({ prepareMissionProvider: vi.fn((_mission, provider) => ({ kind: 'run', attempt: { provider } })), recoverMissionProvider: vi.fn(() => false), settleMissionProviderHealth: vi.fn(() => null) }));
-vi.mock('./mission-reporting.js', () => ({ deliverMissionWorkflowReport: vi.fn(async () => {}) }));
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { ProviderConfig } from './provider.js';
 import { getDueTasks } from './db.js';
@@ -17,20 +15,6 @@ vi.mock('./config.js', () => ({
   ALLOWED_CHAT_ID: 'chat-1',
   SCHEDULER_IDLE_TIMEOUT_MS: 900_000,
   SCHEDULER_MAX_RUNTIME_MS: 1_800_000,
-  CREW_MISSIONS_ENABLED: true,
-  CREW_MISSION_MAX_ACTIVE: 1,
-  CREW_MISSION_MAX_RUNNING_WORKERS: 1,
-  CREW_MISSION_MAX_RUNNING_COORDINATORS: 1,
-  CREW_MISSION_MAX_TURNS: 3,
-  CREW_MISSION_MAX_RUNTIME_SECONDS: 600,
-  CREW_MISSION_TURN_BUDGET_5H: 12,
-  CREW_MISSION_BUDGET_HARD_PERCENT: 75,
-  CREW_MISSION_PROVIDER_TURN_BUDGET_5H: 12,
-  CREW_MISSION_BUDGET_WARNING_PERCENT: 60,
-  CREW_MISSION_MAX_DEPTH: 1,
-  CREW_MISSION_MAX_TASKS: 2,
-  CREW_MISSION_MAX_FANOUT: 1,
-  CREW_MISSION_MAX_COORDINATOR_REVIEWS: 2,
   agentMcpAllowlist: ['filesystem'],
   agentDefaultModel: undefined,
   agentProvider: state.provider,
@@ -53,7 +37,6 @@ vi.mock('./message-queue.js', () => ({
 }));
 
 vi.mock('./db.js', () => ({
-  saveTokenUsage: vi.fn(),
   getDueTasks: vi.fn(() => state.dueTasks),
   getSession: vi.fn(() => undefined),
   logConversationTurn: vi.fn(),
@@ -62,14 +45,7 @@ vi.mock('./db.js', () => ({
   resetStuckTasks: vi.fn(() => 0),
   claimNextMissionTask: vi.fn(() => null),
   completeMissionTask: vi.fn(),
-  authorizeMissionGovernorProvider: vi.fn(() => ({ allowed: true, reason: null, retryAt: null })),
-  reconcileMissionGovernorUsage: vi.fn(() => true),
   resetStuckMissionTasks: vi.fn(() => 0),
-  failStuckMissionTasks: vi.fn(() => 0),
-  reconcileMissionControl: vi.fn(() => ({
-    expiredWorkflows: 0, recoveredOutcomes: 0, releasedJoins: 0,
-    blockedJoins: 0, queuedCoordinators: 0, blockedOutcomes: 0,
-  })),
   getMissionTask: vi.fn(() => null),
 }));
 

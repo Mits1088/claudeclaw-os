@@ -168,13 +168,13 @@ test('sidebar runtime is a read-only provider and model summary', async ({ page 
   await expect(page.getByLabel('Switch main provider')).toHaveCount(0);
 });
 
-test('agent card uses explicit detail buttons and keeps model details in the action row', async ({ page }) => {
+test('agent card uses explicit detail and provider-setup buttons', async ({ page }) => {
   await page.goto('/agents?token=test&chatId=e2e');
 
   const agentDetails = page.getByRole('button', { name: 'Open details for Main' });
-  const modelDetails = page.getByRole('button', { name: 'Open model details for Main' });
+  const providerSetup = page.getByRole('button', { name: 'Configure provider for Main' });
   await expect(agentDetails).toBeVisible();
-  await expect(modelDetails).toBeVisible();
+  await expect(providerSetup).toBeVisible();
   await expect(
     page.getByLabel('Agent activity summary').getByText('running', { exact: true }),
   ).toBeVisible();
@@ -193,8 +193,8 @@ test('agent card uses explicit detail buttons and keeps model details in the act
     .click();
   await expect(agentModalContent).toHaveCount(0);
 
-  await modelDetails.click();
-  const providerModalTitle = page.getByText('Main Provider');
+  await providerSetup.click();
+  const providerModalTitle = page.getByText('Main Provider Setup');
   await expect(providerModalTitle).toBeVisible();
   await providerModalTitle
     .locator('xpath=ancestor::div[contains(@class, "fixed inset-0")][1]')
@@ -202,14 +202,6 @@ test('agent card uses explicit detail buttons and keeps model details in the act
     .first()
     .click();
   await expect(providerModalTitle).toHaveCount(0);
-
-  // Model details belongs to the same selector row as the model control.
-  const modelBox = await modelDetails.boundingBox();
-  const modelControlBox = await page.getByTitle(/Configure provider and model/).boundingBox();
-  expect(modelBox).not.toBeNull();
-  expect(modelControlBox).not.toBeNull();
-  expect(Math.abs(modelBox!.y - modelControlBox!.y)).toBeLessThanOrEqual(3);
-  expect(Math.abs(modelBox!.height - modelControlBox!.height)).toBeLessThanOrEqual(1);
 
   const agentDetailsBox = await agentDetails.boundingBox();
   const fileBox = await page.getByTitle('Edit persona + config').boundingBox();
@@ -286,6 +278,7 @@ test('the provider picker offers acp-codex and never the legacy codex id', async
   await page.goto('/settings?token=test&chatId=e2e');
 
   const picker = page.getByLabel('Provider', { exact: true });
+  await expect(picker.locator('option[value="acp-codex"]')).toHaveCount(1);
   const values = await picker.locator('option').evaluateAll(
     (options) => options.map((option) => (option as HTMLOptionElement).value),
   );

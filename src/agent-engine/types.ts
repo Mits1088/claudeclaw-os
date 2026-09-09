@@ -1,23 +1,21 @@
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import type { ProviderConfig } from '../provider.js';
-import type { ProviderType } from '../provider.js';
 
-export type ProviderFailureCategory = 'unavailable' | 'rate_limit' | 'auth' | 'request' | 'unknown';
+/** Whether a failed provider attempt could have begun executing the prompt. */
 export type ExecutionCertainty = 'not_started' | 'started' | 'unknown';
 
-/**
- * Machine-readable provider failure. `execution` is deliberately independent
- * from the error category: a transient outage is replayable only when the
- * adapter can positively prove the failed turn never started.
- */
-export interface ProviderFailure {
-  category: ProviderFailureCategory;
-  execution: ExecutionCertainty;
-  provider: ProviderType;
-  model?: string;
-  retryAfterMs?: number;
-  code?: string | number;
-  message: string;
+/** Attach delivery evidence without introducing a provider recovery subsystem. */
+export function withExecutionCertainty(error: unknown, execution: ExecutionCertainty): Error {
+  const normalized = error instanceof Error ? error : new Error(String(error));
+  Object.assign(normalized, { execution });
+  return normalized;
+}
+
+export function executionCertaintyOf(error: unknown): ExecutionCertainty | undefined {
+  const execution = (error as { execution?: unknown } | null)?.execution;
+  return execution === 'not_started' || execution === 'started' || execution === 'unknown'
+    ? execution
+    : undefined;
 }
 
 export interface McpStdioConfig {
@@ -206,9 +204,9 @@ export type AgentEngineEvent =
   | { type: 'progress'; progress: AgentEngineProgressEvent; raw?: unknown }
   | { type: 'usage'; usage: AgentEngineUsage; raw?: unknown }
   | { type: 'compact'; preCompactTokens: number | null; trigger?: string; raw?: unknown }
-  | { type: 'result'; text: string | null; usage: AgentEngineUsage | null; stopReason?: string; failure?: ProviderFailure; raw?: unknown }
+  | { type: 'result'; text: string | null; usage: AgentEngineUsage | null; stopReason?: string; raw?: unknown }
   | { type: 'aborted'; text: string | null; sessionId?: string; usage: AgentEngineUsage | null; raw?: unknown }
-  | { type: 'error'; error: unknown; failure?: ProviderFailure; raw?: unknown };
+  | { type: 'error'; error: unknown; raw?: unknown };
 
 export interface AgentEngine {
   invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent>;

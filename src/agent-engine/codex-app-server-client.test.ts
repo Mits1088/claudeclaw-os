@@ -164,20 +164,6 @@ beforeEach(() => {
 });
 
 describe('initialization handshake', () => {
-  it('suppresses overflowing startup stderr without retaining a secret suffix', async () => {
-    const { client, child } = makeClient();
-    const result = client.start().catch(error => error as Error);
-    await waitForWrites(child, 1);
-    child.stderr.write('x'.repeat(3995) + 'alpha');
-    child.stderr.write(' secret-tail');
-    child.stderr.write('later-secret');
-    child.emitMessage({ id: child.written[0].id, error: { code: -32603, message: 'fixture startup failure' } });
-    const error = await result;
-    expect(error).toBeInstanceOf(Error);
-    expect((error as Error).message).toContain('[stderr withheld: buffer limit exceeded]');
-    expect((error as Error).message).not.toMatch(/alpha|secret-tail|later-secret/);
-  });
-
   it('sends initialize with BOTH required capability fields, then initialized with no params', async () => {
     // The 0.144.6 InitializeCapabilities schema requires experimentalApi AND
     // requestAttestation (neither optional), and the `initialized` notification

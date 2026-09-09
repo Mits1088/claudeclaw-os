@@ -24,7 +24,6 @@ import { turnDeniesAllTools } from './types.js';
 
 export type CodexCapabilityMode =
   | 'tool-less'
-  | 'mission-control'
   | 'read-only-research'
   | 'workspace-agent'
   | 'full-trust';
@@ -176,15 +175,6 @@ export function resolveCodexCapabilityProfile(
   }
 
   const webSearchEnabled = codexToolAllowed(input, 'WebSearch');
-
-  // Translate the coordinator's no-execution policy into native controls.
-  // Claude-style Bash denies alone do not disable Codex shell or account apps.
-  if (['Bash', 'Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Agent', 'Task', 'Workflow']
-    .every(name => input.disallowedTools?.includes(name))) {
-    return { mode: 'mission-control', sandboxMode: 'read-only', shellEnabled: false,
-      webSearchEnabled: false, networkAccess: false, hostAppsEnabled: false,
-      mcpServers: authorizedMcp, turnBudget: { maxToolItems: input.maxTurns ?? 8 } };
-  }
 
   // 2. read-only research
   if (isReadOnlyAllowList(input.allowedTools)) {

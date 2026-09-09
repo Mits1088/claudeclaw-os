@@ -18,8 +18,6 @@ const state = vi.hoisted(() => {
     // later, so it is the only way to prove the adapter handed runStreamed a
     // signal that was already aborted (i.e. the turn never starts).
     runs: [] as Array<{ input: any; turnOptions: any; signalAbortedAtCall: boolean }>,
-    startError: null as Error | null,
-    resumeError: null as Error | null,
     // One generator factory per expected runStreamed() call, consumed in order.
     scripts: [] as Array<() => AsyncGenerator<any>>,
     // Real (writable) dir so ensureIsolatedCodexHome's mkdir succeeds; the
@@ -29,6 +27,7 @@ const state = vi.hoisted(() => {
     configDir: nodePath.join(nodeOs.tmpdir(), 'claudeclaw-codex-adapter-test'),
     projectRoot: nodePath.join(nodeOs.tmpdir(), 'claudeclaw-codex-proj-root'),
     allowHiveRead: false as boolean,
+    threadSetupErrors: [] as Error[],
   };
 });
 
@@ -45,15 +44,13 @@ vi.mock('@openai/codex-sdk', () => {
     constructor(options: any) { state.ctorOptions.push(options); }
     startThread(options: any) {
       state.startCalls.push(options);
-      const error = state.startError;
-      state.startError = null;
+      const error = state.threadSetupErrors.shift();
       if (error) throw error;
       return new FakeThread();
     }
     resumeThread(id: string, options: any) {
       state.resumeCalls.push({ id, options });
-      const error = state.resumeError;
-      state.resumeError = null;
+      const error = state.threadSetupErrors.shift();
       if (error) throw error;
       return new FakeThread();
     }
@@ -62,8 +59,6 @@ vi.mock('@openai/codex-sdk', () => {
 });
 
 vi.mock('../config.js', () => ({
-  EXFILTRATION_GUARD_ENABLED: true,
-  PROTECTED_ENV_VARS: [],
   OPENAI_API_KEY: 'sk-test-openai',
   DEFAULT_OPENAI_MODEL: 'gpt-5.5',
   CLAUDECLAW_CONFIG: state.configDir,
@@ -72,6 +67,8 @@ vi.mock('../config.js', () => ({
   DB_ENCRYPTION_KEY: 'test-db-key',
   get DISPATCH_ALLOW_HIVE_READ() { return state.allowHiveRead ?? false; },
   CODEX_DANGER_WRITE: false,
+  EXFILTRATION_GUARD_ENABLED: false,
+  PROTECTED_ENV_VARS: [],
 }));
 
 vi.mock('../logger.js', () => ({
@@ -81,7 +78,7 @@ vi.mock('../logger.js', () => ({
 import nodeFs from 'fs';
 import nodePath from 'path';
 
-import { CodexSdkEngineAdapter } from './codex-sdk-adapter.js';
+import { CodexSdkEngineAdapter, isStaleSessionError } from './codex-sdk-adapter.js';
 import { logger } from '../logger.js';
 import type { AgentEngineEvent, AgentTurnInput } from './types.js';
 
@@ -135,9 +132,52 @@ beforeEach(() => {
   state.resumeCalls.length = 0;
   state.runs.length = 0;
   state.scripts.length = 0;
-  state.startError = null;
-  state.resumeError = null;
   state.allowHiveRead = false;
+  state.threadSetupErrors.length = 0;
+});
+
+describe('CodexSdkEngineAdapter — replay boundary', () => {
+  it.each([
+    'thread/resume failed: 401 unauthorized',
+    'thread/resume failed: 429 rate limit',
+    'thread/resume failed: model is not supported',
+    'thread/resume failed: transport disconnected',
+    'thread authentication missing',
+  ])('does not call %s a stale session', (message) => {
+    expect(isStaleSessionError(message)).toBe(false);
+  });
+
+  it('recognizes explicit missing-session evidence', () => {
+    expect(isStaleSessionError('thread/resume failed: no rollout found for thread id abc')).toBe(true);
+    expect(isStaleSessionError('session id abc does not exist')).toBe(true);
+  });
+
+  it('marks synchronous setup failure not-started without submitting the prompt', async () => {
+    state.threadSetupErrors.push(new Error('transport unavailable before thread setup'));
+
+    let caught: unknown;
+    try {
+      await collect(baseInput());
+    } catch (error) {
+      caught = error;
+    }
+
+    expect(caught).toMatchObject({ execution: 'not_started' });
+    expect(state.startCalls).toHaveLength(1);
+    expect(state.runs).toHaveLength(0);
+  });
+
+  it('replaces only a synchronously rejected, explicitly missing resume', async () => {
+    state.threadSetupErrors.push(new Error('thread/resume failed: no rollout found for thread id old'));
+    state.scripts.push(happyScript);
+
+    const events = await collect(baseInput({ sessionId: 'old' }));
+
+    expect(state.resumeCalls).toHaveLength(1);
+    expect(state.startCalls).toHaveLength(1);
+    expect(state.runs).toHaveLength(1);
+    expect(events.at(-1)).toMatchObject({ type: 'result', stopReason: 'end_turn' });
+  });
 });
 
 describe('CodexSdkEngineAdapter — happy path', () => {
@@ -684,50 +724,6 @@ describe('CodexSdkEngineAdapter — configuration', () => {
 });
 
 describe('CodexSdkEngineAdapter — failure paths', () => {
-  it('classifies a synchronous thread setup failure before prompt submission as not_started', async () => {
-    state.startError = new Error('service unavailable while creating thread');
-
-    const events = await collect(baseInput());
-
-    expect(state.runs).toHaveLength(0);
-    expect(events.some((e) => e.type === 'error')).toBe(false);
-    expect(events.at(-1)).toMatchObject({
-      type: 'result',
-      stopReason: 'error',
-      failure: { provider: 'openai', category: 'unavailable', execution: 'not_started' },
-    });
-  });
-
-  it('replaces a synchronously rejected stale resume before submitting the prompt', async () => {
-    state.resumeError = new Error('thread/resume failed: no rollout found for thread id thread-old');
-    state.scripts.push(happyScript);
-
-    const events = await collect(baseInput({ sessionId: 'thread-old' }));
-
-    expect(state.resumeCalls).toHaveLength(1);
-    expect(state.startCalls).toHaveLength(1);
-    expect(state.runs).toHaveLength(1);
-    expect(events.at(-1)).toMatchObject({ type: 'result', text: 'Hello', stopReason: 'end_turn' });
-  });
-
-  it.each([
-    'service unavailable while resuming thread',
-    'thread/resume failed: 401 missing API key',
-    'thread/resume failed: model not found',
-  ])('does not replace a synchronous non-stale resume failure: %s', async (message) => {
-    state.resumeError = new Error(message);
-
-    const events = await collect(baseInput({ sessionId: 'thread-old' }));
-
-    expect(state.resumeCalls).toHaveLength(1);
-    expect(state.startCalls).toHaveLength(0);
-    expect(state.runs).toHaveLength(0);
-    expect(events.at(-1)).toMatchObject({
-      type: 'result',
-      failure: { provider: 'openai', execution: 'not_started' },
-    });
-  });
-
   it('surfaces turn.failed as text_delta + result (never a bare error event)', async () => {
     state.scripts.push(async function* () {
       yield { type: 'thread.started', thread_id: 't' };
@@ -739,9 +735,6 @@ describe('CodexSdkEngineAdapter — failure paths', () => {
     expect(result.type).toBe('result');
     expect(result.stopReason).toBe('error');
     expect(result.text).toContain('stream disconnected');
-    expect(result.failure).toMatchObject({
-      provider: 'openai', category: 'unknown', execution: 'started',
-    });
     expect(events.some((e) => e.type === 'text_delta')).toBe(true);
   });
 
@@ -763,7 +756,6 @@ describe('CodexSdkEngineAdapter — failure paths', () => {
       expect(result.stopReason).toBe('error');
       expect(result.text).toContain('will not start a Codex turn that could still read it');
       expect(result.text).not.toContain('Check that directory is writable');
-      expect(result.failure).toMatchObject({ provider: 'openai', execution: 'not_started' });
       // No thread was started: the SDK never saw the turn.
       expect(state.startCalls).toHaveLength(0);
     } finally {
