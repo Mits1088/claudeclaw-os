@@ -27,11 +27,20 @@ const textFields = new Set([
   'title', 'url', 'file_name', 'filename', 'author_name', 'footer',
 ]);
 
+// Only plain objects are rebuilt. Class instances (grammY InputFile, Buffer,
+// streams, Date) keep their prototype: rebuilding an InputFile turns it into a
+// plain object, grammY stops treating it as a multipart upload and Telegram
+// rejects the JSON-serialised path as an invalid file URL.
+function isPlainObject(item: object): boolean {
+  const proto = Object.getPrototypeOf(item);
+  return proto === Object.prototype || proto === null;
+}
+
 export function sanitizePresentation<T>(value: T, seam: string): T {
   const options = outboundOptionsForSeam(seam);
   const visit = (item: unknown): unknown => {
     if (Array.isArray(item)) return item.map(visit);
-    if (!item || typeof item !== 'object') return item;
+    if (!item || typeof item !== 'object' || !isPlainObject(item)) return item;
     return Object.fromEntries(Object.entries(item).map(([key, child]) => [
       key, typeof child === 'string' && textFields.has(key)
         ? sanitizeOutboundText(child, options) : visit(child),
