@@ -87,6 +87,24 @@ describe('loadAgentConfig interactive flag', () => {
 });
 
 describe('loadAgentConfig runtime mode', () => {
+  it.each([undefined, 'UNSET_SPECIALIST_TOKEN'])('loads a messenger specialist with absent token configuration %s', async (tokenEnv) => {
+    vi.stubEnv('UNSET_SPECIALIST_TOKEN', '');
+    try {
+      writeAgentYaml('research', {
+        name: 'Research',
+        runtime: { mode: 'messenger' },
+        ...(tokenEnv ? { telegram_bot_token_env: tokenEnv } : {}),
+      });
+      const { loadAgentConfig } = await import('./agent-config.js');
+      const config = loadAgentConfig('research');
+      expect(config.runtimeMode).toBe('messenger');
+      expect(config.botTokenEnv).toBe(tokenEnv ?? '');
+      expect(config.botToken).toBe('');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
   it('loads a headless worker without a Telegram token', async () => {
     writeAgentYaml('worker', {
       name: 'Worker',

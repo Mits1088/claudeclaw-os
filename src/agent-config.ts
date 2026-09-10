@@ -201,17 +201,13 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   if (!name) {
     throw new Error(`Agent config ${configPath} must have 'name'`);
   }
-  if (runtimeMode === 'messenger' && !botTokenEnv && agentId !== 'main') {
-    throw new Error(`Agent config ${configPath} must have 'telegram_bot_token_env'`);
-  }
 
+  // Transport preflight owns credential requirements. Config is also loaded by
+  // non-Telegram transports and by agent listing/delegation consumers.
   let botToken = '';
   if (botTokenEnv) {
     const env = readEnvFile([botTokenEnv]);
     botToken = process.env[botTokenEnv] || env[botTokenEnv] || '';
-    if (!botToken && runtimeMode === 'messenger' && agentId !== 'main') {
-      throw new Error(`Bot token not found: set ${botTokenEnv} in .env`);
-    }
   }
 
   let obsidian: AgentConfig['obsidian'];
