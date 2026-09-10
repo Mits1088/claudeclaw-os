@@ -276,7 +276,18 @@ you've made, so there's nothing for you to do.
 
 **Restart every agent, not just the main bot.** If you run multiple agents, each one is its own long-lived process. A rebuild does **not** touch already-running agents — they keep executing the old pre-upgrade code and will typically start returning "Something went wrong" until restarted. After `npm run build`, restart **all** agent processes so they pick up the new build (see [Restart ALL agents after a rebuild](#step-4-start-your-agents), or re-run the install script which rebuilds and restarts everything).
 
-**Running Signal or Mattermost? Re-run setup once after this upgrade.** Service definitions installed before this release launch `dist/index.js`, which hard-wires Telegram and never reads `MESSENGER_TYPE`. Rebuilding does not rewrite an already-installed launchd plist, systemd unit, PM2 process or scheduled task, so run `npm run setup` (or regenerate your per-agent services with `scripts/agent-service.sh`) to move them onto `dist/main-entry.js`. Until you do, those processes keep booting Telegram whatever you configured — the headless worker supervisor still recognizes and reconciles them in the meantime.
+**Running Signal or Mattermost? Check each installed service's entry point.** Older service definitions launch `dist/index.js`, which hard-wires Telegram. After building, change that argument to `dist/main-entry.js` in each existing service definition, preserving its Node path, working directory, `--agent <id>`, environment and logs. Rebuilding alone does not update installed services. Ensure `MESSENGER_TYPE=signal` or `MESSENGER_TYPE=mattermost` is set in the service environment or the project's `.env`.
+
+For an existing **macOS per-agent launchd installation**, update the installed plist in place:
+
+1. Locate the actual plist in `~/Library/LaunchAgents` and inspect it with `plutil -p`. Dashboard/agent-create installations use `com.claudeclaw.<id>.plist`; `scripts/agent-service.sh` uses `com.claudeclaw.agent-<id>.plist`. Keep the existing filename and `Label`.
+2. Back up that plist outside `LaunchAgents`. Run `launchctl unload "$plist"` before editing, where `plist` is the full path to the installed file.
+3. In `ProgramArguments`, replace only the script argument's `dist/index.js` suffix with `dist/main-entry.js`, keeping any absolute path prefix. Preserve the other arguments and settings. Verify the new script exists relative to `WorkingDirectory` if the argument is relative.
+4. Run `plutil -lint "$plist"`, inspect `plutil -p "$plist"`, then `launchctl load "$plist"`. Check the existing label with `launchctl list` and inspect its configured logs. Repeat for every agent.
+
+Do not use `npm run setup` to migrate an existing per-agent fleet: it creates the single-instance `com.claudeclaw.app` service and can start a duplicate main agent. `scripts/agent-service.sh install <id>` also uses a different label from dashboard-created services. Activating an existing agent reloads its plist without rewriting it. `scripts/install-launchd.sh` regenerates only the five bundled template agents (`comms`, `content`, `main`, `ops`, `research`), and includes cleanup and service restarts; it is not a general fleet migration command.
+
+For **systemd, PM2 or Windows scheduled tasks**, edit the existing unit/process/task definition to use `dist/main-entry.js`, preserving its agent arguments and settings, then reload/restart through that service manager. For systemd, run `systemctl --user daemon-reload` after editing a user unit and before restarting it. Verify every agent starts on the intended transport.
 
 **Auth token may have expired.** If `git pull` fails to fetch, your stored access token may have lapsed since your last update. Refresh it and pull again — an expired token is the most common cause of a fetch that suddenly stops working after months on the same version.
 
