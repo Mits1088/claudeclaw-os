@@ -9,6 +9,7 @@
 
 import { EXFILTRATION_GUARD_ENABLED, PROTECTED_ENV_VARS } from './config.js';
 import { logger } from './logger.js';
+import { readEnvFile } from './env.js';
 import { resolveProtectedValues, type SanitizeDiagnostic, type SanitizeOptions } from './outbound-sanitizer.js';
 
 export interface OutboundPolicy {
@@ -23,9 +24,13 @@ export interface OutboundPolicy {
 export function resolveOutboundPolicy(
   env: Record<string, string | undefined> = process.env,
 ): OutboundPolicy {
+  const fileValues = readEnvFile(PROTECTED_ENV_VARS);
+  const effectiveValues = Object.fromEntries(PROTECTED_ENV_VARS.map((name) => [
+    name, env[name] || fileValues[name],
+  ]));
   return {
     enabled: EXFILTRATION_GUARD_ENABLED,
-    protectedValues: resolveProtectedValues(PROTECTED_ENV_VARS, env),
+    protectedValues: resolveProtectedValues(PROTECTED_ENV_VARS, effectiveValues),
   };
 }
 
