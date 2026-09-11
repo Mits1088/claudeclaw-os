@@ -58,6 +58,7 @@ it.each(['success', 'error', 'abort'])('captures actual voice subprocess stdout 
   });
   expect(child.stderr, child.stdout).toContain('FIXTURE_ENGINE_USED');
   expect(child.stdout).not.toContain('alpha');
+  expect(child.stderr).not.toContain('alpha');
   const payload = JSON.parse(child.stdout.trim());
   expect(payload[mode === 'error' ? 'error' : 'response']).toBe(mode === 'abort' ? null : '[REDACTED]');
   expect(child.status).toBe(mode === 'error' ? 1 : 0);

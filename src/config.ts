@@ -1,4 +1,5 @@
 import os from 'os';
+import { DEFAULT_PROTECTED_ENV_VARS } from './protected-values.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -434,7 +435,7 @@ export const EXFILTRATION_GUARD_ENABLED =
   (process.env.EXFILTRATION_GUARD_ENABLED || envConfig.EXFILTRATION_GUARD_ENABLED || 'true').toLowerCase() === 'true';
 export const PROTECTED_ENV_VARS = (
   process.env.PROTECTED_ENV_VARS || envConfig.PROTECTED_ENV_VARS ||
-  'ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,DB_ENCRYPTION_KEY,TELEGRAM_BOT_TOKEN,SLACK_USER_TOKEN,GROQ_API_KEY,ELEVENLABS_API_KEY,GOOGLE_API_KEY,OPENAI_API_KEY'
+  DEFAULT_PROTECTED_ENV_VARS.join(',')
 ).split(',').map((s) => s.trim()).filter(Boolean);
 
 // ── Provider Selection (BETA) ───────────────────────────────────────

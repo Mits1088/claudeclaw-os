@@ -1,6 +1,8 @@
 import pino from 'pino';
 
-import { redactValue } from './log-redact.js';
+import { redactString, redactValue } from './log-redact.js';
+import { logProtectedValues } from './protected-values.js';
+import { sanitizeOutboundText } from './outbound-sanitizer.js';
 
 /**
  * Pretty output is for a human watching a terminal. Under launchd both stdout
@@ -32,7 +34,17 @@ export const logger = pino({
      * high-volume caller (dashboard request logging) now logs at debug.
      */
     logMethod(args, method) {
-      return method.apply(this, args.map((a) => redactValue(a)) as Parameters<typeof method>);
+      let safeArgs: unknown[];
+      try {
+        const protectedValues = logProtectedValues();
+        // Logging remains guarded even when outbound delivery is opted out.
+        // No diagnostic callback here: logging a redaction would recurse.
+        const sanitize = (text: string) => redactString(sanitizeOutboundText(text, { protectedValues }));
+        safeArgs = args.map(a => redactValue(a, 0, new WeakSet<object>(), sanitize));
+      } catch {
+        safeArgs = ['[log withheld: redaction error]'];
+      }
+      return method.apply(this, safeArgs as Parameters<typeof method>);
     },
   },
   transport: wantsPretty() ? { target: 'pino-pretty', options: { colorize: true } } : undefined,

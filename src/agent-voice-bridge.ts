@@ -117,9 +117,10 @@ async function main() {
         const list = raw?.['mcp_servers'];
         if (Array.isArray(list)) mcpAllowlist = list.filter((x): x is string => typeof x === 'string');
       }
-    } catch (err) {
+    } catch {
       // Non-fatal: fall through with undefined allowlist (loads all MCPs)
-      process.stderr.write(`[voice-bridge] agent.yaml read failed: ${err}\n`);
+      // YAML errors can embed source lines containing credentials.
+      process.stderr.write('[voice-bridge] agent.yaml read failed\n');
     }
 
     // Load MCP servers for this agent, mirroring the text-bot's behavior.
@@ -127,7 +128,7 @@ async function main() {
     // Read, Grep, etc.) — no Gmail, Slack, Linear, Fireflies, etc.
     const mcpServers = loadMcpServers(mcpAllowlist, agentDir);
     const mcpServerNames = Object.keys(mcpServers);
-    process.stderr.write(`[voice-bridge] agent=${agentId} mcpServers=${JSON.stringify(mcpServerNames)}\n`);
+    process.stderr.write(`[voice-bridge] loaded ${mcpServerNames.length} MCP servers\n`);
 
     // Resume session if one exists for this chat+agent
     const sessionId = getSession(chatId, agentId) ?? undefined;

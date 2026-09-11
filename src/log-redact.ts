@@ -91,10 +91,12 @@ const MAX_DEPTH = 6;
  * rebuilt with a clean message/stack, and cycles are broken. Non-string leaves
  * (numbers, booleans, dates) pass through untouched.
  */
-export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object>()): unknown {
-  if (typeof value === 'string') return redactString(value);
+export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object>(), sanitize = redactString): unknown {
+  if (typeof value === 'string') return sanitize(value);
+  // Do not let a copied toJSON hook reconstruct unsanitized state at the sink.
+  if (typeof value === 'function') return '[Function]';
   if (value === null || typeof value !== 'object') return value;
-  if (depth >= MAX_DEPTH) return value;
+  if (depth >= MAX_DEPTH) return '[Truncated]';
 
   const obj = value as object;
   if (seen.has(obj)) return '[Circular]';
@@ -103,16 +105,17 @@ export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object
   if (value instanceof Error) {
     // Copy rather than mutate: the caller may still handle this error, and a
     // rewritten message on a live object is a nasty surprise downstream.
-    const clone = new Error(redactString(value.message));
-    clone.name = value.name;
-    if (value.stack) clone.stack = redactString(value.stack);
+    const clone = new Error(sanitize(value.message));
+    clone.name = sanitize(value.name);
+    if (value.stack) clone.stack = sanitize(value.stack);
+    if (value.cause !== undefined) clone.cause = redactValue(value.cause, depth + 1, seen, sanitize);
     for (const [k, v] of Object.entries(value)) {
-      (clone as unknown as Record<string, unknown>)[k] = redactValue(v, depth + 1, seen);
+      (clone as unknown as Record<string, unknown>)[sanitize(k)] = redactValue(v, depth + 1, seen, sanitize);
     }
     return clone;
   }
 
-  if (Array.isArray(value)) return value.map((v) => redactValue(v, depth + 1, seen));
+  if (Array.isArray(value)) return value.map((v) => redactValue(v, depth + 1, seen, sanitize));
 
   // Exotic built-ins carry their state outside enumerable own properties, so
   // rebuilding them from Object.entries() silently destroys them — a Date came
@@ -130,7 +133,7 @@ export function redactValue(value: unknown, depth = 0, seen = new WeakSet<object
 
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    out[k] = redactValue(v, depth + 1, seen);
+    Object.defineProperty(out, sanitize(k), { value: redactValue(v, depth + 1, seen, sanitize), enumerable: true, configurable: true, writable: true });
   }
   return out;
 }
