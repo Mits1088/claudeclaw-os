@@ -2957,30 +2957,33 @@ export function completeMissionTask(
     const task = getMissionTask(id);
     if (!task || task.status !== 'running' || !missionClaimMatches(task, fence)) return false;
     const now = Math.floor(Date.now() / 1000);
-    return db.prepare(
+    const changed = db.prepare(
       `UPDATE mission_tasks
        SET status = ?, result = ?, error = ?, completed_at = ?
        WHERE id = ? AND status = 'running'`,
     ).run(status, result, error ?? null, now, id).changes === 1;
+    // A process can exit immediately after this commit. Release an ordinary
+    // gather's eligible join in the same transaction so its result cannot be
+    // durable while the join remains stranded waiting for a scheduler callback.
+    if (changed && !task.workflow_id) maybeReleaseJoinForMission(task);
+    return changed;
   }).immediate());
 }
 
 export function cancelMissionTask(id: string): boolean {
-  const result = db.prepare(
-    `UPDATE mission_tasks SET status = 'cancelled', completed_at = ?
-     WHERE id = ? AND status IN ('queued', 'waiting', 'running')`,
-  ).run(Math.floor(Date.now() / 1000), id);
-  if (result.changes > 0) {
-    // Cancelling the last non-terminal child of a gather group must release
-    // the parked join, or the group deadlocks in 'waiting' forever. Both
-    // cancel surfaces (dashboard and CLI) go through this function, and the
-    // scheduler's own cancelled branches only run after the status was
-    // already flipped here — so this is the single release point needed.
-    const task = getMissionTask(id);
-    // Historical Crew rows are quarantined records, not ordinary gather work.
-    if (task && !task.workflow_id) maybeReleaseJoinForMission(task);
-  }
-  return result.changes > 0;
+  return withBusyRetry(() => db.transaction(() => {
+    const result = db.prepare(
+      `UPDATE mission_tasks SET status = 'cancelled', completed_at = ?
+       WHERE id = ? AND status IN ('queued', 'waiting', 'running')`,
+    ).run(Math.floor(Date.now() / 1000), id);
+    if (result.changes > 0) {
+      // Cancellation and eligible join release share the commit boundary.
+      const task = getMissionTask(id);
+      // Historical Crew rows are quarantined records, not ordinary gather work.
+      if (task && !task.workflow_id) maybeReleaseJoinForMission(task);
+    }
+    return result.changes > 0;
+  }).immediate());
 }
 
 /**
@@ -3111,11 +3114,10 @@ function failInterruptedMission(taskId: string, agentId: string, error: string):
          WHERE chain_id = ? AND status IN ('queued', 'waiting')`,
       ).run(now, chainId);
     }
+    // Keep recovery and join release atomic just like ordinary completion.
+    maybeReleaseJoinForMission(task);
     return { ...task, status: 'failed', result: null, error, completed_at: now, claiming_instance_id: null };
   }).immediate());
-  // Preserve the ordinary gather primitive: an interrupted child is terminal,
-  // so it may release a waiting join. Historical Crew rows remain quarantined.
-  if (failedTask && !failedTask.workflow_id) maybeReleaseJoinForMission(failedTask);
   return failedTask !== null;
 }
 

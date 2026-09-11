@@ -10,7 +10,6 @@ import {
   areAllGroupChildrenTerminal,
   releaseJoinMission,
   getJoinMission,
-  updateMissionPrompt,
   getMissionTask,
   maybeReleaseJoinForMission,
   failStuckMissionTasks,
@@ -66,7 +65,7 @@ describe('gather / join primitive (Tier 3)', () => {
     settle(c1, 'result 1', 'completed');
 
     expect(areAllGroupChildrenTerminal(groupId)).toBe(true);
-    expect(releaseJoinMission(groupId)).toBe(true);
+    expect(releaseJoinMission(groupId)).toBe(false); // completion already released it
     expect(getJoinMission(groupId)?.status).toBe('queued');
 
     // A second caller racing to release the same group must be a no-op.
@@ -80,19 +79,19 @@ describe('gather / join primitive (Tier 3)', () => {
     settle(c1, 'ok', 'completed');
 
     expect(areAllGroupChildrenTerminal(groupId)).toBe(true);
-    expect(releaseJoinMission(groupId)).toBe(true);
+    expect(getJoinMission(groupId)?.status).toBe('queued');
   });
 
-  it('releases a gather whose children are already terminal before the check runs', () => {
+  it('makes late release checks idempotent after terminal commit', () => {
     const groupId = 'g4';
     const [c0, c1] = seedGroup(groupId);
     settle(c0, 'result 0', 'completed');
     settle(c1, 'result 1', 'completed');
 
-    // Simulate a late-arriving check (e.g. scheduler restart) that only now
-    // evaluates the group for the first time.
+    // A late scheduler check cannot enqueue a second join.
     expect(areAllGroupChildrenTerminal(groupId)).toBe(true);
-    expect(releaseJoinMission(groupId)).toBe(true);
+    expect(releaseJoinMission(groupId)).toBe(false);
+    expect(getJoinMission(groupId)?.status).toBe('queued');
   });
 
   it('assembles child results into the join prompt before release', () => {
@@ -104,17 +103,11 @@ describe('gather / join primitive (Tier 3)', () => {
     const join = getJoinMission(groupId);
     expect(join).not.toBeNull();
 
-    const children = getGroupChildren(groupId);
-    expect(children).toHaveLength(2);
-    const assembled = children
-      .map((c) => `=== ${c.title} (@${c.assigned_agent}) ===\n${c.result}`)
-      .join('\n\n');
-    updateMissionPrompt(join!.id, `${join!.prompt}\n\n--- Collected results ---\n${assembled}`);
-
     const updated = getMissionTask(join!.id);
     expect(updated?.prompt).toContain('finding A');
     expect(updated?.prompt).toContain('finding B');
     expect(updated?.prompt).toContain('Collected results');
+    expect(updated?.prompt.match(/Collected results/g)).toHaveLength(1);
   });
 
   it('releases the join when the last non-terminal child is cancelled', () => {
