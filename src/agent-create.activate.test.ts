@@ -61,6 +61,8 @@ vi.mock('./platform.js', async () => {
       return true;
     }),
     isProcessAlive: vi.fn((pid: number) => state.alive.has(pid)),
+    isProcessAliveAsync: vi.fn(async (pid: number) => state.alive.has(pid)),
+    isProcessDefinitelyDead: vi.fn((pid: number) => !state.alive.has(pid)),
   };
 });
 
@@ -192,5 +194,104 @@ describe('restartAgent on Linux', () => {
     expect(state.spawnCalls).toHaveLength(1);
     expect(fs.readFileSync(pidFile('research'), 'utf-8')).toBe('999');
     expect(state.execCalls.join('\n')).not.toMatch(/systemctl/);
+  });
+});
+
+describe('native worker readiness', () => {
+  async function fixture() {
+    writeDistEntry();
+    const dir = path.join(state.claudeclawConfig, 'agents', 'native-worker');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'agent.yaml'), 'name: Native worker\nruntime:\n  mode: headless\n');
+    const db = await import('./db.js');
+    db._initTestDatabase();
+    db.beginWorkerSupervisorEpoch('epoch', 'build');
+    state.nextPid = 4242;
+    return db;
+  }
+  it('waits for the current lease, rather than returning the spawned PID', async () => {
+    const db = await fixture();
+    const { activateAgentAndWait } = await import('./agent-create.js');
+    const pending = activateAgentAndWait('native-worker');
+    const env = state.spawnCalls[0].opts.env as Record<string, string>;
+    db.acquireWorkerLease({ agentId: 'native-worker', instanceId: env.CLAUDECLAW_WORKER_INSTANCE_ID,
+      supervisorEpoch: 'epoch', runtimeBuildId: 'build', pid: 4242, processStartedAt: 1 });
+    expect(await pending).toMatchObject({ ok: true, pid: 4242 });
+  });
+  it('keeps operator intent when an alive child has not become ready', async () => {
+    const db = await fixture();
+    const { activateAgentAndWait } = await import('./agent-create.js');
+    let now = 100000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 31000));
+    try {
+      expect(await activateAgentAndWait('native-worker')).toMatchObject({ ok: false, error: expect.stringContaining('still starting') });
+      expect(db.getWorkerRuntime('native-worker')?.desired_state).toBe('active');
+      expect(state.alive.has(4242)).toBe(true);
+    } finally { clock.mockRestore(); }
+  });
+  it('recovers a confirmed-dead instance without allowing lease stealing', async () => {
+    const db = await fixture();
+    db.ensureWorkerDesiredState('native-worker', 'active');
+    db.acquireWorkerLease({ agentId: 'native-worker', instanceId: 'dead', supervisorEpoch: 'epoch', runtimeBuildId: 'build', pid: 111, processStartedAt: 1 });
+    const { activateAgentAndWait } = await import('./agent-create.js');
+    const pending = activateAgentAndWait('native-worker');
+    const env = state.spawnCalls[0].opts.env as Record<string, string>;
+    expect(db.acquireWorkerLease({ agentId: 'native-worker', instanceId: env.CLAUDECLAW_WORKER_INSTANCE_ID, supervisorEpoch: 'epoch', runtimeBuildId: 'build', pid: 4242, processStartedAt: 2 })).toBe(true);
+    expect(await pending).toMatchObject({ ok: true, pid: 4242 });
+    expect(db.clearDeadWorkerLease('native-worker', 'dead', 111)).toBe(false);
+    expect(db.getWorkerRuntime('native-worker')?.instance_id).toBe(env.CLAUDECLAW_WORKER_INSTANCE_ID);
+  });
+  it('cannot clear a lease after operator stop', async () => {
+    const db = await fixture();
+    db.ensureWorkerDesiredState('native-worker', 'active');
+    db.acquireWorkerLease({ agentId: 'native-worker', instanceId: 'dead', supervisorEpoch: 'epoch', runtimeBuildId: 'build', pid: 111, processStartedAt: 1 });
+    db.ensureWorkerDesiredState('native-worker', 'inactive');
+    expect(db.clearDeadWorkerLease('native-worker', 'dead', 111)).toBe(false);
+    expect(db.getWorkerRuntime('native-worker')?.desired_state).toBe('inactive');
+  });
+  it('refuses a stale supervisor shutdown epoch', async () => {
+    const db = await fixture();
+    expect(db.beginWorkerSupervisorEpoch('new-owner', 'build')).toBe(true);
+    expect(db.beginWorkerSupervisorEpoch('old-shutdown', 'build', 'epoch')).toBe(false);
+    expect(db.getWorkerSupervisor()?.epoch).toBe('new-owner');
+  });
+  it('does not let a second instance steal an acquired lease', async () => {
+    const db = await fixture();
+    db.ensureWorkerDesiredState('native-worker', 'active');
+    const lease = { agentId: 'native-worker', instanceId: 'first', supervisorEpoch: 'epoch', runtimeBuildId: 'build', pid: 4242, processStartedAt: 1 };
+    expect(db.acquireWorkerLease(lease)).toBe(true);
+    expect(db.acquireWorkerLease({ ...lease, instanceId: 'second' })).toBe(false);
+    expect(db.getWorkerRuntime('native-worker')?.instance_id).toBe('first');
+  });
+  it('preserves active intent after a reconciliation launch crashes', async () => {
+    const db = await fixture();
+    const { activateAgentAndWait } = await import('./agent-create.js');
+    const pending = activateAgentAndWait('native-worker', { preserveDesiredState: true });
+    state.alive.delete(4242);
+    expect(await pending).toMatchObject({ ok: false });
+    expect(db.getWorkerRuntime('native-worker')?.desired_state).toBe('active');
+  });
+  it('does not kill an uncertain Windows child when readiness expires', async () => {
+    const db = await fixture();
+    state.platform = 'win32';
+    const platform = await import('./platform.js');
+    vi.mocked(platform.isProcessAliveAsync).mockResolvedValueOnce(false);
+    const { activateAgentAndWait } = await import('./agent-create.js');
+    let now = 100000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => (now += 31000));
+    try {
+      expect(await activateAgentAndWait('native-worker')).toMatchObject({ ok: false, pid: 4242 });
+      expect(state.killed).toEqual([]);
+      expect(db.getWorkerRuntime('native-worker')?.desired_state).toBe('active');
+      expect(platform.isProcessAliveAsync).not.toHaveBeenCalled();
+    } finally { clock.mockRestore(); }
+  });
+  it('returns failure when the child exits before leasing', async () => {
+    const db = await fixture();
+    const { activateAgentAndWait } = await import('./agent-create.js');
+    const pending = activateAgentAndWait('native-worker');
+    state.alive.delete(4242);
+    expect(await pending).toMatchObject({ ok: false });
+    expect(db.getWorkerRuntime('native-worker')?.desired_state).toBe('inactive');
   });
 });

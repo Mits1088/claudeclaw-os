@@ -106,9 +106,9 @@ import {
   validateAgentId,
   validateBotToken,
   createAgent,
-  activateAgent,
+  activateAgentAndWait,
   deactivateAgent,
-  restartAgent,
+  restartAgentAndWait,
   deleteAgent,
   suggestBotNames,
   isAgentRunning,
@@ -3478,10 +3478,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   // throws on non-2xx, so returning 200 with {ok:false} made the dashboard's
   // Start button fail silently — it flipped to "Starting…", flipped back, and
   // told the user nothing while the agent stayed down.
-  app.post('/api/agents/:id/activate', (c) => {
+  app.post('/api/agents/:id/activate', async (c) => {
     const agentId = c.req.param('id');
     if (agentId === 'main') return c.json({ error: 'Cannot activate main via this endpoint' }, 400);
-    const result = activateAgent(agentId);
+    const result = await activateAgentAndWait(agentId);
     if (!result.ok) return c.json({ error: result.error ?? 'Activation failed' }, 500);
     return c.json(result);
   });
@@ -3497,10 +3497,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
   });
 
   // Restart an agent (kill + relaunch service)
-  app.post('/api/agents/:id/restart', (c) => {
+  app.post('/api/agents/:id/restart', async (c) => {
     const agentId = c.req.param('id');
     if (agentId === 'main') return c.json({ error: 'Cannot restart main via this endpoint. Restart the main process manually.' }, 400);
-    const result = restartAgent(agentId);
+    const result = await restartAgentAndWait(agentId);
     if (result.ok) {
       return c.json({ ok: true, message: `Agent ${agentId} restarted` });
     }

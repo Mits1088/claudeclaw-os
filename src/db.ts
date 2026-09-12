@@ -2756,9 +2756,10 @@ export interface WorkerRuntimeState {
 
 const WORKER_LEASE_MAX_AGE_SEC = 45;
 
-export function beginWorkerSupervisorEpoch(epoch: string, runtimeBuildId: string): void {
+export function beginWorkerSupervisorEpoch(epoch: string, runtimeBuildId: string, expectedEpoch?: string): boolean {
   const now = Math.floor(Date.now() / 1000);
-  db.transaction(() => {
+  return db.transaction(() => {
+    if (expectedEpoch !== undefined && getWorkerSupervisor()?.epoch !== expectedEpoch) return false;
     db.prepare(
       `INSERT INTO worker_supervisor (singleton_id, epoch, runtime_build_id, started_at)
        VALUES (1, ?, ?, ?)
@@ -2770,8 +2771,9 @@ export function beginWorkerSupervisorEpoch(epoch: string, runtimeBuildId: string
     db.prepare(
       `UPDATE worker_runtime SET instance_id = NULL, supervisor_epoch = NULL,
        pid = NULL, process_started_at = NULL, heartbeat_at = NULL,
-       runtime_build_id = NULL`,
+      runtime_build_id = NULL`,
     ).run();
+    return true;
   })();
 }
 
@@ -2828,7 +2830,7 @@ export function acquireWorkerLease(input: {
     `UPDATE worker_runtime
      SET instance_id = ?, supervisor_epoch = ?, pid = ?, process_started_at = ?,
          heartbeat_at = ?, runtime_build_id = ?
-     WHERE agent_id = ? AND desired_state = 'active'
+     WHERE agent_id = ? AND desired_state = 'active' AND instance_id IS NULL
        AND ? = (SELECT epoch FROM worker_supervisor WHERE singleton_id = 1)
        AND ? = (SELECT runtime_build_id FROM worker_supervisor WHERE singleton_id = 1)`,
   ).run(
@@ -4044,4 +4046,12 @@ export function pruneAgentFileHistory(
      )`,
   ).run(agentId, fileKind, keep);
   return result.changes;
+}
+
+/** Clear only the dead instance observed by activation; never newer state or a stop. */
+export function clearDeadWorkerLease(agentId: string, instanceId: string, pid: number): boolean {
+  return db.prepare(`UPDATE worker_runtime SET instance_id = NULL, supervisor_epoch = NULL,
+    pid = NULL, process_started_at = NULL, heartbeat_at = NULL, runtime_build_id = NULL
+    WHERE agent_id = ? AND instance_id = ? AND pid = ? AND desired_state = 'active'`)
+    .run(agentId, instanceId, pid).changes === 1;
 }

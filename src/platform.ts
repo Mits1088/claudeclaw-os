@@ -7,11 +7,27 @@
 
 import os from 'os';
 import path from 'path';
-import { execSync, spawn } from 'child_process';
+import { execFile, execSync, spawn } from 'child_process';
 
 export const IS_WINDOWS = os.platform() === 'win32';
 export const IS_MACOS = os.platform() === 'darwin';
 export const IS_LINUX = os.platform() === 'linux';
+
+export function isProcessDefinitelyDead(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  try { process.kill(pid, 0); return false; }
+  catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+}
+
+/** Nonblocking liveness probe for startup readiness polling. */
+export async function isProcessAliveAsync(pid: number): Promise<boolean> {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+  if (!IS_WINDOWS) return isProcessAlive(pid);
+  return new Promise((resolve) => {
+    execFile('tasklist', ['/FI', `PID eq ${pid}`, '/NH', '/FO', 'CSV'],
+      { windowsHide: true, timeout: 3000 }, (error, stdout) => resolve(!error && stdout.includes(`"${pid}"`)));
+  });
+}
 
 /**
  * Send a graceful termination signal to a process.

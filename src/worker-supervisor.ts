@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { listAgentIds, loadAgentConfig } from './agent-config.js';
-import { activateAgent } from './agent-create.js';
+import { activateAgentAndWait } from './agent-create.js';
 import { PROJECT_ROOT, STORE_DIR } from './config.js';
 import {
   acquireWorkerLease,
@@ -19,6 +19,7 @@ import { logger } from './logger.js';
 import { isProcessAlive, killProcess, listAgentProcesses } from './platform.js';
 
 export const WORKER_HEARTBEAT_MS = 15_000;
+let ownedEpoch: string | undefined;
 
 function runtimeBuildId(): string {
   const entry = path.join(PROJECT_ROOT, 'dist', 'index.js');
@@ -80,6 +81,7 @@ export async function reconcileHeadlessWorkers(): Promise<void> {
   const epoch = crypto.randomUUID();
   const buildId = runtimeBuildId();
   beginWorkerSupervisorEpoch(epoch, buildId);
+  ownedEpoch = epoch;
 
   const failedStops = new Set<string>();
   for (const process of processes) {
@@ -94,24 +96,26 @@ export async function reconcileHeadlessWorkers(): Promise<void> {
     }
   }
 
+  const launches: Promise<void>[] = [];
   for (const state of listWorkerRuntime()) {
     if (state.desired_state !== 'active' || configured.get(state.agent_id) !== 'headless') continue;
     if (failedStops.has(state.agent_id)) {
       logger.error({ agentId: state.agent_id }, 'Worker left unhealthy because stale process termination was not confirmed');
       continue;
     }
-    const result = activateAgent(state.agent_id);
-    if (!result.ok) {
-      logger.error({ agentId: state.agent_id, error: result.error }, 'Worker relaunch failed during reconciliation');
-    }
+    launches.push(activateAgentAndWait(state.agent_id, { preserveDesiredState: true }).then((result) => {
+      if (!result.ok) logger.error({ agentId: state.agent_id, error: result.error }, 'Worker relaunch failed during reconciliation');
+    }));
   }
+  await Promise.all(launches);
 
   logger.info({ epoch, buildId }, 'Headless worker reconciliation complete');
 }
 
 /** Revoke all leases and stop worker children before the main process exits. */
 export async function shutdownHeadlessWorkers(): Promise<void> {
-  beginWorkerSupervisorEpoch(`shutdown-${crypto.randomUUID()}`, runtimeBuildId());
+  if (!ownedEpoch || beginWorkerSupervisorEpoch(`shutdown-${crypto.randomUUID()}`, runtimeBuildId(), ownedEpoch) === false) return;
+  ownedEpoch = undefined;
   const messengerIds = new Set<string>();
   for (const id of listAgentIds()) {
     try {

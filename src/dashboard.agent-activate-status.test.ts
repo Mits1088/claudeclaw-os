@@ -30,7 +30,7 @@ vi.mock('./agent-create.js', async () => {
   const actual = await vi.importActual<typeof import('./agent-create.js')>('./agent-create.js');
   return {
     ...actual,
-    activateAgent: vi.fn(() => state.activate),
+    activateAgentAndWait: vi.fn(() => state.activate),
     deactivateAgent: vi.fn(() => state.deactivate),
   };
 });

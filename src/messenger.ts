@@ -375,7 +375,7 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
     // a misconfiguration, exactly where the old per-entry main() did.
     if (runtimeMode === 'messenger') factory.preflight(agentId);
 
-    acquireLock();
+    if (runtimeMode !== 'headless') acquireLock();
 
     try {
       initDatabase();
@@ -394,6 +394,9 @@ export async function bootMessenger(factory: MessengerFactory): Promise<void> {
       workerLease = startWorkerLease(agentId);
       logger.info({ agentId, instanceId: workerLease.instanceId }, 'Headless worker lease acquired');
     }
+
+    // Reject stale worker admission before touching another process's PID lock.
+    if (runtimeMode === 'headless') acquireLock();
 
     // Register the in-process dispatch tools (mission/schedule/hive) into the
     // process-global registry so runAgent merges them into eligible turns —

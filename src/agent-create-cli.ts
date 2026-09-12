@@ -34,7 +34,7 @@
 
 import { pathToFileURL } from 'url';
 
-import { createAgent, validateBotToken, validateAgentId, activateAgent, suggestBotNames, listTemplates } from './agent-create.js';
+import { createAgent, validateBotToken, validateAgentId, activateAgentAndWait, suggestBotNames, listTemplates } from './agent-create.js';
 import { renderHelp } from './cli-reference.js';
 import { agentCreateDescriptor as descriptor } from './cli-descriptors.js';
 
@@ -157,7 +157,7 @@ async function main(): Promise<void> {
 
     if (args.activate) {
       console.log(`\nActivating...`);
-      const activation = activateAgent(id);
+      const activation = await activateAgentAndWait(id);
       if (activation.ok) {
         console.log(`Agent activated.${activation.pid ? ` PID: ${activation.pid}` : ''}`);
       } else {

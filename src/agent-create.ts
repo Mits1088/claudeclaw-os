@@ -4,6 +4,8 @@ import path from 'path';
 import crypto from 'crypto';
 import { execSync, spawn } from 'child_process';
 import yaml from 'js-yaml';
+import { isProcessDefinitelyDead } from './platform.js';
+import { clearDeadWorkerLease } from './db.js';
 
 import { CLAUDECLAW_CONFIG, PROJECT_ROOT, STORE_DIR } from './config.js';
 import { agentPidFile, ensureAgentsMdSymlink, listAgentIds, loadAgentConfig, resolveAgentDir, refreshWarRoomRoster, findAgentIdentityCollision, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
@@ -584,8 +586,24 @@ export function activateAgent(agentId: string): ActivationResult {
   }
   try {
     if (isHeadlessAgent(agentId)) {
+      if (process.env.CLAUDECLAW_WORKER_INSTANCE_ID) return { ok: false, error: 'Workers cannot activate other workers' };
       ensureDatabase();
-      ensureWorkerDesiredState(agentId, 'active');
+      const current = getWorkerRuntime(agentId);
+      if (current?.instance_id) {
+        if (!current.pid) return { ok: false, error: 'Worker lease has no process identity; reconcile it before activation' };
+        if (isProcessAlive(current.pid)) {
+          return isWorkerLeaseCurrent(agentId, current.instance_id)
+            ? { ok: true, pid: current.pid }
+            : { ok: false, error: 'Previous worker is still alive with an expired lease; stop it before activation' };
+        }
+        if (!isProcessDefinitelyDead(current.pid)) return { ok: false, error: 'Cannot confirm previous worker exit; activation refused' };
+        if (!clearDeadWorkerLease(agentId, current.instance_id, current.pid)) {
+          return { ok: false, error: 'Worker state changed during recovery; activation refused' };
+        }
+      } else {
+        ensureWorkerDesiredState(agentId, 'active');
+      }
+      return activateDetached(agentId);
     }
     if (IS_MACOS) return activateLaunchd(agentId);
     // Everything else (Linux, Windows) spawns a detached child. This needs no
@@ -609,6 +627,25 @@ export function activateAgent(agentId: string): ActivationResult {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+/** Await readiness without blocking the bot event loop. No successful spawn-only PID. */
+export async function activateAgentAndWait(agentId: string, options: { preserveDesiredState?: boolean } = {}): Promise<ActivationResult> {
+  const result = activateAgent(agentId);
+  if (!result.ok || !isHeadlessAgent(agentId)) return result;
+  const deadline = Date.now() + 30_000;
+  while (Date.now() < deadline) {
+    const state = getWorkerRuntime(agentId);
+    if (state && state.pid === result.pid && state.instance_id && isWorkerLeaseCurrent(agentId, state.instance_id)) return result;
+    if (state?.desired_state !== 'active' || !result.pid || isProcessDefinitelyDead(result.pid)) break;
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  const state = getWorkerRuntime(agentId);
+  if (state?.desired_state === 'active' && result.pid && !isProcessDefinitelyDead(result.pid)) {
+    return { ok: false, pid: result.pid, error: 'Worker is still starting after 30 seconds; readiness is unconfirmed. Stop it explicitly or check its agent log.' };
+  }
+  if (!options.preserveDesiredState && (!state?.instance_id || state.pid === result.pid)) deactivateAgent(agentId);
+  return { ok: false, error: 'Worker exited, was stopped, or did not acquire a current lease within 30 seconds. Check its agent log.' };
 }
 
 function activateLaunchd(agentId: string): ActivationResult {
@@ -897,6 +934,7 @@ export function restartAgent(agentId: string): { ok: boolean; error?: string } {
     return { ok: false, error: `Invalid agent ID format: ${agentId}` };
   }
   try {
+    if (isHeadlessAgent(agentId)) return { ok: false, error: 'Use restartAgentAndWait for native worker readiness' };
     if (IS_MACOS) {
       const label = `com.claudeclaw.${agentId}`;
       const destPlist = path.join(os.homedir(), 'Library', 'LaunchAgents', `${label}.plist`);
@@ -947,4 +985,12 @@ export function isAgentRunning(agentId: string): boolean {
   } catch {
     return false;
   }
+}
+
+export async function restartAgentAndWait(agentId: string): Promise<ActivationResult> {
+  if (!VALID_ID_RE.test(agentId)) return { ok: false, error: 'Invalid agent ID format' };
+  if (!isHeadlessAgent(agentId)) return restartAgent(agentId);
+  if (process.env.CLAUDECLAW_WORKER_INSTANCE_ID) return { ok: false, error: 'Workers cannot restart other workers' };
+  const stopped = deactivateAgent(agentId);
+  return stopped.ok ? activateAgentAndWait(agentId) : stopped;
 }

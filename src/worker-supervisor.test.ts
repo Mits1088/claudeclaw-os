@@ -19,7 +19,7 @@ vi.mock('./agent-config.js', () => ({
 }));
 
 vi.mock('./agent-create.js', () => ({
-  activateAgent: (id: string) => {
+  activateAgentAndWait: async (id: string) => {
     state.activated.push(id);
     return { ok: true, pid: 500 };
   },

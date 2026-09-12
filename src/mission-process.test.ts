@@ -72,9 +72,9 @@ async function peer(): Promise<Peer> {
   const next = new Peer(); peers.push(next); await next.ready; return next;
 }
 const fence = (task: MissionTask) => ({ agentId: task.assigned_agent!, instanceId: task.claiming_instance_id!, generation: task.claim_generation });
-async function lease(control: Peer, agentId: string, instanceId: string) {
+async function lease(control: Peer, agentId: string, instanceId: string, supervisorEpoch = 'epoch') {
   await control.call('desired', agentId, 'active');
-  expect(await control.call('lease', { agentId, instanceId, supervisorEpoch: 'epoch', pid: control.child.pid,
+  expect(await control.call('lease', { agentId, instanceId, supervisorEpoch, pid: control.child.pid,
     processStartedAt: 1, runtimeBuildId: 'fixture' })).toBe(true);
 }
 
@@ -130,7 +130,9 @@ describe('retained missions across real isolated processes', () => {
     await control.call('create', 'child', 'Child', 'Synthetic', 'worker', 'main', 0, null, 'group', 'task');
     await control.call('create', 'join', 'Join', 'Summary', 'main', 'main', 0, null, 'group', 'join', 'waiting');
     const task = await worker.call<MissionTask>('claim', 'worker', 'old');
-    await lease(control, 'worker', 'replacement');
+    // A supervisor fences the old lease before admitting a replacement.
+    await control.call('epoch', 'replacement-epoch', 'fixture');
+    await lease(control, 'worker', 'replacement', 'replacement-epoch');
     expect(await worker.call('complete', 'child', 'stale', 'completed', undefined, fence(task))).toBe(false);
     expect(await control.call('complete', 'child', 'wrong generation', 'completed', undefined,
       { ...fence(task), instanceId: 'replacement', generation: task.claim_generation + 1 })).toBe(false);
