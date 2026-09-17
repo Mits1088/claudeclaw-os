@@ -1,3 +1,5 @@
+import type { TurnSteerParams } from './codex-app-server-protocol.js';
+import { createSteeringHandle, STEERING_LIMITS } from './steering.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -829,6 +831,8 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
     // affected — this is the live display only.
     let lastDeltaItemId = '';
     let turnId: string | null = null;
+    let unregisterSteering: (() => void) | undefined;
+    let steeringClosed = false;
     // The turn id is carried on the terminal so cancellation can insist on a terminal
     // for the turn it actually interrupted, rather than accepting any that turns up.
     let terminal: { turnId: string; status: string; error: string | null } | null = null;
@@ -1064,6 +1068,33 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         return;
       }
 
+      if (input.registerSteering && turnId && !terminal && !signal?.aborted) {
+        const expectedTurnId = turnId;
+        unregisterSteering = input.registerSteering(createSteeringHandle({
+          sessionId: threadId,
+          turnId: expectedTurnId,
+          startedAt,
+          isActive: () => !steeringClosed && !terminal && !transportFailure && !policyViolation
+            && !signal?.aborted && (deadlineAt === null || Date.now() < deadlineAt),
+          send: async (text) => {
+            try {
+              const response = await client.request('turn/steer', {
+                threadId,
+                expectedTurnId,
+                input: [{ type: 'text', text, text_elements: [] }],
+              } satisfies TurnSteerParams, STEERING_LIMITS.requestTimeoutMs);
+              return (response as { turnId?: unknown } | null)?.turnId === expectedTurnId
+                ? { status: 'accepted' }
+                : { status: 'uncertain' };
+            } catch (err) {
+              return requestDeliveryOf(err) === 'unknown'
+                ? { status: 'uncertain' }
+                : { status: 'not-delivered', reason: 'provider-rejected' };
+            }
+          },
+        }));
+      }
+
       // Drain until terminal, abort, transport failure, or a broken budget.
       for (;;) {
         while (queue.length > 0) yield queue.shift()!;
@@ -1146,6 +1177,8 @@ export class CodexAppServerEngineAdapter implements AgentEngine {
         usage, model, startedAt, finalText(),
       );
     } finally {
+      steeringClosed = true;
+      unregisterSteering?.();
       manager.removeSink(sink);
     }
   }

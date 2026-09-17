@@ -303,3 +303,9 @@ describe('runDecaySweep', () => {
     expect(mockDecayMemories).toHaveBeenCalledOnce();
   });
 });
+
+it('logs only the assistant when the opening steering input was already recorded', () => {
+  mockLogConversationTurn.mockClear();
+  saveConversationTurn('chat1', 'opening', 'answer', 'session1', 'main', true);
+  expect(mockLogConversationTurn.mock.calls).toEqual([['chat1', 'assistant', 'answer', 'session1', 'main']]);
+});

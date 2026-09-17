@@ -277,10 +277,11 @@ export function saveConversationTurn(
   claudeResponse: string,
   sessionId?: string,
   agentId = 'main',
+  userAlreadyLogged = false,
 ): void {
   try {
     // Always log full conversation to conversation_log (for /respin)
-    logConversationTurn(chatId, 'user', userMessage, sessionId, agentId);
+    if (!userAlreadyLogged) logConversationTurn(chatId, 'user', userMessage, sessionId, agentId);
     logConversationTurn(chatId, 'assistant', claudeResponse, sessionId, agentId);
   } catch (err) {
     logger.error({ err }, 'Failed to log conversation turn');

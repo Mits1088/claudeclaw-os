@@ -521,3 +521,6 @@ export const WARROOM_PORT = parseInt(
   process.env.WARROOM_PORT || envConfig.WARROOM_PORT || '7860',
   10,
 );
+
+// Steering is opt-in; actual support is advertised by the active adapter.
+export const MIDTURN_STEERING_ENABLED = process.env.MIDTURN_STEERING_ENABLED === 'true';

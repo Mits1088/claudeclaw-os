@@ -1,3 +1,6 @@
+import { claimSteeringReceipt, getChatSteering, registerChatSteering, revokeChatSteering } from './steering.js';
+import { MIDTURN_STEERING_ENABLED } from './config.js';
+import { logConversationTurn } from './db.js';
 import { outboundTelegramTransformer, outboundText } from './outbound-payload.js';
 import fs from 'fs';
 import path from 'path';
@@ -1694,6 +1697,9 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       ? setInterval(() => publishWorking(''), WORKING_TICK_MS)
       : undefined;
 
+    const registerTurnSteering = MIDTURN_STEERING_ENABLED
+      ? registerChatSteering(AGENT_ID, chatIdStr, JSON.stringify(provider)) : undefined;
+    let userAlreadyLogged = false;
     const result = await runAgentWithRetry(
       fullMessage,
       sessionId,
@@ -1710,6 +1716,17 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       provider,
       chatToolProfileFor(provider),
       makeAskUserQuestionResolver(ctx, chatId, abortCtrl),
+      registerTurnSteering
+        ? (handle) => {
+          // Persist the opening input before any steers, preserving transcript order.
+          if (!skipLog && !userAlreadyLogged) {
+            try {
+              logConversationTurn(chatIdStr, 'user', message, handle.sessionId, AGENT_ID);
+              userAlreadyLogged = true;
+            } catch (err) { logger.error({ err }, 'Could not persist opening steering turn'); }
+          }
+          return registerTurnSteering(handle);
+        } : undefined,
     );
 
     setActiveAbort(chatIdStr, null);
@@ -1768,7 +1785,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // Save conversation turn to memory (including full log).
     // Skip logging for synthetic messages like /respin to avoid self-referential growth.
     if (!skipLog) {
-      saveConversationTurn(chatIdStr, message, rawResponse, result.newSessionId ?? sessionId, AGENT_ID);
+      saveConversationTurn(chatIdStr, message, rawResponse, result.newSessionId ?? sessionId, AGENT_ID, userAlreadyLogged);
       // Fire-and-forget: evaluate which surfaced memories were useful
       if (surfacedMemoryIds.length > 0) {
         void evaluateMemoryRelevance(surfacedMemoryIds, surfacedMemorySummaries, message, rawResponse).catch(() => {});
@@ -2088,6 +2105,7 @@ export function createBot(): Bot {
     { command: 'wa', description: 'Recent WhatsApp messages' },
     { command: 'slack', description: 'Recent Slack messages' },
     { command: 'dashboard', description: 'Open web dashboard' },
+    { command: 'steer', description: 'Update the active turn' },
     { command: 'stop', description: 'Stop current processing' },
     { command: 'agents', description: 'List available agents' },
     { command: 'delegate', description: 'Hand a task to one agent (async)' },
@@ -2127,6 +2145,7 @@ export function createBot(): Bot {
       '/wa — WhatsApp messages\n' +
       '/slack — Slack messages\n' +
       '/dashboard — Web dashboard\n' +
+      '/steer <message> — Update the active turn (when enabled)\n' +
       '/stop — Stop current processing\n' +
       '/agents — List available agents\n' +
       '/delegate — Hand a task to one agent, async (delegate)\n' +
@@ -2193,6 +2212,7 @@ export function createBot(): Bot {
       })();
     }
 
+    revokeChatSteering(AGENT_ID, chatIdStr);
     clearSession(chatIdStr, AGENT_ID);
     sessionBaseline.delete(chatIdStr);
     await ctx.reply('Session cleared. Starting fresh.');
@@ -2428,6 +2448,7 @@ export function createBot(): Bot {
   // /forget — clear session (memory decay handles the rest)
   bot.command('forget', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
+    revokeChatSteering(AGENT_ID, ctx.chat!.id.toString());
     clearSession(ctx.chat!.id.toString(), AGENT_ID);
     await ctx.reply('Session cleared. Memories will fade naturally over time.');
   });
@@ -2627,8 +2648,55 @@ export function createBot(): Bot {
     messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, `/gather ${args}`));
   });
 
+  // Explicit owner intent; ordinary messages retain the existing FIFO path.
+  bot.command('steer', async (ctx) => {
+    if (await replyIfLocked(ctx)) return;
+    if (ctx.chat.type !== 'private' || ctx.from?.id !== ctx.chat.id || ctx.from.is_bot) return;
+    if (ctx.message?.forward_origin || ctx.message?.via_bot) {
+      await ctx.reply('Use /steer with a message you type directly.');
+      return;
+    }
+    const text = ctx.match.trim();
+    if (!text) { await ctx.reply('Usage: /steer <message>'); return; }
+    const chatIdStr = ctx.chat.id.toString();
+    if (checkKillPhrase(text)) {
+      audit({ agentId: AGENT_ID, chatId: chatIdStr, action: 'kill', detail: 'Emergency kill via steer command', blocked: false });
+      await ctx.reply('EMERGENCY KILL activated. All agents stopping.');
+      await drainKillUpdate(ctx);
+      executeEmergencyKill();
+      return;
+    }
+    if (!MIDTURN_STEERING_ENABLED) {
+      await ctx.reply('Steering is disabled. Send a normal message to queue a follow-up.');
+      return;
+    }
+    const handle = getChatSteering(AGENT_ID, chatIdStr, JSON.stringify(activeProvider()));
+    if (!handle) {
+      logger.info({ agentId: AGENT_ID, chatId: chatIdStr, status: 'unavailable' }, 'steering_outcome');
+      await ctx.reply('Steering is not available for the active provider or turn. Send a normal message to queue a follow-up.');
+      return;
+    }
+    const outcome = messageQueue.queuedFor(chatIdStr) > 1
+      ? { status: 'not-delivered' as const, reason: 'queued-follow-up' }
+      : await handle.submit(String(ctx.message!.message_id), text);
+    logger.info({ agentId: AGENT_ID, chatId: chatIdStr, status: outcome.status,
+      reason: outcome.status === 'not-delivered' ? outcome.reason : undefined }, 'steering_outcome');
+    if (outcome.status === 'not-delivered') {
+      messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text));
+      await ctx.reply('Could not steer. Queued as a follow-up.');
+      return;
+    }
+    if (!claimSteeringReceipt(handle, String(ctx.message!.message_id))) return;
+    try { logConversationTurn(chatIdStr, 'user', text, handle.sessionId, AGENT_ID); }
+    catch (err) { logger.error({ err }, 'Could not persist steering input'); }
+    emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'telegram' });
+    await ctx.reply(outcome.status === 'accepted'
+      ? 'Update accepted by the active turn.'
+      : 'Could not confirm whether the active turn received your update. It has not been queued again.');
+  });
+
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
-  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/cache', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/stop', '/agents', '/delegate', '/await', '/gather', '/lock', '/status']);
+  const OWN_COMMANDS = new Set(['/start', '/help', '/newchat', '/respin', '/voice', '/model', '/provider', '/memory', '/cache', '/forget', '/pin', '/unpin', '/chatid', '/wa', '/slack', '/dashboard', '/steer', '/stop', '/agents', '/delegate', '/await', '/gather', '/lock', '/status']);
   bot.on('message:text', async (ctx) => {
     const text = ctx.message.text;
     const chatIdStr = ctx.chat!.id.toString();
@@ -2818,7 +2886,6 @@ export function createBot(): Bot {
     // Clear WA/Slack state and pass through to Claude
     if (state) waState.delete(chatIdStr);
     if (slkState) slackState.delete(chatIdStr);
-    // Fire-and-forget so grammY can process /stop while agent runs
     messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text));
   });
 

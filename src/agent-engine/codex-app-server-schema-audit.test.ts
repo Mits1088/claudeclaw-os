@@ -64,6 +64,8 @@ export type ClientRequest = { "method": "initialize", id: RequestId, params: Ini
   ServerRequest: `
 export type ServerRequest = { "method": "item/commandExecution/requestApproval", id: RequestId, params: CommandExecutionRequestApprovalParams, } | { "method": "item/fileChange/requestApproval", id: RequestId, params: FileChangeRequestApprovalParams, } | { "method": "item/tool/requestUserInput", id: RequestId, params: ToolRequestUserInputParams, } | { "method": "mcpServer/elicitation/request", id: RequestId, params: McpServerElicitationRequestParams, } | { "method": "item/permissions/requestApproval", id: RequestId, params: PermissionsRequestApprovalParams, } | { "method": "item/tool/call", id: RequestId, params: DynamicToolCallParams, } | { "method": "account/chatgptAuthTokens/refresh", id: RequestId, params: ChatgptAuthTokensRefreshParams, } | { "method": "attestation/generate", id: RequestId, params: AttestationGenerateParams, } | { "method": "currentTime/read", id: RequestId, params: CurrentTimeReadParams, } | { "method": "applyPatchApproval", id: RequestId, params: ApplyPatchApprovalParams, } | { "method": "execCommandApproval", id: RequestId, params: ExecCommandApprovalParams, };
 `,
+  'v2/TurnSteerParams': 'export type TurnSteerParams = { threadId: string, expectedTurnId: string, input: Array<UserInput>, };',
+  'v2/TurnSteerResponse': 'export type TurnSteerResponse = { turnId: string, };',
   'v2/AppToolApproval': 'export type AppToolApproval = "auto" | "prompt" | "writes" | "approve";\n',
   'v2/DynamicToolCallResponse': 'export type DynamicToolCallResponse = { contentItems: Array<DynamicToolCallOutputContentItem>, success: boolean, };\n',
   // Every variant TAG (what the non-tool classification is checked against), with the
@@ -997,4 +999,11 @@ platformFamily: string, };
     }));
     expect(result.failures.join('\n')).toMatch(/InitializeResponse\.platformOs/);
   });
+});
+
+it('rejects steering target identity drift', () => {
+  const result = auditBindings(readerWith({
+    'v2/TurnSteerParams': 'export type TurnSteerParams = { threadId: string, expectedTurnId?: string, input: Array<UserInput>, };',
+  }));
+  expect(result.failures.some(f => f.includes('expectedTurnId'))).toBe(true);
 });

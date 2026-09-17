@@ -1045,6 +1045,19 @@ function auditThreadLifecycle(audit: Audit, load: (name: string) => string | nul
   // rather than waiting for `turn/started`, because an abort that beats the
   // notification would otherwise have nothing to interrupt — and the adapter now
   // quarantines the connection rather than report a cancellation it cannot perform.
+  for (const [binding, fields] of [
+    ['v2/TurnSteerParams', ['threadId', 'expectedTurnId']],
+    ['v2/TurnSteerResponse', ['turnId']],
+  ] as const) {
+    const source = load(binding);
+    if (!source) audit.fail(`${binding} exists`, 'steering schema missing');
+    else for (const field of fields) {
+      audit.requireField(source, binding, field, /string/, `${binding}.${field} must be a required string`);
+    }
+  }
+  const steerParams = load('v2/TurnSteerParams');
+  if (steerParams) audit.requireField(steerParams, 'TurnSteerParams', 'input', /Array<UserInput>/, 'steering input must be UserInput[]');
+
   const startResponse = load('v2/TurnStartResponse');
   const turn = load('v2/Turn');
   if (!startResponse || !turn) {

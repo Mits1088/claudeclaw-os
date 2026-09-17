@@ -1,3 +1,4 @@
+import type { RegisterSteering } from './steering.js';
 import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
 import type { ProviderConfig } from '../provider.js';
 
@@ -196,6 +197,8 @@ export interface AgentTurnInput {
    * ignore this field.
    */
   onAskUserQuestion?: AskUserQuestionResolver;
+  /** Interactive gateway only; adapters publish an invocation-scoped capability. */
+  registerSteering?: RegisterSteering;
 }
 
 export type AgentEngineEvent =

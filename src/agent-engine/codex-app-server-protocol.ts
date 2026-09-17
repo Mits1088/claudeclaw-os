@@ -47,6 +47,7 @@ export const CONSUMED_REQUEST_METHODS = [
   'thread/unsubscribe',
   'mcpServerStatus/list',
   'turn/start',
+  'turn/steer',
   'turn/interrupt',
 ] as const;
 
@@ -349,6 +350,12 @@ export type UserInput = { type: 'text'; text: string; text_elements: [] };
 
 export interface TurnStartParams {
   threadId: string;
+  input: UserInput[];
+}
+
+export interface TurnSteerParams {
+  threadId: string;
+  expectedTurnId: string;
   input: UserInput[];
 }
 

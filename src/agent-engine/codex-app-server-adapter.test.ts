@@ -2683,3 +2683,56 @@ describe('trusted provenance does not widen anything else', () => {
     expect(response).toEqual({ result: { action: 'decline', content: null, _meta: null } });
   });
 });
+
+
+describe('Codex native steering', () => {
+  it.each(['accepted', 'mismatch', 'refused', 'unknown'] as const)('handles %s without changing turn policy', async (mode) => {
+    const server = scriptedServer({ onTurnStart: () => {} });
+    server.handlers['turn/steer'] = () => {
+      if (mode === 'refused' || mode === 'unknown') {
+        throw new CodexAppServerRequestError('steer failure', mode, 'turn/steer');
+      }
+      return { turnId: mode === 'mismatch' ? 'another-turn' : 't1' };
+    };
+    const removed = vi.fn();
+    let submission: Promise<void> | undefined;
+    let handle: import('./steering.js').SteeringHandle | undefined;
+    await collect(server, baseInput({ registerSteering: (registered) => {
+      handle = registered;
+      submission = (async () => {
+        const result = await registered.submit('m1', 'Focus on tests');
+        expect(result.status).toBe(mode === 'accepted' ? 'accepted' : mode === 'refused' ? 'not-delivered' : 'uncertain');
+        server.notify('turn/completed', { threadId: 'thread-1', turn: { id: 't1', status: 'completed' } });
+      })();
+      return removed;
+    } }));
+    await submission;
+    expect(server.requests.find((r) => r.method === 'turn/steer')?.params).toEqual({
+      threadId: 'thread-1', expectedTurnId: 't1',
+      input: [{ type: 'text', text: 'Focus on tests', text_elements: [] }],
+    });
+    expect(removed).toHaveBeenCalledTimes(1);
+    expect(await handle!.submit('m2', 'late')).toMatchObject({ status: 'not-delivered', reason: 'closed' });
+    expect(server.requests.filter((r) => r.method === 'turn/start')).toHaveLength(1);
+  });
+
+  it('does not publish capability for an already completed turn', async () => {
+    const registerSteering = vi.fn();
+    await collect(scriptedServer(), baseInput({ registerSteering }));
+    expect(registerSteering).not.toHaveBeenCalled();
+  });
+
+  it('rejects input immediately after cancellation', async () => {
+    const server = scriptedServer({ onTurnStart: () => {} });
+    const abortController = new AbortController();
+    let submission: Promise<unknown> | undefined;
+    await collect(server, baseInput({ abortController, registerSteering: (handle) => {
+      abortController.abort();
+      submission = handle.submit('m1', 'too late');
+      server.notify('turn/completed', { threadId: 'thread-1', turn: { id: 't1', status: 'interrupted' } });
+      return () => {};
+    } }));
+    expect(await submission).toMatchObject({ status: 'not-delivered' });
+    expect(server.requests.some((r) => r.method === 'turn/steer')).toBe(false);
+  });
+});

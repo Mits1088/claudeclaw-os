@@ -1,3 +1,4 @@
+import type { RegisterSteering } from './agent-engine/steering.js';
 import fs from 'fs';
 import path from 'path';
 
@@ -248,6 +249,7 @@ export async function runAgent(
   toolPolicy?: AgentToolPolicy,
   onAskUserQuestion?: AskUserQuestionResolver,
   sharedWatchdog?: TurnWatchdog,
+  registerSteering?: RegisterSteering,
 ): Promise<AgentResult> {
   // Centralized kill-switch enforcement. Throws KillSwitchDisabledError if
   // LLM_SPAWN_ENABLED has been flipped off — caller is expected to surface
@@ -367,6 +369,7 @@ export async function runAgent(
       ...(toolPolicy?.allowedTools ? { allowedTools: toolPolicy.allowedTools } : {}),
       ...(toolPolicy?.disallowedTools ? { disallowedTools: toolPolicy.disallowedTools } : {}),
       ...(onAskUserQuestion ? { onAskUserQuestion } : {}),
+      ...(registerSteering ? { registerSteering } : {}),
       abortController: turnAbort,
     })) {
       watchdog.touch();
@@ -512,6 +515,7 @@ export async function runAgentWithRetry(
   providerConfig?: ProviderConfig,
   toolPolicy?: AgentToolPolicy,
   onAskUserQuestion?: AskUserQuestionResolver,
+  registerSteering?: RegisterSteering,
 ): Promise<AgentResult> {
   let lastError: AgentError | undefined;
   const turnAbort = abortController ?? new AbortController();
@@ -535,6 +539,7 @@ export async function runAgentWithRetry(
         toolPolicy,
         onAskUserQuestion,
         watchdog,
+        registerSteering,
       );
     } catch (err) {
       if (!(err instanceof AgentError)) throw err;
