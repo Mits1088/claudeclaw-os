@@ -166,6 +166,83 @@ describe('loadAgentConfig runtime mode', () => {
   });
 });
 
+describe('loadAgentConfig obsidian block', () => {
+  it('leaves vault unset when omitted, so the configured vault is used', async () => {
+    // agent-config deliberately does NOT resolve the default vault: that
+    // depends on the dashboard setting, and reading it here would make agent
+    // config loading depend on the database. obsidian-config.resolveVaultDir
+    // does the resolving instead.
+    writeAgentYaml('research', {
+      name: 'Research',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      obsidian: { folders: ['Notes'] },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('research').obsidian?.vault).toBeUndefined();
+    expect(loadAgentConfig('research').obsidian?.folders).toEqual(['Notes']);
+  });
+
+  it('does not warn when no explicit vault is configured', async () => {
+    writeAgentYaml('research', {
+      name: 'Research',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      obsidian: { folders: ['Notes'] },
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { loadAgentConfig } = await import('./agent-config.js');
+    loadAgentConfig('research');
+    expect(warnSpy).not.toHaveBeenCalled();
+    warnSpy.mockRestore();
+  });
+
+  it('honours an explicit vault override', async () => {
+    const customVault = path.join(tmpRoot, 'my-vault');
+    fs.mkdirSync(customVault, { recursive: true });
+    writeAgentYaml('research', {
+      name: 'Research',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      obsidian: { vault: customVault, folders: ['Notes'] },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('research').obsidian?.vault).toBe(customVault);
+  });
+
+  it('parses write_folders into writeFolders', async () => {
+    writeAgentYaml('research', {
+      name: 'Research',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      obsidian: { folders: ['Notes'], write_folders: ['Notes/Drafts'] },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('research').obsidian?.writeFolders).toEqual(['Notes/Drafts']);
+  });
+
+  it('defaults writeFolders to an empty array when absent', async () => {
+    writeAgentYaml('research', {
+      name: 'Research',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+      obsidian: { folders: ['Notes'] },
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('research').obsidian?.writeFolders).toEqual([]);
+  });
+
+  it('leaves obsidian undefined when the agent.yaml has no obsidian block', async () => {
+    writeAgentYaml('ops', {
+      name: 'Ops',
+      description: 'desc',
+      telegram_bot_token_env: 'TEST_BOT_TOKEN',
+    });
+    const { loadAgentConfig } = await import('./agent-config.js');
+    expect(loadAgentConfig('ops').obsidian).toBeUndefined();
+  });
+});
+
 describe('setAgentDescription', () => {
   it('updates the description field in agent.yaml', async () => {
     const yamlPath = writeAgentYaml('raka', {

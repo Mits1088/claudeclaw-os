@@ -11,6 +11,7 @@ Canonical reference for the ClaudeClaw agent-facing CLIs. This block is generate
 - [`hive-cli`](#hive-cli) — Store-aware hive-mind accessor — the ONLY sanctioned way to read/write hive_mind.
 - [`meet-cli`](#meet-cli) — Send an agent into a video meeting as a real-time AI avatar (Pika or Daily.co).
 - [`mission-cli`](#mission-cli) — Create and manage one-shot mission tasks executed by a target agent.
+- [`obsidian-cli`](#obsidian-cli) — Read and write notes in the shared git-synced Obsidian vault.
 - [`schedule-cli`](#schedule-cli) — Manage RECURRING scheduled tasks (cron) that fire in an agent process.
 - [`slack-cli`](#slack-cli) — Read and post to Slack from an agent (JSON output).
 
@@ -94,6 +95,29 @@ Binary: `node dist/mission-cli.js`
 - Every mission runs once, reaches a terminal status, and auto-purges after 7 days through normal mission retention.
 - The creating agent is recorded from CLAUDECLAW_AGENT_ID (defaults to "main").
 - Orchestration modes: delegate (create, 1->1 async), await (orchestrator fires N creates and waits inline — no CLI verb), gather (1->N non-blocking join). Handbacks resolve to the originator.
+
+## obsidian-cli
+
+Read and write notes in the shared git-synced Obsidian vault.
+
+Binary: `node dist/obsidian-cli.js`
+
+### Commands
+
+- `read <path>` — Print a note's raw content. Path is relative to the vault root.
+- `write <path> <content> | write <path> --stdin` — Create or overwrite a note, then sync it. --stdin reads the content from stdin, which is the safe form for multi-line notes.
+- `append <path> <text>` — Append a line to a note, creating it if it does not exist yet, then sync.
+- `search <query>` — Case-insensitive substring search across .md files in the agent's readable folders. Prints file:line: text.
+- `daily` — Get or create today's daily note for this agent (ClaudeClaw/<agent-id>/YYYY-MM-DD.md) and print its vault-relative path.
+- `list <folder>` — List .md files directly inside a vault folder.
+
+### Notes
+
+- Requires the Obsidian vault to be enabled in the dashboard Settings; every command fails while it is off.
+- The agent must have an `obsidian:` block in its agent.yaml. Reads are limited to `folders` + `read_only`; writes (including `daily`) are limited to `write_folders`.
+- The acting agent comes from the runtime (CLAUDECLAW_AGENT_ID) and cannot be passed in.
+- The vault may be a git-synced shared vault or a plain local folder — set the location and whether git sync is on in the dashboard Settings. In local mode no git command is ever run.
+- This is the ONLY supported way to touch vault files: writes take a cross-process lock and, when sync is on, run pull-before-write / commit-after-write. Never Write/Edit vault files directly.
 
 ## schedule-cli
 

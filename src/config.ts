@@ -16,13 +16,21 @@ import type { ProviderConfig } from './provider.js';
  * `cli-descriptors.js` are both leaf modules (type + pure data only), so this
  * import does not create a cycle back through db.ts.
  */
-function withCliIndex(persona: string | undefined): string | undefined {
+function withCliIndex(persona: string | undefined, vaultAvailable: boolean): string | undefined {
   if (!persona) return persona;
+  // A CLI the agent cannot use must not be advertised to it: obsidian-cli is
+  // listed only when this install has Obsidian enabled AND this agent has
+  // vault scope. Whether it is enabled lives in the database, which this
+  // module must not read (config → db → config would be a cycle), so the
+  // caller resolves it and passes it in.
+  const visible = vaultAvailable
+    ? allDescriptors
+    : allDescriptors.filter((d) => d.name !== 'obsidian-cli');
   // Stamp the known-absolute PROJECT_ROOT into the injected index so agents
   // never rediscover the root via `git rev-parse` — scheduled/automation turns
   // run from the agent config dir (a non-repo cwd) and would otherwise anchor
   // to a sibling checkout. See issue #157.
-  return persona + '\n\n' + renderCliIndex(allDescriptors, PROJECT_ROOT);
+  return persona + '\n\n' + renderCliIndex(visible, PROJECT_ROOT);
 }
 
 const envConfig = readEnvFile([
@@ -84,9 +92,12 @@ export let activeBotToken =
 export let agentCwd: string | undefined; // undefined = use PROJECT_ROOT
 export let agentDefaultModel: string | undefined; // from agent.yaml
 export let agentProvider: ProviderConfig | undefined; // from agent.yaml/main-config
-export let agentObsidianConfig: { vault: string; folders: string[]; readOnly?: string[] } | undefined;
+export let agentObsidianConfig: { vault?: string; folders: string[]; readOnly?: string[]; writeFolders?: string[] } | undefined;
 export let agentSystemPrompt: string | undefined; // loaded from agents/{id}/CLAUDE.md
 export let agentMcpAllowlist: string[] | undefined; // from agent.yaml mcp_servers
+/** Whether obsidian-cli is advertised to this agent. Decided once in
+ *  setAgentOverrides and reused on persona edits. */
+let vaultCliVisible = false;
 
 export function setAgentOverrides(opts: {
   agentId: string;
@@ -94,7 +105,11 @@ export function setAgentOverrides(opts: {
   cwd: string;
   model?: string;
   provider?: ProviderConfig;
-  obsidian?: { vault: string; folders: string[]; readOnly?: string[] };
+  obsidian?: { vault?: string; folders: string[]; readOnly?: string[]; writeFolders?: string[] };
+  /** Whether the install has Obsidian enabled. Resolved by the caller (this
+   *  module must not read the database) and combined with the agent's own
+   *  scope to decide whether obsidian-cli is advertised at all. */
+  obsidianEnabled?: boolean;
   systemPrompt?: string;
   mcpServers?: string[];
 }): void {
@@ -104,7 +119,10 @@ export function setAgentOverrides(opts: {
   agentDefaultModel = opts.model;
   agentProvider = opts.provider;
   agentObsidianConfig = opts.obsidian;
-  agentSystemPrompt = withCliIndex(opts.systemPrompt);
+  const scope = opts.obsidian;
+  vaultCliVisible = !!opts.obsidianEnabled
+    && ((scope?.folders?.length ?? 0) + (scope?.readOnly?.length ?? 0) + (scope?.writeFolders?.length ?? 0)) > 0;
+  agentSystemPrompt = withCliIndex(opts.systemPrompt, vaultCliVisible);
   agentMcpAllowlist = opts.mcpServers;
 }
 
@@ -114,7 +132,10 @@ export function setAgentOverrides(opts: {
  *  requiring a process restart. Sub-agents don't need this — the SDK
  *  re-reads CLAUDE.md from cwd via settingSources on every turn. */
 export function updateAgentSystemPrompt(next: string | undefined): void {
-  agentSystemPrompt = withCliIndex(next);
+  // Editing CLAUDE.md does not change whether this agent can use the vault,
+  // so reuse the visibility decided when the overrides were set rather than
+  // silently re-advertising (or dropping) obsidian-cli on a persona edit.
+  agentSystemPrompt = withCliIndex(next, vaultCliVisible);
 }
 
 /** Update just the active provider for the running process. Dashboard

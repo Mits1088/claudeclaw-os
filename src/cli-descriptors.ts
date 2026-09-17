@@ -293,6 +293,80 @@ export const scheduleDescriptor: CliDescriptor = {
   ],
 };
 
+export const obsidianDescriptor: CliDescriptor = {
+  name: 'obsidian-cli',
+  binary: 'dist/obsidian-cli.js',
+  summary: 'Read and write notes in the shared git-synced Obsidian vault.',
+  ship: true,
+  commands: [
+    {
+      usage: 'read <path>',
+      description: 'Print a note\'s raw content. Path is relative to the vault root.',
+      tool: {
+        name: 'obsidian_read',
+        params: [
+          { name: 'path', type: 'string', required: true, description: 'Vault-relative path of the note, e.g. Notes/ideas.md.' },
+        ],
+      },
+    },
+    {
+      usage: 'write <path> <content> | write <path> --stdin',
+      description:
+        'Create or overwrite a note, then sync it. --stdin reads the content from stdin, which is the safe form for multi-line notes.',
+      tool: {
+        name: 'obsidian_write',
+        params: [
+          { name: 'path', type: 'string', required: true, description: 'Vault-relative path of the note to create or overwrite.' },
+          { name: 'content', type: 'string', required: true, description: 'Full new content of the note.' },
+        ],
+      },
+    },
+    {
+      usage: 'append <path> <text>',
+      description: 'Append a line to a note, creating it if it does not exist yet, then sync.',
+      tool: {
+        name: 'obsidian_append',
+        params: [
+          { name: 'path', type: 'string', required: true, description: 'Vault-relative path of the note to append to.' },
+          { name: 'text', type: 'string', required: true, description: 'Text to append as a new line.' },
+        ],
+      },
+    },
+    {
+      usage: 'search <query>',
+      description: 'Case-insensitive substring search across .md files in the agent\'s readable folders. Prints file:line: text.',
+      tool: {
+        name: 'obsidian_search',
+        params: [
+          { name: 'query', type: 'string', required: true, description: 'Substring to search for, case-insensitive.' },
+        ],
+      },
+    },
+    {
+      usage: 'daily',
+      description: 'Get or create today\'s daily note for this agent (ClaudeClaw/<agent-id>/YYYY-MM-DD.md) and print its vault-relative path.',
+      tool: { name: 'obsidian_daily', params: [] },
+    },
+    {
+      usage: 'list <folder>',
+      description: 'List .md files directly inside a vault folder.',
+      tool: {
+        name: 'obsidian_list',
+        params: [
+          { name: 'folder', type: 'string', required: true, description: 'Vault-relative folder to list, e.g. Notes.' },
+        ],
+      },
+    },
+  ],
+  notes: [
+    'Requires the Obsidian vault to be enabled in the dashboard Settings; every command fails while it is off.',
+    'The agent must have an `obsidian:` block in its agent.yaml. Reads are limited to `folders` + `read_only`; writes (including `daily`) are limited to `write_folders`.',
+    'The acting agent comes from the runtime (CLAUDECLAW_AGENT_ID) and cannot be passed in.',
+    'The vault may be a git-synced shared vault or a plain local folder — set the location and whether git sync is on in the dashboard Settings. In local mode no git command is ever run.',
+    'This is the ONLY supported way to touch vault files: writes take a cross-process lock and, when sync is on, run pull-before-write / commit-after-write. Never Write/Edit vault files directly.',
+  ],
+};
+
 export const slackDescriptor: CliDescriptor = {
   name: 'slack-cli',
   binary: 'dist/slack-cli.js',
@@ -348,6 +422,7 @@ export const allDescriptors: CliDescriptor[] = [
   hiveDescriptor,
   meetDescriptor,
   missionDescriptor,
+  obsidianDescriptor,
   scheduleDescriptor,
   slackDescriptor,
 ];

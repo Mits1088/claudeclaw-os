@@ -41,7 +41,16 @@ import {
 
 import { compatDispatchAllowed } from './anthropic-compat-env.js';
 import type { CliCommand, CliToolParam, CliToolSpec } from './cli-reference.js';
-import { hiveDescriptor, missionDescriptor, scheduleDescriptor } from './cli-descriptors.js';
+import { hiveDescriptor, missionDescriptor, obsidianDescriptor, scheduleDescriptor } from './cli-descriptors.js';
+import {
+  actionObsidianAppend,
+  actionObsidianDaily,
+  actionObsidianList,
+  actionObsidianRead,
+  actionObsidianSearch,
+  actionObsidianWrite,
+  obsidianAvailable,
+} from './obsidian-actions.js';
 import { CLAUDECLAW_CONFIG, DB_ENCRYPTION_KEY, DISPATCH_ALLOW_HIVE_READ, PROJECT_ROOT, STORE_DIR } from './config.js';
 import type { McpServerConfig, McpStdioConfig, TurnToolPolicy } from './agent-engine/types.js';
 import { turnDeniesAllTools } from './agent-engine/types.js';
@@ -70,7 +79,7 @@ import {
 export const DISPATCH_SERVER_NAME = 'claudeclaw';
 
 /** Descriptors promoted to first-class tools this phase (mission/schedule/hive). */
-const DISPATCH_DESCRIPTORS = [missionDescriptor, scheduleDescriptor, hiveDescriptor];
+const DISPATCH_DESCRIPTORS = [missionDescriptor, scheduleDescriptor, hiveDescriptor, obsidianDescriptor];
 
 // ── schema derivation (descriptor spec → zod raw shape) ──────────────────────
 
@@ -113,7 +122,10 @@ export function deriveToolSchema(spec: CliToolSpec): Record<string, z.ZodTypeAny
 // `isError` tool result the model can read, exactly as the CLI prints it to
 // stderr. Snake_case tool params map to the actions' camelCase inputs here.
 
-type Handler = (args: Record<string, unknown>) => string;
+// Vault tools touch the filesystem, take a cross-process lock and may run git,
+// so handlers may be async. The mission/schedule/hive handlers stay sync; the
+// wrapper awaits either shape.
+type Handler = (args: Record<string, unknown>) => string | Promise<string>;
 
 const asStr = (v: unknown): string | undefined => (typeof v === 'string' ? v : undefined);
 const asNum = (v: unknown): number | undefined => (typeof v === 'number' ? v : undefined);
@@ -276,6 +288,28 @@ const HANDLERS: Record<string, Handler> = {
     });
     return `Logged to hive mind as @${r.agent}: ${r.action}`;
   },
+
+  // Vault tools. Note there is no `agent` param on any of these: the acting
+  // agent comes from the runtime context inside the actions, so a model
+  // cannot name a better-scoped agent to widen its own vault access.
+  obsidian_read: async (a) => actionObsidianRead(asStr(a.path) ?? ''),
+
+  obsidian_write: async (a) => actionObsidianWrite(asStr(a.path) ?? '', asStr(a.content) ?? ''),
+
+  obsidian_append: async (a) => actionObsidianAppend(asStr(a.path) ?? '', asStr(a.text) ?? ''),
+
+  obsidian_search: async (a) => {
+    const matches = await actionObsidianSearch(asStr(a.query) ?? '');
+    if (matches.length === 0) return 'No matches.';
+    return matches.map((m) => `${m.file}:${m.line}: ${m.text}`).join('\n');
+  },
+
+  obsidian_daily: async () => actionObsidianDaily(),
+
+  obsidian_list: async (a) => {
+    const entries = await actionObsidianList(asStr(a.folder) ?? '');
+    return entries.length === 0 ? '(empty)' : entries.join('\n');
+  },
 };
 
 // ── tool assembly ────────────────────────────────────────────────────────────
@@ -331,7 +365,15 @@ export interface DispatchToolDefinition {
  * out-of-process providers). One handler, one derived schema, zero drift.
  */
 export function dispatchToolDefinitions(): DispatchToolDefinition[] {
-  return dispatchToolEntries().map((entry) => {
+  // Vault tools are OFFERED only when this install has Obsidian enabled and
+  // the acting agent actually has vault scope. Filtering here covers both
+  // front doors at once: the in-process SDK server and the stdio bridge both
+  // build from this list, so a disabled install advertises no vault tools
+  // anywhere. The actions re-check at execution regardless.
+  const vaultOffered = obsidianAvailable();
+  return dispatchToolEntries()
+    .filter((entry) => vaultOffered || !entry.spec.name.startsWith('obsidian_'))
+    .map((entry) => {
     const raw = HANDLERS[entry.spec.name];
     if (!raw) {
       // A descriptor declared a tool with no implementation — a wiring bug that
@@ -344,7 +386,7 @@ export function dispatchToolDefinitions(): DispatchToolDefinition[] {
       schema: entry.schema,
       handler: async (args: Record<string, unknown>): Promise<DispatchToolResult> => {
         try {
-          return textResult(raw(args));
+          return textResult(await raw(args));
         } catch (e) {
           if (e instanceof CliActionError) return textResult(e.message, true);
           return textResult(
@@ -394,7 +436,11 @@ export function getDispatchMcpServer(
   opts: { allowHiveRead?: boolean } = {},
 ): McpSdkServerConfigWithInstance {
   const allowHiveRead = opts.allowHiveRead ?? true;
-  const key = allowHiveRead ? 'full' : 'no-hive-read';
+  // Vault availability is runtime state — an operator can disable Obsidian
+  // between turns — so it belongs in the cache key. Caching on the policy
+  // alone would keep serving vault tools to every later turn in this process
+  // after the feature was switched off.
+  const key = `${allowHiveRead ? 'full' : 'no-hive-read'}:${obsidianAvailable() ? 'vault' : 'no-vault'}`;
   let server = cachedServers.get(key);
   if (!server) {
     server = createSdkMcpServer({

@@ -36,6 +36,11 @@ workspace/
 # Migration state — local only
 migrations/.applied.json
 
+# Shared Obsidian vault (git-synced separately, see src/vault-sync.ts) —
+# personal knowledge data, not repo content.
+/vault/
+/vault.git/
+
 # Logs
 *.log
 /tmp/claudeclaw.*

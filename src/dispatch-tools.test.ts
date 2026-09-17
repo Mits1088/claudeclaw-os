@@ -405,20 +405,45 @@ describe('dispatch tool schemas are derived from the descriptor specs', () => {
     }
   });
 
-  it('promotes exactly the mission/schedule/hive command set', () => {
+  it('promotes exactly the mission/schedule/hive/obsidian command set', () => {
     expect(dispatchToolNames().sort()).toEqual(
       [
         'hive_log', 'hive_path', 'hive_read',
         'mission_cancel', 'mission_cancel_chain', 'mission_create', 'mission_gather',
         'mission_continue', 'mission_handback', 'mission_list', 'mission_result',
+        'obsidian_append', 'obsidian_daily', 'obsidian_list',
+        'obsidian_read', 'obsidian_search', 'obsidian_write',
         'schedule_create', 'schedule_delete', 'schedule_list',
         'schedule_pause', 'schedule_resume',
       ].sort(),
     );
   });
 
+  it('exposes no acting-agent parameter on any vault tool', () => {
+    // The acting agent comes from the runtime context. A tool param would let
+    // a model borrow a better-scoped agent's vault permissions.
+    for (const entry of dispatchToolEntries().filter((e) => e.spec.name.startsWith('obsidian_'))) {
+      expect(entry.spec.params.map((p) => p.name)).not.toContain('agent');
+    }
+  });
+
   it('every built SDK tool name matches a descriptor spec name', () => {
-    expect(buildDispatchSdkTools().map((t) => t.name).sort()).toEqual(dispatchToolNames().sort());
+    // dispatchToolNames() is the CATALOG of promotable tools. What actually
+    // gets built is the catalog minus anything gated off for this install
+    // (vault tools when Obsidian is disabled or the agent has no scope), so
+    // the invariant is containment: no tool may be built without a descriptor
+    // behind it. Nothing here enables Obsidian, so the vault tools are
+    // legitimately absent.
+    const built = buildDispatchSdkTools().map((t) => t.name);
+    const catalog = new Set(dispatchToolNames());
+    expect(built.length).toBeGreaterThan(0);
+    for (const name of built) expect(catalog.has(name)).toBe(true);
+  });
+
+  it('withholds the vault tools when Obsidian is not available to this agent', () => {
+    // Exposure gating, observed at the SDK front door: this test environment
+    // has no Obsidian setting and no agent scope, so none may be offered.
+    expect(buildDispatchSdkTools().map((t) => t.name).filter((n) => n.startsWith('obsidian_'))).toEqual([]);
   });
 });
 

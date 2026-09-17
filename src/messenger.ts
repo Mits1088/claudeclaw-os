@@ -7,6 +7,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { agentPidFile, loadAgentConfig, resolveAgentDir, resolveAgentClaudeMd, resolveInstructionMd, refreshWarRoomRoster, type AgentLifecycleMode, type AgentRuntimeMode } from './agent-config.js';
+import { getObsidianRuntimeConfig } from './obsidian-config.js';
 import { checkPendingMigrations, backfillMainAgent } from './migrations.js';
 import { ALLOWED_CHAT_ID, activeBotToken, STORE_DIR, PROJECT_ROOT, CLAUDECLAW_CONFIG, GOOGLE_API_KEY, setAgentOverrides, SECURITY_PIN_HASH, IDLE_LOCK_MINUTES, EMERGENCY_KILL_PHRASE, WARROOM_ENABLED, WARROOM_PORT } from './config.js';
 import { startDashboard } from './dashboard.js';
@@ -129,6 +130,7 @@ function loadAgentIdentity(): { agentId: string; interactive: boolean; runtimeMo
       model: agentConfig.model,
       provider: agentConfig.provider,
       obsidian: agentConfig.obsidian,
+      obsidianEnabled: getObsidianRuntimeConfig().enabled,
       systemPrompt,
       mcpServers: agentConfig.mcpServers,
     });

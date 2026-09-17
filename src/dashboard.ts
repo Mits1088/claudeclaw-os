@@ -127,6 +127,8 @@ import {
 } from './provider.js';
 import { PROVIDER_REGISTRY, providerDescriptor, providerRunnable, selectableProviders } from './provider-registry.js';
 import { getSelectedProviderConfig } from './active-provider.js';
+import { validateObsidianConfigJson, parseObsidianConfigJson, resolveVaultDir } from './obsidian-config.js';
+import { ensureVaultProvisioned, getVaultRemotePath } from './vault-sync.js';
 import { getMainModelOverride, processMessageFromDashboard } from './bot.js';
 import { getDashboardHtml } from './dashboard-html.js';
 import { getWarRoomHtml } from './warroom-html.js';
@@ -3685,6 +3687,11 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     // their order, and the cap. Read by pickSlashRoster() in
     // src/warroom-text-orchestrator.ts. UI: web/src/pages/StandupConfig.tsx.
     'standup_config',
+    // JSON {enabled, vaultName}. Master switch for the shared git-synced
+    // Obsidian vault (src/vault-sync.ts, src/obsidian.ts). Ships inert in
+    // every install; flipping enabled:true here is what provisions the
+    // vault on disk (see the PATCH handler below). UI: Settings.tsx.
+    'obsidian_config',
   ]);
   const SETTING_VALUE_MAX_BYTES = 4 * 1024;
 
@@ -3738,6 +3745,10 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       const err = validateStandupConfigJson(body.value);
       if (err) return c.json({ error: err }, 400);
     }
+    if (body.key === 'obsidian_config') {
+      const err = validateObsidianConfigJson(body.value);
+      if (err) return c.json({ error: err }, 400);
+    }
     // Workspace name has its own length cap so the sidebar layout stays
     // sane. Strip control chars + zero-width joiners; trim whitespace.
     let value = body.value;
@@ -3747,6 +3758,31 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
     setDashboardSetting(body.key, value);
     insertAuditLog('main', '', 'dashboard_setting_change', `${body.key}=${value.slice(0, 80)}`, false);
+
+    // Flipping obsidian_config to enabled is what actually prepares the vault
+    // on disk — the feature ships inert otherwise. Provisioning is idempotent,
+    // so this is safe even if already provisioned.
+    if (body.key === 'obsidian_config') {
+      const obsidian = parseObsidianConfigJson(value);
+      const vaultDir = resolveVaultDir(undefined, obsidian);
+      if (obsidian.enabled && obsidian.sync) {
+        try {
+          await ensureVaultProvisioned(vaultDir, getVaultRemotePath(vaultDir));
+        } catch (e) {
+          return c.json({ error: `saved, but vault provisioning failed: ${e instanceof Error ? e.message : String(e)}` }, 500);
+        }
+      } else if (obsidian.enabled) {
+        // Local-vault mode: no bare remote, no git. The directory still has to
+        // exist before an agent can read or write in it, and creating it is
+        // the one filesystem action this mode needs.
+        try {
+          fs.mkdirSync(vaultDir, { recursive: true });
+        } catch (e) {
+          return c.json({ error: `saved, but the vault directory could not be created: ${e instanceof Error ? e.message : String(e)}` }, 500);
+        }
+      }
+    }
+
     return c.json({ ok: true, key: body.key, value });
   });
 

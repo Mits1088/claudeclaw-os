@@ -75,7 +75,9 @@ const DEFAULT_AGENT_ALLOWLISTS: Record<string, string[]> = {
   // content tasks shouldn't need shell.
   content: ['Skill', 'Write'],
   // Research does web lookups via WebSearch (already in safe set);
-  // shouldn't generally write files in war room.
+  // shouldn't generally write files in war room. To let it log findings to
+  // the Obsidian vault from the war room, opt in per-install with
+  // `warroom_tools: [Skill]` in agents/research/agent.yaml.
   research: [],
 };
 

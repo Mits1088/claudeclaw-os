@@ -24,6 +24,7 @@ import { generateContent, parseJsonResponse } from './gemini.js';
 import { logger } from './logger.js';
 import { ingestConversationTurn } from './memory-ingest.js';
 import { buildObsidianContext } from './obsidian.js';
+import { getObsidianRuntimeConfig, resolveVaultDir } from './obsidian-config.js';
 
 /**
  * Build a structured memory context string to prepend to the user's message.
@@ -249,7 +250,15 @@ export async function buildMemoryContext(
     parts.push(`[War room earlier — most recent last]\n${warRoomLines.join('\n')}\n[End war room]`);
   }
 
-  const obsidianBlock = buildObsidianContext(agentObsidianConfig);
+  // The agent's vault path is optional in agent.yaml: when unset the vault
+  // comes from the dashboard setting (an operator-chosen location, or the
+  // managed default), which agent-config deliberately cannot read.
+  const obsidianBlock = agentObsidianConfig
+    ? buildObsidianContext({
+        ...agentObsidianConfig,
+        vault: resolveVaultDir(agentObsidianConfig.vault, getObsidianRuntimeConfig()),
+      })
+    : '';
   if (obsidianBlock) parts.push(obsidianBlock);
 
   return { contextText: parts.join('\n\n'), surfacedMemoryIds: [...seen], surfacedMemorySummaries: summaryMap };

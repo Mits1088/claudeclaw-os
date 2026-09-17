@@ -97,9 +97,16 @@ export interface AgentConfig {
    *  defaults. */
   warroomTools?: string[];
   obsidian?: {
-    vault: string;
+    /** Per-agent vault override. Omitted means "use the vault configured in
+     *  the dashboard" (obsidian-config.ts's resolveVaultDir), which is either
+     *  an operator-chosen path or the managed default. Set this only to point
+     *  one agent at a different vault. */
+    vault?: string;
     folders: string[];
     readOnly?: string[];
+    /** Subfolders (relative to vault) this agent may write to, narrower
+     *  than its read scope (folders/readOnly). Defaults to none. */
+    writeFolders?: string[];
   };
   /** Pika voice id used when this agent joins a video meeting. Falls back
    *  to the Pika preset English_radiant_girl if unset. */
@@ -213,16 +220,21 @@ export function loadAgentConfig(agentId: string): AgentConfig {
   let obsidian: AgentConfig['obsidian'];
   const obsRaw = raw['obsidian'] as Record<string, unknown> | undefined;
   if (obsRaw) {
-    const vault = obsRaw['vault'] as string;
-    if (vault && !fs.existsSync(vault)) {
+    // An explicit vault override is a standalone local/laptop vault the
+    // user is expected to have created — warn if it's missing. The shared
+    // VPS vault (the default) is provisioned lazily on first enable, so it
+    // routinely doesn't exist yet and warning about that would be noise.
+    const explicitVault = obsRaw['vault'] as string | undefined;
+    if (explicitVault && !fs.existsSync(explicitVault)) {
       // eslint-disable-next-line no-console
-      console.warn(`[${agentId}] WARNING: Obsidian vault path does not exist: ${vault}`);
+      console.warn(`[${agentId}] WARNING: Obsidian vault path does not exist: ${explicitVault}`);
       console.warn(`[${agentId}] Update obsidian.vault in agent.yaml to your local vault path.`);
     }
     obsidian = {
-      vault,
+      vault: explicitVault,
       folders: (obsRaw['folders'] as string[]) ?? [],
       readOnly: (obsRaw['read_only'] as string[]) ?? [],
+      writeFolders: (obsRaw['write_folders'] as string[]) ?? [],
     };
   }
 

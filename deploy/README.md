@@ -159,6 +159,32 @@ rm -f /etc/systemd/system/multi-user.target.wants/claudeclaw-agent-*.service
 systemctl daemon-reload
 ```
 
+## Connect your Obsidian vault
+
+ClaudeClaw can manage a shared, git-synced Obsidian vault — agents read and
+write notes in it via a `obsidian-cli` skill, and it stays in sync with any
+Obsidian client that also has it cloned (your laptop, a teammate's machine).
+It ships with every install but does **nothing** until you turn it on.
+
+1. Open the dashboard → **Settings** → **Knowledge (Obsidian)** → toggle
+   **Enabled**. This provisions the vault on the VPS (a bare repo at
+   `vault.git` plus a working copy at `vault/`, both under the install dir) —
+   there's nothing to configure by hand.
+2. To edit the same notes from your laptop's actual Obsidian app, clone the
+   bare repo over Tailscale SSH:
+   ```bash
+   git clone ssh://claudeclaw@<host>.<tailnet>.ts.net/opt/claudeclaw/claudeclaw-os/vault.git
+   ```
+   Open that folder as an Obsidian vault, then install the community plugin
+   [obsidian-git](https://github.com/denolehov/obsidian-git) and set it to
+   auto-pull/auto-push on an interval. Agents and your Obsidian app now share
+   the same notes.
+3. Per-agent read/write scope is set in each `agent.yaml`'s `obsidian:` block
+   (`folders`, `read_only`, `write_folders`) — see `skills/obsidian/SKILL.md`.
+
+Conflicting concurrent edits get quarantined into `vault/conflicts/<timestamp>/`
+rather than silently discarded — see `src/vault-sync.ts`.
+
 ## Troubleshooting
 
 - **`tailscale serve failed`** — HTTPS certs aren't enabled for your tailnet. Enable them

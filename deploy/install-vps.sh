@@ -128,13 +128,22 @@ ok "Node $(node -v) / npm $(npm -v)"
 # ── 3. dedicated unprivileged user ────────────────────────────────────────────
 # The bot spawns Claude Code, which can run arbitrary code — it must never run
 # as root. Home lives under /opt so systemd ProtectHome doesn't hide it.
+# git-shell (ships with the `git` package installed above) is used instead
+# of nologin: it still refuses interactive login and arbitrary commands,
+# but allows exactly git-upload-pack/git-receive-pack/git-upload-archive —
+# needed so Obsidian vault clients can `git clone`/push the shared vault
+# over Tailscale SSH as this user without granting it a real shell.
+RUN_USER_SHELL="$(command -v git-shell || echo /usr/sbin/nologin)"
 step "Creating service user '$RUN_USER'"
 if ! id "$RUN_USER" >/dev/null 2>&1; then
-  useradd --system --create-home --home-dir "$INSTALL_DIR" --shell /usr/sbin/nologin "$RUN_USER"
+  useradd --system --create-home --home-dir "$INSTALL_DIR" --shell "$RUN_USER_SHELL" "$RUN_USER"
   ok "Created user $RUN_USER (home: $INSTALL_DIR)"
 else
   ok "User $RUN_USER already exists"
 fi
+# Idempotent: upgrade an existing install's user from the older nologin
+# shell so vault git-over-SSH works without re-creating the user.
+usermod -s "$RUN_USER_SHELL" "$RUN_USER"
 mkdir -p "$INSTALL_DIR"
 chown "$RUN_USER:$RUN_USER" "$INSTALL_DIR"
 

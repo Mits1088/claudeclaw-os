@@ -166,6 +166,15 @@ export function Settings() {
           ) : null}
 
           <Section
+            title="Knowledge (Obsidian)"
+            subtitle="A shared, git-synced Obsidian vault agents can read and write. Ships inert — enabling it here is what provisions it."
+          >
+            <Card>
+              <ObsidianConfigPanel />
+            </Card>
+          </Section>
+
+          <Section
             title="Kill switches"
             subtitle="Runtime feature gates. Toggling writes the flag to .env atomically; the runtime re-reads it within 1.5s so changes take effect without a restart."
           >
@@ -716,6 +725,117 @@ function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
 function splitArgs(input: string): string[] {
   const matches = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
   return matches.map((part) => part.replace(/^["']|["']$/g, ''));
+}
+
+// ── Obsidian config panel ──────────────────────────────────────────────
+
+interface ObsidianConfig { enabled: boolean; vaultName: string; vaultPath: string; sync: boolean }
+const DEFAULT_OBSIDIAN_CONFIG: ObsidianConfig = {
+  enabled: false,
+  vaultName: 'ClaudeClaw Vault',
+  vaultPath: '',
+  sync: true,
+};
+
+function parseObsidianConfig(raw: string | undefined): ObsidianConfig {
+  if (!raw) return DEFAULT_OBSIDIAN_CONFIG;
+  try {
+    const parsed = JSON.parse(raw);
+    return {
+      enabled: typeof parsed.enabled === 'boolean' ? parsed.enabled : DEFAULT_OBSIDIAN_CONFIG.enabled,
+      vaultName: typeof parsed.vaultName === 'string' ? parsed.vaultName : DEFAULT_OBSIDIAN_CONFIG.vaultName,
+      vaultPath: typeof parsed.vaultPath === 'string' ? parsed.vaultPath : DEFAULT_OBSIDIAN_CONFIG.vaultPath,
+      sync: typeof parsed.sync === 'boolean' ? parsed.sync : DEFAULT_OBSIDIAN_CONFIG.sync,
+    };
+  } catch {
+    return DEFAULT_OBSIDIAN_CONFIG;
+  }
+}
+
+function ObsidianConfigPanel() {
+  const settings = useFetch<Record<string, string>>('/api/dashboard/settings', 30_000);
+  const saved = parseObsidianConfig(settings.data?.['obsidian_config']);
+  const [vaultName, setVaultName] = useState(saved.vaultName);
+  const [vaultPath, setVaultPath] = useState(saved.vaultPath);
+  const [busy, setBusy] = useState(false);
+  const dirtyRef = useRef(false);
+  const pathDirtyRef = useRef(false);
+
+  useEffect(() => {
+    if (dirtyRef.current) return;
+    setVaultName(saved.vaultName);
+  }, [saved.vaultName]);
+
+  useEffect(() => {
+    if (pathDirtyRef.current) return;
+    setVaultPath(saved.vaultPath);
+  }, [saved.vaultPath]);
+
+  async function save(next: Partial<ObsidianConfig>) {
+    setBusy(true);
+    try {
+      const value = JSON.stringify({ ...saved, ...next });
+      await apiPatch('/api/dashboard/settings', { key: 'obsidian_config', value });
+      invalidateFetchCache('/api/dashboard/settings');
+      settings.refresh();
+      dirtyRef.current = false;
+      pathDirtyRef.current = false;
+      pushToast({
+        tone: 'success',
+        title: 'Obsidian ' + (next.enabled === undefined ? 'settings saved' : (next.enabled ? 'enabled' : 'disabled')),
+        description: next.enabled ? 'Provisioning the vault now — this can take a few seconds on first enable.' : undefined,
+      });
+    } catch (err: any) {
+      const detail = err instanceof ApiError && err.body && typeof err.body === 'object'
+        ? (err.body as { error?: string }).error
+        : undefined;
+      pushToast({ tone: 'error', title: 'Save failed', description: detail || err?.message || String(err), durationMs: 7000 });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (settings.loading && !settings.data) {
+    return <div class="text-[12px] text-[var(--color-text-faint)]">Loading...</div>;
+  }
+
+  return (
+    <>
+      <Row label="Enabled" hint="Turns on the vault agents can read/write. Nothing is touched on disk until you enable it.">
+        <Toggle on={saved.enabled} onChange={() => save({ enabled: !saved.enabled })} disabled={busy} ariaLabel="Obsidian enabled" />
+      </Row>
+      <Divider />
+      <Row label="Vault name" hint="Cosmetic label shown in the UI.">
+        <div class="flex items-center gap-2">
+          <input
+            type="text"
+            value={vaultName}
+            onInput={(e) => { setVaultName((e.target as HTMLInputElement).value); dirtyRef.current = true; }}
+            onBlur={() => { if (dirtyRef.current) save({ vaultName }); }}
+            maxLength={80}
+            class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[200px]"
+          />
+        </div>
+      </Row>
+      <Divider />
+      <Row label="Vault folder" hint="Absolute path to an existing vault. Leave blank to use the managed vault inside the install directory.">
+        <div class="flex items-center gap-2">
+          <input
+            type="text"
+            value={vaultPath}
+            placeholder="(managed default)"
+            onInput={(e) => { setVaultPath((e.target as HTMLInputElement).value); pathDirtyRef.current = true; }}
+            onBlur={() => { if (pathDirtyRef.current) save({ vaultPath }); }}
+            class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[13px] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[320px]"
+          />
+        </div>
+      </Row>
+      <Divider />
+      <Row label="Git sync" hint="On: the vault is kept in a git repo so other Obsidian clients stay in sync. Off (local vault): agents read and write the folder directly and no git command is ever run.">
+        <Toggle on={saved.sync} onChange={() => save({ sync: !saved.sync })} disabled={busy} ariaLabel="Obsidian git sync" />
+      </Row>
+    </>
+  );
 }
 
 // ── Kill switch row ──────────────────────────────────────────────────

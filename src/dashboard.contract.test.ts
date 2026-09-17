@@ -1038,6 +1038,46 @@ describe('PATCH /api/dashboard/settings standup_config', () => {
   });
 });
 
+describe('PATCH /api/dashboard/settings obsidian_config', () => {
+  async function patchObsidianConfig(value: string) {
+    return app.request('/api/dashboard/settings' + Q, {
+      method: 'PATCH',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ key: 'obsidian_config', value }),
+    });
+  }
+
+  // enabled: true triggers real vault provisioning (git init/clone against
+  // the actual project root) — never exercise that path here. These tests
+  // stick to validation, which only needs enabled: false.
+
+  it('accepts a well-formed payload', async () => {
+    const res = await patchObsidianConfig(JSON.stringify({ enabled: false, vaultName: 'My Vault' }));
+    expect(res.status).toBe(200);
+  });
+
+  it('rejects non-JSON value with 400', async () => {
+    const res = await patchObsidianConfig('not json {');
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body.error).toMatch(/obsidian_config/);
+  });
+
+  it('rejects a non-boolean enabled with 400', async () => {
+    const res = await patchObsidianConfig(JSON.stringify({ enabled: 'yes' }));
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body.error).toMatch(/enabled must be boolean/);
+  });
+
+  it('rejects a non-string vaultName with 400', async () => {
+    const res = await patchObsidianConfig(JSON.stringify({ enabled: false, vaultName: 42 }));
+    expect(res.status).toBe(400);
+    const body = await jsonOf(res);
+    expect(body.error).toMatch(/vaultName/);
+  });
+});
+
 describe('GET /api/warroom/agents', () => {
   it('returns { agents: [...] } with main present', async () => {
     const res = await get('/api/warroom/agents');
