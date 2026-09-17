@@ -5,6 +5,47 @@ All notable changes to ClaudeClaw will be documented here.
 From v1.2.0 onward this file is generated from Conventional Commit history with
 [git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
 
+## [1.10.0] - 2026-09-17
+Final scope: the Crew workflow engine introduced in #266/#278 was removed in #280; native headless execution was restored in #290. See docs/releases/v1.10.0.md for shipped behavior and upgrade guidance.
+
+
+### Features
+
+- Add explicit Telegram steering for Codex App Server ([#288](https://github.com/earlyaidopters/claudeclaw-os/pull/288))
+- **obsidian:** Git-synced shared vault, agent read/write, dashboard toggle ([#152](https://github.com/earlyaidopters/claudeclaw-os/pull/152))
+- **missions:** Add durable bounded workflows ([#266](https://github.com/earlyaidopters/claudeclaw-os/pull/266))
+- **openai:** Prepare Codex transports for GPT-6 Astra ([#267](https://github.com/earlyaidopters/claudeclaw-os/pull/267))
+- **missions:** Add native future one-time tasks ([#265](https://github.com/earlyaidopters/claudeclaw-os/pull/265))
+
+### Bug Fixes
+
+- Restore native headless workers with lease-aware activation ([#290](https://github.com/earlyaidopters/claudeclaw-os/pull/290))
+- Commit gather release with terminal mission state ([#287](https://github.com/earlyaidopters/claudeclaw-os/pull/287))
+- Guard provider diagnostics with configured secret policy ([#286](https://github.com/earlyaidopters/claudeclaw-os/pull/286))
+- **deps:** Apply targeted v1.10 security patches ([#285](https://github.com/earlyaidopters/claudeclaw-os/pull/285))
+- Protect configured file-only secrets in outbound text ([#284](https://github.com/earlyaidopters/claudeclaw-os/pull/284))
+- Leave messenger credential validation to transport preflight ([#282](https://github.com/earlyaidopters/claudeclaw-os/pull/282))
+- **tests:** Keep createAgent's launchd plist out of the real LaunchAgents dir ([#276](https://github.com/earlyaidopters/claudeclaw-os/pull/276))
+- **telegram:** Keep grammY InputFile intact through the outbound sanitizer ([#281](https://github.com/earlyaidopters/claudeclaw-os/pull/281))
+- **recovery:** Contain Crew missions and harden agent handback ([#278](https://github.com/earlyaidopters/claudeclaw-os/pull/278))
+- **memory:** Bound newchat session summaries ([#274](https://github.com/earlyaidopters/claudeclaw-os/pull/274))
+- **services:** Start every agent process through the MESSENGER_TYPE dispatcher ([#272](https://github.com/earlyaidopters/claudeclaw-os/pull/272))
+
+### Documentation
+
+- Correct existing launchd service upgrade procedure ([#283](https://github.com/earlyaidopters/claudeclaw-os/pull/283))
+
+### Other
+
+- Remove Crew engine and retain one-shot task safety ([#280](https://github.com/earlyaidopters/claudeclaw-os/pull/280))
+
+# Changelog
+
+All notable changes to ClaudeClaw will be documented here.
+
+From v1.2.0 onward this file is generated from Conventional Commit history with
+[git-cliff](https://git-cliff.org). Do not hand-edit it. See CONTRIBUTING.md.
+
 ## [1.9.0] - 2026-09-02
 
 ### Features

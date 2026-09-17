@@ -1,5 +1,11 @@
 # Orchestration rollback and retained boundaries
 
+**v1.10.0 follow-up:** This document records the #280 rollback. PR #290 later
+restored native headless execution for trusted local workers through lease-aware
+supervision. Its isolation-only startup restriction below is historical, not the
+current deployment rule. The removed Crew engine remains removed. See the
+[current headless-worker guide](headless-workers.md).
+
 This change reverses the generalized Crew workflow expansion from PR266 and
 PR278. It preserves the intervening PR274 memory fixes. PR279's experimental
 keep-working layer is not included; its branch and test evidence remain historical

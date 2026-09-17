@@ -1,10 +1,11 @@
 # Headless Workers
 
-Headless startup is currently blocked: process supervision alone is not OS
-isolation. The configuration and lifecycle reference below describes the retained
-worker primitives, not an enabled deployment path. Do not activate workers for
-testing or remove the startup guard without a separately reviewed isolation design.
-Messenger agents can still exchange ordinary mission tasks and handbacks.
+v1.10.0 restores native headless execution through the existing supervisor.
+Workers run as trusted local processes with host access; process supervision is
+not OS isolation. No Docker setup or separate credential relay is required.
+Activation and restart wait for a current lease, and direct startup without valid
+supervisor metadata is rejected. This supersedes the isolation-only startup block
+introduced during the Crew rollback. See [native headless delegation](native-headless-289.md).
 
 Headless workers are normal ClaudeClaw agents with a mission-only runtime. They use the same provider, model, agent instructions, mission scheduler, SQLite task state, and service lifecycle as messenger agents, but own no Telegram token and create no messenger transport.
 
@@ -22,7 +23,7 @@ provider:
   model: claude-fable-5-1
 ```
 
-Existing agents remain `messenger` by default. Existing headless workers default to `persistent`. Messenger agents continue to require `telegram_bot_token_env`. Invalid runtime or lifecycle combinations fail closed during config loading.
+Existing agents remain `messenger` by default. Existing headless workers default to `persistent`. Messenger credentials are validated by the selected transport's preflight; headless workers create no messenger transport. Invalid runtime or lifecycle combinations fail closed during config loading.
 
 ## Lifecycle policy
 
@@ -42,7 +43,7 @@ graceful shutdown path. It does not delete the agent configuration, history,
 mission attribution, logs, or credentials. Deletion remains an explicit
 dashboard action.
 
-## Create and activate (reference only; startup is blocked)
+## Create and activate
 
 ```powershell
 node dist/agent-create-cli.js `
@@ -101,10 +102,10 @@ until explicit activation or the next main-process restart.
 
 Mission completion is bound to the worker instance and claim generation that
 claimed the task. Periodic reconciliation and restart backoff remain outside this
-rollback's scope. Desired activation state remains operator intent. See
+release's scope. Desired activation state remains operator intent. See
 [`docs/rfcs/headless-worker-supervision.md`](rfcs/headless-worker-supervision.md)
 for the accepted lifecycle and fencing specification.
 
-## Future isolated-worker validation boundary
+## Runtime validation boundary
 
-The first production-style test should use two isolated headless workers with different provider paths, one Fable 5.1 and one OpenAI/Codex model. Give them bounded, read-only or disposable-worktree tasks, gather results back to `main`, and verify that no worker has a Telegram token or emits a direct notification. Commits, pushes, deployments, and external writes remain separately approved actions.
+Runtime acceptance should use authorized headless workers with different provider paths, one Fable 5.1 and one OpenAI/Codex model. Give them bounded, read-only or disposable-worktree tasks, gather results back to `main`, and verify that no worker needs a Telegram token or emits a direct notification. A disposable task directory does not isolate the process from the host. Commits, pushes, deployments, and external writes retain their authorization boundaries. Identity creation and delegation restrictions are not yet uniformly enforced across all application entrypoints; see the follow-ups in PR #290.

@@ -4,6 +4,11 @@ ClaudeClaw documentation is organized by purpose. Architecture decisions are
 historical records; references, guides, policies, and runbooks describe the
 current system and should evolve with it.
 
+## Releases
+
+- [v1.10.0: shared knowledge, live direction, dependable delegation](releases/v1.10.0.md)
+  covers shipped features, optional setup, upgrade steps, and known limits.
+
 ## Architecture decisions
 
 RFCs are reserved for decisions with meaningful alternatives, cross-cutting
