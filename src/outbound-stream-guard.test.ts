@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { OutboundStreamGuard, OVERFLOW_PLACEHOLDER } from './outbound-stream-guard.js';
+import { sanitizeOutboundText } from './outbound-sanitizer.js';
 
 describe('bounded outbound stream', () => {
   it.each(['alpha beta gamma', 'alpha\nbeta\tgamma', 'sk-ant-api03-CANARYcanaryCANARYcanary01'])('captures safe output at every split for %j', (secret) => {
@@ -59,5 +60,88 @@ describe('bounded outbound stream', () => {
 
   it.each([0, -1, Infinity, NaN, 1.5])('rejects invalid buffer bound %s', (maxBufferedChars) => {
     expect(() => new OutboundStreamGuard({ maxBufferedChars })).toThrow(/buffer limit/);
+  });
+});
+
+describe('incremental credential-safe delivery', () => {
+  it('releases narration before the turn ends while retaining the unfinished token', () => {
+    const guard = new OutboundStreamGuard({ incremental: true });
+    expect(guard.pushAccumulated('Reviewing the configuration.\n')).toBe('Reviewing the configuration.\n');
+    expect(guard.pushDelta('Now checking')).toBe('Reviewing the configuration.\nNow ');
+    expect(guard.finalize()).toBe('Reviewing the configuration.\nNow checking');
+  });
+
+  const secrets = [
+    'alpha beta gamma', 'alpha\nbeta\tgamma', ' repeated repeated secret ',
+    'sk-ant-api03-CANARYcanaryCANARYcanary01',
+    'sk-' + 'A'.repeat(45), 'ghp_' + 'A'.repeat(30), 'gho_' + 'B'.repeat(30),
+    'eyJ' + 'a'.repeat(15) + '.' + 'b'.repeat(15) + '.' + 'c'.repeat(15),
+    'rt.1.' + 'a'.repeat(30), 'xoxb-12345-abcdef', 'AKIA' + 'A'.repeat(16),
+    'abcdef1234'.repeat(4), 'abcdef1234'.repeat(6),
+  ];
+  it.each(secrets)('never releases any secret portion across chunk splits: %s', secret => {
+    // Configured values and the generic detector are both exercised independently.
+    for (const protectedValues of [[secret], []]) {
+      if (!protectedValues.length && secrets.indexOf(secret) < 3) continue;
+      const text = 'Safe update.\n' + secret + '\nFinished safely.\n';
+      const expected = sanitizeOutboundText(text, { protectedValues });
+      for (let split = 0; split <= text.length; split++) {
+        for (const accumulated of [false, true]) {
+          const guard = new OutboundStreamGuard({ incremental: true, protectedValues });
+          const first = text.slice(0, split), second = text.slice(split);
+          guard.pushDelta(first);
+          expect(expected.startsWith(guard.safeText)).toBe(true);
+          if (accumulated) guard.pushAccumulated(text); else guard.pushDelta(second);
+          expect(expected.startsWith(guard.safeText)).toBe(true);
+          expect(guard.finalize()).toBe(expected);
+        }
+      }
+    }
+  });
+
+  it('handles encoded and overlapping multiline values one character at a time', () => {
+    const values = ['first secret\nnext', 'secret\nnext secret', 'next secret value'];
+    const text = 'Progress.\nfirst secret\nnext secret value\n' +
+      Buffer.from(values[0]).toString('base64') + '\n' + encodeURIComponent(values[0]) + '\nDone.\n';
+    const expected = sanitizeOutboundText(text, { protectedValues: values });
+    const guard = new OutboundStreamGuard({ incremental: true, protectedValues: values });
+    for (const char of text) {
+      guard.pushDelta(char);
+      expect(expected.startsWith(guard.safeText)).toBe(true);
+    }
+    expect(guard.finalize()).toBe(expected);
+  });
+
+  it('never truncates a generic key at the start of an incomplete protected value', () => {
+    const guard = new OutboundStreamGuard({ incremental: true, protectedValues: ['ABC DEF GHI'] });
+    expect(guard.pushDelta('Visible. sk-ABC DEF ')).toBe('Visible. ');
+    expect(guard.pushDelta('GHI rest\n')).not.toContain('ABC');
+  });
+
+  it('keeps long multiline prefixes private, not just a fixed trailing window', () => {
+    const secret = 'PRIVATE-start\n' + 'middle '.repeat(2000) + 'PRIVATE-end';
+    const guard = new OutboundStreamGuard({ incremental: true, protectedValues: [secret] });
+    expect(guard.pushDelta('Visible.\n' + secret.slice(0, -1))).toBe('Visible.\n');
+    guard.pushDelta(secret.slice(-1) + '\nDone.\n');
+    expect(guard.finalize()).toBe('Visible.\n[REDACTED]\nDone.\n');
+  });
+
+  it('fails closed on invalid protected-value encoding', () => {
+    const guard = new OutboundStreamGuard({ incremental: true, protectedValues: ['secret-value-\ud800'] });
+    expect(guard.pushDelta('Visible.\n')).toContain('withheld');
+    expect(guard.pushDelta('more')).toBe('');
+  });
+
+  it('bounds incremental history and stops on revision or overflow', () => {
+    const guard = new OutboundStreamGuard({ incremental: true, maxBufferedChars: 64 });
+    guard.pushDelta('Safe text.\n');
+    expect(guard.pushAccumulated('Revised text.\n')).toContain('inconsistent');
+    expect(guard.finalize()).toBe('');
+    const large = new OutboundStreamGuard({ incremental: true, maxBufferedChars: 64 });
+    for (let i = 0; i < 100; i++) {
+      large.pushDelta('text ');
+      expect(large.retainedChars).toBeLessThanOrEqual(128);
+    }
+    expect(large.safeText).toBe(OVERFLOW_PLACEHOLDER);
   });
 });

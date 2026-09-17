@@ -68,6 +68,7 @@ import {
 import { setHighImportanceCallback } from './memory-ingest.js';
 import { commitSessionSummary, SESSION_SUMMARY_MAX_TURNS } from './session-summary.js';
 import { messageQueue } from './message-queue.js';
+import { TelegramStreamBuffer } from './telegram-stream-buffer.js';
 import { applyOtherSelection, stepHint } from './auq-selection.js';
 import { parseDelegation, delegateToAgent, getAvailableAgents } from './orchestrator.js';
 import { emitChatEvent, setProcessing, setActiveAbort, abortActiveQuery } from './state.js';
@@ -1566,6 +1567,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     // The text last published, so the working footer can be appended beneath it
     // without losing it, and the turn's start for the elapsed clock.
     let lastStreamedText = '';
+    const pendingStream = new TelegramStreamBuffer();
     const turnStartedAt = Date.now();
 
     // Seed the throttle at turn start. Without this, a timestamp left over from
@@ -1574,6 +1576,7 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
 
     const onStreamText = streamingEnabled ? (accumulated: string) => {
       const now = Date.now();
+      pendingStream.update(accumulated, now);
       const globalLast = globalStreamLastEdit.get(chatIdStr) ?? 0;
       const deltaLen = accumulated.length - lastEditLength;
 
@@ -1587,12 +1590,15 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
       // long code blocks, unbroken lists) still streams.
       const isFirstFlush = streamMsgId === undefined;
       const threshold = isFirstFlush ? STREAM_FIRST_FLUSH_CHARS : STREAM_MIN_DELTA_CHARS;
-      if (deltaLen < threshold) return;
-      if (deltaLen < STREAM_MAX_PENDING_CHARS && !endsAtStreamBoundary(accumulated)) return;
+      if (!pendingStream.due(now, GLOBAL_STREAM_INTERVAL_MS)) {
+        if (deltaLen < threshold) return;
+        if (deltaLen < STREAM_MAX_PENDING_CHARS && !endsAtStreamBoundary(accumulated)) return;
+      }
 
       globalStreamLastEdit.set(chatIdStr, now);
       lastEditLength = accumulated.length;
       lastStreamedText = accumulated;
+      pendingStream.published();
       publishStreamBody(composeStreamBody(true));
     } : undefined;
 
@@ -1604,6 +1610,13 @@ async function handleMessage(ctx: Context, message: string, forceVoiceReply = fa
     let workingDone = false;
 
     function composeStreamBody(cursor = false): string {
+      // Activity and heartbeat edits share the same rate budget. Carry due text
+      // into whichever edit wins, instead of letting activity starve narration.
+      if (pendingStream.due(Date.now(), GLOBAL_STREAM_INTERVAL_MS)) {
+        lastStreamedText = pendingStream.text;
+        lastEditLength = lastStreamedText.length;
+        pendingStream.published();
+      }
       const parts: string[] = [];
       if (lastStreamedText) parts.push(`${lastStreamedText}${cursor ? ' ▍' : ''}`);
       const ledger = renderTurnActivity(turnActivity);

@@ -53,6 +53,17 @@ const PATTERNS: Array<{ type: string; regex: RegExp }> = [
 // Git patterns that precede a 40-char hex SHA
 const GIT_SHA_PREFIX = /(?:commit |tree |parent |object |[0-9a-f]{40}\.\.)/;
 
+/** Shared by detection and streaming lookahead, including whitespace-bearing values. */
+export function protectedValueVariants(value: string): Array<{ encoded: string; label: string }> {
+  if (value.length <= 8) return [];
+  const url = encodeURIComponent(value);
+  return [
+    { encoded: value, label: 'raw' },
+    { encoded: Buffer.from(value).toString('base64'), label: 'base64' },
+    ...(url === value ? [] : [{ encoded: url, label: 'url_encoded' }]),
+  ];
+}
+
 /**
  * Scan text for leaked secrets and credentials.
  *
@@ -110,14 +121,7 @@ export function scanForSecrets(text: string, protectedValues?: string[]): Secret
     for (const value of protectedValues) {
       if (value.length <= 8) continue;
 
-      const variants: Array<{ encoded: string; label: string }> = [
-        // Valeur BRUTE d'abord : un secret qui fuit en clair (ex : token Telegram
-        // "12345:AA...") ne correspond a aucune variante encodee ni forcement a un
-        // pattern generique, il faut donc chercher la valeur telle quelle.
-        { encoded: value, label: 'raw' },
-        { encoded: Buffer.from(value).toString('base64'), label: 'base64' },
-        { encoded: encodeURIComponent(value), label: 'url_encoded' },
-      ];
+      const variants = protectedValueVariants(value);
 
       for (const { encoded, label } of variants) {
         // Skip if the encoded form is the same as the original (no special chars)

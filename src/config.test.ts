@@ -9,7 +9,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 // developer's real .env file.
 async function loadConfig(envFile: Record<string, string> = {}) {
   vi.resetModules();
-  vi.doMock('./env.js', () => ({ readEnvFile: () => envFile }));
+  vi.doMock('./env.js', () => ({
+    readEnvFile: (keys: string[]) => Object.fromEntries(Object.entries(envFile).filter(([key]) => keys.includes(key))),
+  }));
   return import('./config.js');
 }
 
@@ -17,6 +19,22 @@ afterEach(() => {
   vi.unstubAllEnvs();
   vi.doUnmock('./env.js');
   vi.resetModules();
+});
+
+describe('MIDTURN_STEERING_ENABLED resolution', () => {
+  it.each([
+    [undefined, undefined, false],
+    [undefined, 'true', true],
+    [undefined, 'false', false],
+    ['true', 'false', true],
+    ['false', 'true', false],
+    ['', 'true', false],
+    ['invalid', 'true', false],
+  ])('process=%s file=%s resolves to %s', async (processValue, fileValue, expected) => {
+    vi.stubEnv('MIDTURN_STEERING_ENABLED', processValue);
+    const c = await loadConfig(fileValue === undefined ? {} : { MIDTURN_STEERING_ENABLED: fileValue });
+    expect(c.MIDTURN_STEERING_ENABLED).toBe(expected);
+  });
 });
 
 describe('STORE_DIR resolution', () => {

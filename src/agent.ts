@@ -301,7 +301,7 @@ export async function runAgent(
   let lastCallCacheRead = 0;
   let lastCallInputTokens = 0;
   const outboundOptions = outboundOptionsForSeam('agent.output');
-  const streamGuard = new OutboundStreamGuard(outboundOptions);
+  const streamGuard = new OutboundStreamGuard({ ...outboundOptions, incremental: true });
 
   // Refresh typing indicator on an interval while Claude works.
   // Telegram's "typing..." action expires after ~5s.

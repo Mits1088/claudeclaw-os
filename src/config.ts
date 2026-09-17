@@ -81,6 +81,7 @@ const envConfig = readEnvFile([
   'DISPATCH_ALLOW_HIVE_READ',
   'CODEX_DANGER_WRITE',
   'CODEX_TRANSPORT',
+  'MIDTURN_STEERING_ENABLED',
   'CODEX_APP_SERVER_MAX_CONCURRENT_TURNS',
 ]);
 
@@ -523,4 +524,5 @@ export const WARROOM_PORT = parseInt(
 );
 
 // Steering is opt-in; actual support is advertised by the active adapter.
-export const MIDTURN_STEERING_ENABLED = process.env.MIDTURN_STEERING_ENABLED === 'true';
+export const MIDTURN_STEERING_ENABLED =
+  (process.env.MIDTURN_STEERING_ENABLED ?? envConfig.MIDTURN_STEERING_ENABLED) === 'true';

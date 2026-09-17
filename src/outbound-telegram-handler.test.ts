@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AgentTurnInput } from './agent-engine/types.js';
 
 const fixture = vi.hoisted(() => ({ mode: 'success', calls: 0, failEdit: false,
-  secret: 'alpha\nbeta "quoted" \\ credential', bytes: [] as string[], pending: [] as Promise<void>[] }));
+  secret: 'alpha\nbeta "quoted" \\ credential', bytes: [] as string[], pending: [] as Promise<void>[],
+  narrated: undefined as (() => void) | undefined, resume: undefined as Promise<void> | undefined }));
 vi.mock('grammy', async original => {
   const grammy = await original<typeof import('grammy')>();
   return { ...grammy, Bot: class extends grammy.Bot {
@@ -51,6 +52,16 @@ vi.mock('./voice.js', () => ({ voiceCapabilities: () => ({ tts: false, stt: fals
 vi.mock('./agent-engine/index.js', () => ({ engineSupportsSystemPrompt: () => true, EngineFactory: { forProvider: () => ({
   async *invoke(_input: AgentTurnInput) {
     fixture.calls++;
+    if (fixture.mode === 'live-narration') {
+      const prefix = 'Checking the configuration.\n';
+      yield { type: 'text_delta', delta: prefix + fixture.secret.slice(0, 7), accumulatedText: prefix + fixture.secret.slice(0, 7) };
+      yield { type: 'progress', progress: { type: 'tool_active', toolCallId: 'read', description: 'Reading settings', kind: 'read' } };
+      fixture.narrated?.();
+      await fixture.resume;
+      yield { type: 'text_delta', delta: fixture.secret.slice(7), accumulatedText: prefix + fixture.secret };
+      yield { type: 'result', text: prefix + fixture.secret, usage: null, stopReason: 'end_turn' };
+      return;
+    }
     yield { type: 'progress', progress: { type: 'tool_active', toolCallId: 'fixture', description: fixture.secret, kind: 'other' } };
     yield { type: 'text_delta', delta: fixture.secret.slice(0, 7), accumulatedText: fixture.secret.slice(0, 7) };
     yield { type: 'text_delta', delta: fixture.secret.slice(7), accumulatedText: fixture.secret };
@@ -66,7 +77,30 @@ import { chatEvents } from './state.js';
 
 beforeEach(() => { _initTestDatabase(); fixture.bytes = []; fixture.pending = []; fixture.calls = 0;
   vi.stubEnv('HOME', '/nonexistent/fixture'); vi.stubEnv('USERPROFILE', '/nonexistent/fixture'); });
-afterEach(() => vi.unstubAllEnvs());
+afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); fixture.narrated = undefined; fixture.resume = undefined; });
+
+it('publishes short safe narration during a paused tool phase, before provider completion', async () => {
+  vi.useFakeTimers();
+  fixture.mode = 'live-narration'; fixture.failEdit = false;
+  const narrated = new Promise<void>(resolve => { fixture.narrated = resolve; });
+  let resume!: () => void;
+  fixture.resume = new Promise<void>(resolve => { resume = resolve; });
+  try {
+    const bot = createBot();
+    await bot.handleUpdate({ update_id: 2, message: { message_id: 2, date: 1,
+      chat: { id: 7, type: 'private', first_name: 'User' }, from: { id: 7, is_bot: false, first_name: 'User' }, text: 'Check settings' } });
+    await narrated;
+    expect(fixture.bytes.join('')).not.toContain('Checking the configuration');
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(fixture.bytes.join('')).toContain('Checking the configuration.');
+    expect(fixture.bytes.join('')).toContain('Reading settings');
+    expect(fixture.bytes.join('')).not.toContain('alpha');
+    resume();
+    await Promise.all(fixture.pending);
+    expect(fixture.bytes.join('')).toContain('[REDACTED]');
+    expect(fixture.bytes.join('')).not.toContain('alpha');
+  } finally { resume(); await Promise.all(fixture.pending); }
+});
 
 it.each(['success', 'edit-fallback', 'abort', 'error'])(
   'captures actual Telegram handler %s from fake provider through API bytes and stored output', async mode => {
