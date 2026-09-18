@@ -1,3 +1,6 @@
+import { openRouterSetupStatus, saveOpenRouterKey } from './openrouter-setup.js';
+import { zaiSetupStatus, saveZaiKey } from './zai-setup.js';
+import { REPO_ROOT_ENV, envFileCandidates } from './env.js';
 import { serializeOutboundJson } from './outbound-payload.js';
 import { Api, RawApi } from 'grammy';
 import { Hono } from 'hono';
@@ -238,40 +241,32 @@ function getOpenCodeModels(): Array<{ id: string; label: string }> {
 // In-memory cache for OpenRouter /models (5-minute TTL). The dashboard hits
 // /api/providers/models on every Settings page load, so we don't want to call
 // OpenRouter for every poll. Cache survives only as long as the process.
-const openRouterModelsCache: { fetchedAt: number; models: Array<{ id: string; label: string }> } = {
-  fetchedAt: 0,
-  models: [],
-};
+type OpenRouterModel = { id: string; label: string; free: boolean };
+const openRouterModelsCache = new Map<string, { fetchedAt: number; models: OpenRouterModel[] }>();
 const OPENROUTER_MODELS_TTL_MS = 5 * 60 * 1000;
 
-async function fetchOpenRouterModels(): Promise<Array<{ id: string; label: string }>> {
+async function fetchOpenRouterModels(requestedSort = 'most-popular'): Promise<OpenRouterModel[]> {
+  const sort = ['most-popular', 'newest', 'pricing-low-to-high'].includes(requestedSort) ? requestedSort : 'most-popular';
+  const cache = openRouterModelsCache.get(sort) ?? { fetchedAt: 0, models: [] };
   const now = Date.now();
-  if (openRouterModelsCache.models.length > 0 && now - openRouterModelsCache.fetchedAt < OPENROUTER_MODELS_TTL_MS) {
-    return openRouterModelsCache.models;
+  if (cache.models.length > 0 && now - cache.fetchedAt < OPENROUTER_MODELS_TTL_MS) {
+    return cache.models;
   }
   try {
-    const res = await fetch('https://openrouter.ai/api/v1/models', {
+    const res = await fetch('https://openrouter.ai/api/v1/models?sort=' + sort, {
       headers: { Accept: 'application/json' },
       // Keep this short — the dashboard shouldn't block on a slow network.
       signal: AbortSignal.timeout(5000),
     });
-    if (!res.ok) return openRouterModelsCache.models; // serve stale on transient failure
-    const data = await res.json() as { data?: Array<{ id?: string; name?: string }> };
+    if (!res.ok) return cache.models; // serve stale on transient failure
+    const data = await res.json() as { data?: Array<{ id?: string; name?: string; pricing?: { prompt?: string; completion?: string } }> };
     const models = (data.data ?? [])
-      .map((m) => ({ id: typeof m.id === 'string' ? m.id : '', label: typeof m.id === 'string' ? m.id : '' }))
-      .filter((m) => m.id.length > 0)
-      .sort((a, b) => {
-        // Free tier first for discoverability, then alphabetic.
-        const aFree = a.id.endsWith(':free');
-        const bFree = b.id.endsWith(':free');
-        if (aFree !== bFree) return aFree ? -1 : 1;
-        return a.id.localeCompare(b.id);
-      });
-    openRouterModelsCache.fetchedAt = now;
-    openRouterModelsCache.models = models;
+      .map((m) => ({ id: typeof m.id === 'string' ? m.id : '', label: typeof m.id === 'string' ? m.id : '', free: m.pricing?.prompt === '0' && m.pricing?.completion === '0' }))
+      .filter((m) => m.id.length > 0);
+    openRouterModelsCache.set(sort, { fetchedAt: now, models });
     return models;
   } catch {
-    return openRouterModelsCache.models; // serve stale on error
+    return cache.models; // serve stale on error
   }
 }
 
@@ -2667,6 +2662,54 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     }
   });
 
+  app.get('/api/providers/zai/setup', (c) => {
+    c.header('Cache-Control', 'no-store');
+    const status = zaiSetupStatus(undefined, undefined, c.req.query('baseUrl'));
+    if (envFileCandidates().some((file) => file !== REPO_ROOT_ENV && fs.existsSync(file))) {
+      return c.json({ ...status, canEdit: false, message: 'A working-directory .env overrides the installation configuration. Update it manually.' });
+    }
+    return c.json(status);
+  });
+
+  app.post('/api/providers/zai/setup', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    // Match the file the runtime reads; never silently update a shadowed file.
+    if (envFileCandidates().some((file) => file !== REPO_ROOT_ENV && fs.existsSync(file))) {
+      return c.json({ error: 'A working-directory .env overrides the installation configuration. Update it manually.' }, 409);
+    }
+    const raw = await c.req.text();
+    if (raw.length > 8192) return c.json({ error: 'Setup request is too large.' }, 400);
+    let body: { apiKey?: unknown; migrate?: unknown };
+    try { body = JSON.parse(raw); } catch { return c.json({ error: 'Invalid setup request.' }, 400); }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'apiKey' && key !== 'migrate')) return c.json({ error: 'Invalid setup request.' }, 400);
+    try { return c.json(saveZaiKey(REPO_ROOT_ENV, body)); }
+    catch (err) { return c.json({ error: err instanceof Error ? err.message : 'Could not save Z.ai setup.' }, 400); }
+  });
+
+  app.get('/api/providers/openrouter/setup', (c) => {
+    c.header('Cache-Control', 'no-store');
+    const status = openRouterSetupStatus(ENABLE_ACP);
+    if (envFileCandidates().some((file) => file !== REPO_ROOT_ENV && fs.existsSync(file))) {
+      return c.json({ ...status, canEdit: false, message: 'A working-directory .env overrides the installation configuration. Update it manually.' });
+    }
+    return c.json(status);
+  });
+
+  app.post('/api/providers/openrouter/setup', async (c) => {
+    c.header('Cache-Control', 'no-store');
+    // Match the file the runtime reads; never silently update a shadowed file.
+    if (envFileCandidates().some((file) => file !== REPO_ROOT_ENV && fs.existsSync(file))) {
+      return c.json({ error: 'A working-directory .env overrides the installation configuration. Update it manually.' }, 409);
+    }
+    const raw = await c.req.text();
+    if (raw.length > 8192) return c.json({ error: 'Setup request is too large.' }, 400);
+    let body: { apiKey?: unknown; migrate?: unknown };
+    try { body = JSON.parse(raw); } catch { return c.json({ error: 'Invalid setup request.' }, 400); }
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some((key) => key !== 'apiKey')) return c.json({ error: 'Invalid setup request.' }, 400);
+    try { return c.json(saveOpenRouterKey(REPO_ROOT_ENV, body.apiKey)); }
+    catch (err) { return c.json({ error: err instanceof Error ? err.message : 'Could not save OpenRouter setup.' }, 400); }
+  });
+
   app.get('/api/providers/models', async (c) => {
     // Normalize first so a legacy `codex` query from a stale client resolves to
     // acp-codex (and the response echoes the canonical id), while an unknown
@@ -2676,6 +2719,12 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
     const current = getMainProviderConfig();
     const gateError = providerGateError(provider);
     if (gateError) return c.json({ error: gateError }, 403);
+    if (provider === 'anthropic-compatible') {
+      const setup = zaiSetupStatus();
+      const defaultModel = current.type === provider ? current.model ?? setup.defaultModel : setup.defaultModel;
+      const models = setup.models.some((option) => option.id === defaultModel) ? setup.models : [{ id: defaultModel, label: defaultModel }, ...setup.models];
+      return c.json({ provider, models, defaultModel, selectable: true, allowCustom: true, note: 'GLM models use the tools permitted for this agent. Z.ai usage costs are not calculated here.' });
+    }
     if (provider === 'claude') {
       return c.json({
         provider,
@@ -2741,7 +2790,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
       });
     }
     if (provider === 'openrouter') {
-      const models = await fetchOpenRouterModels();
+      const models = await fetchOpenRouterModels(c.req.query('sort'));
       const fallback = [{ id: DEFAULT_OPENROUTER_MODEL, label: DEFAULT_OPENROUTER_MODEL }];
       const list = models.length > 0 ? models : fallback;
       const currentModel = current.type === 'openrouter' ? current.model : undefined;
@@ -2754,7 +2803,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         defaultModel,
         selectable: true,
         allowCustom: true,
-        note: 'Single-turn chat only — each message is an independent exchange with no prior-turn context (memory injection still applies). Free models (suffix :free) rotate and may be upstream-rate-limited; if one hangs or 429s, try another.',
+        note: 'Each message starts a fresh chat. Saved memory still applies, but earlier messages in this conversation are not included. Free models may be busy or rate-limited; try another model if a request fails.',
       });
     }
     return c.json({ error: 'Invalid provider' }, 400);
@@ -2790,7 +2839,7 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
         source: 'static',
       });
     }
-    if (base.type === 'openrouter') {
+    if (base.type === 'openrouter' || base.type === 'anthropic-compatible') {
       // OpenRouter is a plain OpenAI-compatible HTTP gateway — no ACP-style
       // session/configuration. No mode/thinking dropdowns to surface.
       return c.json({

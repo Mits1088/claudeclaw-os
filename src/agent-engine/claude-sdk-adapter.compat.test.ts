@@ -171,7 +171,7 @@ describe('a compat turn that must not run does not start', () => {
     delete process.env.ANTHROPIC_COMPAT_API_KEY;
     resetCompatConfigCache();
     await expect(drain(new ClaudeSdkEngineAdapter().invoke(turnInput())))
-      .rejects.toThrow(/ANTHROPIC_COMPAT_API_KEY/);
+      .rejects.toThrow(/ZAI_API_KEY/);
     expect(queryMock).not.toHaveBeenCalled();
   });
 

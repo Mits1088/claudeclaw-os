@@ -8,9 +8,8 @@ import type { ProviderType } from './provider.js';
  *  - `stable`       — first-class, supported: Claude (the default catalyst) and
  *                     native OpenAI (Codex SDK). Always offered; never behind a
  *                     casual beta flag.
- *  - `experimental` — the ACP family (acp-codex, Gemini, OpenCode, OpenRouter,
- *                     custom). Opt-in via ENABLE_ACP; model behavior is less
- *                     proven and latency is higher. Deferred for later polish.
+ *  - `experimental` — Z.ai and the ACP family. Tier controls UI grouping;
+ *                     only acp-beta enablement requires ENABLE_ACP.
  *
  * Enablement drives both "can this run" and "should the UI offer it":
  *  - `always`  — usable unconditionally (Claude: the SDK is bundled).
@@ -82,7 +81,7 @@ export function providerRunnable(type: ProviderType): boolean {
 
 /**
  * Whether to offer `type` in the provider picker. Same rule as runnable today
- * (stable always, experimental under the beta flag) — kept as its own function
+ * (only acp-beta providers require the beta flag) — kept as its own function
  * because visibility and runnability can diverge later (e.g. a "coming soon"
  * tier that is visible but not yet runnable).
  */

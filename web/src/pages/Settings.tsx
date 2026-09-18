@@ -3,7 +3,7 @@ import { Check, Pipette, RotateCcw } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Toggle } from '@/components/Toggle';
-import { invalidateFetchCache, useFetch, type FetchState } from '@/lib/useFetch';
+import { invalidateFetchCache, useFetch } from '@/lib/useFetch';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import {
@@ -25,40 +25,9 @@ interface Health {
   killSwitchRefusals: Record<string, number>;
   model: string;
   contextPct: number;
-  provider?: { type: string; command?: string; args?: string[]; model?: string; runtimeMode?: RuntimeMode; thinkingMode?: ThinkingMode };
-  providerType?: string;
-  runtime?: string;
-  providers?: ProviderOption[];
-}
-
-interface ProviderOption {
-  type: string;
-  label: string;
-  tier: 'stable' | 'experimental';
 }
 
 interface SecurityStatus { [key: string]: any; }
-interface ProviderModelOption { id: string; label: string; }
-interface ProviderModelsResponse {
-  provider: string;
-  models: ProviderModelOption[];
-  defaultModel: string;
-  selectable: boolean;
-  allowCustom?: boolean;
-  note?: string;
-}
-interface ProviderRuntimeOption { id: string; label: string; current?: boolean; }
-interface ProviderRuntimeOptionsResponse {
-  provider: string;
-  modeLabel?: string;
-  thinkingLabel?: string;
-  modeOptions: ProviderRuntimeOption[];
-  thinkingOptions: ProviderRuntimeOption[];
-  source: 'provider' | 'fallback' | 'static';
-  error?: string;
-}
-type RuntimeMode = string;
-type ThinkingMode = string;
 
 const KILL_SWITCH_LABELS: Record<string, { label: string; description: string }> = {
   WARROOM_TEXT_ENABLED: {
@@ -154,16 +123,12 @@ export function Settings() {
             </Card>
           </Section>
 
-          {(health.data?.providers?.length ?? 0) > 1 ? (
-            <Section
-              title="Agent provider"
-              subtitle="Claude and OpenAI are stable providers. Experimental (ACP) providers may need extra CLI setup and are enabled via ENABLE_ACP."
-            >
-              <Card>
-                <ProviderConfigPanel health={health} />
-              </Card>
-            </Section>
-          ) : null}
+          <Section title="Agent providers" subtitle="Each agent has its own provider, model, and effort settings.">
+            <Card>
+              <p class="text-[12px] text-[var(--color-text-muted)] mb-3">Open Provider Setup on an agent's card to configure it. Z.ai and OpenRouter API keys are shared across this installation; choosing a model changes only that agent.</p>
+              <a href="/agents" class="inline-block px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white">Manage agent providers</a>
+            </Card>
+          </Section>
 
           <Section
             title="Knowledge (Obsidian)"
@@ -431,300 +396,6 @@ function HotkeyPicker() {
       })}
     </div>
   );
-}
-
-// ── Agent provider config ────────────────────────────────────────────
-
-function ProviderConfigPanel({ health }: { health: FetchState<Health> }) {
-  const current = health.data?.provider;
-  const [type, setType] = useState(current?.type ?? 'opencode');
-  const models = useFetch<ProviderModelsResponse>('/api/providers/models?provider=' + encodeURIComponent(type), 0);
-  const [model, setModel] = useState(current?.model ?? health.data?.model ?? '');
-  const [customModel, setCustomModel] = useState('');
-  const [runtimeMode, setRuntimeMode] = useState<RuntimeMode>(current?.runtimeMode ?? '');
-  const [thinkingMode, setThinkingMode] = useState<ThinkingMode>(current?.thinkingMode ?? '');
-  const [command, setCommand] = useState(current?.command ?? '');
-  const [args, setArgs] = useState((current?.args ?? []).join(' '));
-  const runtimeOptionsPath = type === 'acp' && !command.trim()
-    ? null
-    : '/api/providers/runtime-options?provider='
-      + encodeURIComponent(type)
-      + (model && model !== '__custom__' ? '&model=' + encodeURIComponent(model) : '')
-      + (type === 'acp' ? '&command=' + encodeURIComponent(command.trim()) + '&args=' + encodeURIComponent(args) : '');
-  const runtimeOptions = useFetch<ProviderRuntimeOptionsResponse>(runtimeOptionsPath, 0);
-  const [busy, setBusy] = useState(false);
-  const dirtyRef = useRef(false);
-
-  function markDirty() {
-    dirtyRef.current = true;
-  }
-
-  useEffect(() => {
-    if (dirtyRef.current) return;
-    const nextType = current?.type ?? 'opencode';
-    setType(nextType);
-    setModel(current?.model ?? health.data?.model ?? '');
-    setRuntimeMode(current?.runtimeMode ?? '');
-    setThinkingMode(current?.thinkingMode ?? '');
-    setCommand(current?.command ?? '');
-    setArgs((current?.args ?? []).join(' '));
-  }, [current?.type, current?.model, current?.runtimeMode, current?.thinkingMode, current?.command, JSON.stringify(current?.args ?? []), health.data?.model]);
-
-  useEffect(() => {
-    const defaultModel = models.data?.defaultModel;
-    if (!defaultModel) return;
-    const available = models.data?.models ?? [];
-    setModel((existing) => {
-      if (!existing) return defaultModel;
-      if (existing === '__custom__') return existing;
-      if (available.some((m) => m.id === existing)) return existing;
-      if (models.data?.allowCustom) {
-        setCustomModel(existing);
-        return '__custom__';
-      }
-      return defaultModel;
-    });
-  }, [models.data?.defaultModel, models.data?.allowCustom, JSON.stringify(models.data?.models ?? [])]);
-
-  useEffect(() => {
-    const modeOptions = runtimeOptions.data?.modeOptions ?? [];
-    const thinkingOptions = runtimeOptions.data?.thinkingOptions ?? [];
-    setRuntimeMode((existing) => {
-      if (!modeOptions.length) return '';
-      if (existing && modeOptions.some((option) => option.id === existing)) return existing;
-      return modeOptions.find((option) => option.current)?.id ?? modeOptions[0].id;
-    });
-    setThinkingMode((existing) => {
-      if (!thinkingOptions.length) return '';
-      if (existing && thinkingOptions.some((option) => option.id === existing)) return existing;
-      return thinkingOptions.find((option) => option.current)?.id ?? thinkingOptions[0].id;
-    });
-  }, [JSON.stringify(runtimeOptions.data?.modeOptions ?? []), JSON.stringify(runtimeOptions.data?.thinkingOptions ?? [])]);
-
-  function providerPayload() {
-    const selectedModel = model === '__custom__' ? customModel.trim() : model.trim();
-    const modelPayload = selectedModel && selectedModel !== 'provider-default'
-      ? { model: selectedModel }
-      : {};
-    const runtimePayload = {
-      ...(runtimeMode ? { runtimeMode } : {}),
-      ...(thinkingMode ? { thinkingMode } : {}),
-    };
-    if (type === 'claude') return { type: 'claude', ...modelPayload, ...runtimePayload };
-    if (type === 'acp') {
-      return {
-        type: 'acp',
-        ...modelPayload,
-        ...runtimePayload,
-        command: command.trim(),
-        args: splitArgs(args),
-      };
-    }
-    return { type, ...modelPayload, ...runtimePayload };
-  }
-
-  async function save() {
-    const provider = providerPayload();
-    if (provider.type === 'acp' && !(provider as any).command) {
-      pushToast({ tone: 'error', title: 'Command required', description: 'Custom ACP needs a command, for example: my-agent --acp' });
-      return;
-    }
-    setBusy(true);
-    try {
-      await apiPatch('/api/agents/main/provider', { provider });
-      invalidateFetchCache('/api/provider/status');
-      invalidateFetchCache('/api/health');
-      invalidateFetchCache('/api/agents');
-      health.refresh();
-      dirtyRef.current = false;
-      pushToast({ tone: 'success', title: 'Provider saved', description: 'Takes effect on the next message.' });
-    } catch (err: any) {
-      // Surface structured availability errors from the preflight check so the
-      // user sees install commands and setup hints instead of a generic 400.
-      if (err instanceof ApiError && err.body && typeof err.body === 'object') {
-        const body = err.body as { error?: string; installCommand?: string; setupHint?: string; docsUrl?: string };
-        const descriptionParts = [body.error || `Request failed: ${err.status}`];
-        if (body.installCommand) descriptionParts.push(`Install: ${body.installCommand}`);
-        if (body.setupHint) descriptionParts.push(body.setupHint);
-        if (body.docsUrl) descriptionParts.push(`Docs: ${body.docsUrl}`);
-        pushToast({
-          tone: 'error',
-          title: 'Provider not available',
-          description: descriptionParts.join('\n'),
-          durationMs: 12000,
-        });
-      } else {
-        pushToast({ tone: 'error', title: 'Provider save failed', description: err?.message || String(err), durationMs: 7000 });
-      }
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div class="space-y-3">
-      <Row label="Current" hint="Shown in the sidebar footer too.">
-        <div class="text-right">
-          <div class="font-mono text-[12px] text-[var(--color-text)]">{health.data?.providerType || 'opencode'}</div>
-          <div class="text-[11px] text-[var(--color-text-faint)] max-w-[260px] truncate">{health.data?.runtime || 'OpenCode'}</div>
-        </div>
-      </Row>
-      <Divider />
-      <Row label="Provider" hint="Claude and OpenAI (native Codex) are stable. Experimental (ACP) providers appear when ENABLE_ACP is set.">
-        <select
-          value={type}
-          onChange={(event) => {
-            setType((event.currentTarget as HTMLSelectElement).value);
-            setModel('');
-            setCustomModel('');
-            markDirty();
-          }}
-          aria-label="Provider"
-          class="h-8 w-[180px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)]"
-        >
-          {(() => {
-            const opts = health.data?.providers ?? [{ type: 'claude', label: 'Claude', tier: 'stable' as const }];
-            const stable = opts.filter((p) => p.tier === 'stable');
-            const experimental = opts.filter((p) => p.tier === 'experimental');
-            if (experimental.length === 0) {
-              return stable.map((p) => <option key={p.type} value={p.type}>{p.label}</option>);
-            }
-            return (
-              <>
-                <optgroup label="Stable">
-                  {stable.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
-                </optgroup>
-                <optgroup label="Experimental (beta)">
-                  {experimental.map((p) => <option key={p.type} value={p.type}>{p.label}</option>)}
-                </optgroup>
-              </>
-            );
-          })()}
-        </select>
-      </Row>
-      <Divider />
-      <Row
-        label="Model"
-        hint="Saved with the provider. ACP providers receive it through session/set_model when supported."
-      >
-        <div class="flex flex-col items-end gap-1.5">
-          <select
-            value={model}
-            onChange={(event) => {
-              setModel((event.currentTarget as HTMLSelectElement).value);
-              markDirty();
-            }}
-            disabled={models.loading}
-            aria-label="Model"
-            class="h-8 w-[220px] rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
-          >
-            {(models.data?.models ?? []).map((m) => (
-              <option key={m.id} value={m.id}>{m.label}</option>
-            ))}
-            {models.data?.allowCustom && <option value="__custom__">Custom model...</option>}
-          </select>
-          {model === '__custom__' && (
-            <input
-              type="text"
-              value={customModel}
-              onInput={(event) => {
-                setCustomModel((event.currentTarget as HTMLInputElement).value);
-                markDirty();
-              }}
-              placeholder="model-id"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
-            />
-          )}
-          {models.data?.note && <div class="text-[10.5px] text-[var(--color-text-faint)] max-w-[260px] text-right leading-snug">{models.data.note}</div>}
-        </div>
-      </Row>
-      <Divider />
-      {(runtimeOptions.data?.modeOptions?.length ?? 0) > 0 && (
-        <>
-          <Row label={runtimeOptions.data?.modeLabel ?? 'Agent speed'} hint="Available values are specific to the selected model.">
-            <SegmentedControl
-              value={runtimeMode}
-              options={(runtimeOptions.data?.modeOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}
-              onChange={(value) => {
-                setRuntimeMode(value as RuntimeMode);
-                markDirty();
-              }}
-            />
-          </Row>
-          <Divider />
-        </>
-      )}
-      {(runtimeOptions.data?.thinkingOptions?.length ?? 0) > 0 && (
-        <>
-          <Row label={runtimeOptions.data?.thinkingLabel ?? 'Thinking'} hint="Available values are specific to the selected model.">
-            <SegmentedControl
-              value={thinkingMode}
-              options={(runtimeOptions.data?.thinkingOptions ?? []).map((option) => ({ value: option.id, label: option.label }))}
-              onChange={(value) => {
-                setThinkingMode(value as ThinkingMode);
-                markDirty();
-              }}
-            />
-          </Row>
-          <Divider />
-        </>
-      )}
-      {runtimeOptions.loading && <div class="text-[11px] text-[var(--color-text-faint)] text-right">Checking provider runtime options...</div>}
-      {runtimeOptions.data?.source === 'fallback' && runtimeOptions.data.error && (
-        <div class="text-[11px] text-[var(--color-text-faint)] text-right leading-snug">
-          Using fallback options: {runtimeOptions.data.error}
-        </div>
-      )}
-      {type === 'acp' && (
-        <>
-          <Row label="Command" hint="Executable available on PATH for the service.">
-            <input
-              type="text"
-              value={command}
-              onInput={(event) => {
-                setCommand((event.currentTarget as HTMLInputElement).value);
-                markDirty();
-              }}
-              placeholder="my-acp-agent"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
-            />
-          </Row>
-          <Divider />
-          <Row label="Arguments" hint="Shell-style quoting is supported for simple args.">
-            <input
-              type="text"
-              value={args}
-              onInput={(event) => {
-                setArgs((event.currentTarget as HTMLInputElement).value);
-                markDirty();
-              }}
-              placeholder="--acp"
-              class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[220px]"
-            />
-          </Row>
-        </>
-      )}
-      <div class="text-[11px] text-[var(--color-text-faint)] leading-snug pt-2 border-t border-[var(--color-border)]">
-        ClaudeClaw stores the provider and selected model. Configure provider auth in the provider itself:
-        OpenCode with <code class="font-mono">opencode auth login</code>, Gemini with <code class="font-mono">gemini</code>, and Codex with the <code class="font-mono">codex-acp</code> adapter.
-      </div>
-      <div class="flex justify-end pt-1">
-        <button
-          type="button"
-          onClick={save}
-          disabled={busy}
-          class="px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-60"
-        >
-          {busy ? 'Saving...' : 'Save provider'}
-        </button>
-      </div>
-    </div>
-  );
-}
-
-function splitArgs(input: string): string[] {
-  const matches = input.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g) ?? [];
-  return matches.map((part) => part.replace(/^["']|["']$/g, ''));
 }
 
 // ── Obsidian config panel ──────────────────────────────────────────────

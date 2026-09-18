@@ -599,6 +599,43 @@ describe('PATCH /api/agents/:id/model', () => {
 });
 
 describe('provider selection endpoints', () => {
+  it('protects OpenRouter setup and rejects unsupported fields', async () => {
+    expect((await getNoToken('/api/providers/openrouter/setup')).status).toBe(401);
+    const response = await get('/api/providers/openrouter/setup');
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).not.toHaveProperty('apiKey');
+    const rejected = await app.request('/api/providers/openrouter/setup' + Q, { method: 'POST', headers: { 'content-type': 'application/json', origin: 'https://evil.example' }, body: JSON.stringify({ apiKey: 'synthetic-key' }) });
+    expect(rejected.status).toBe(403);
+    const invalid = await app.request('/api/providers/openrouter/setup' + Q, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ migrate: true }) });
+    expect(invalid.status).toBe(400);
+  });
+
+  it('offers Z.ai models and empty runtime options before authentication', async () => {
+    const response = await get('/api/providers/models?provider=anthropic-compatible');
+    expect(response.status).toBe(200);
+    const body = await jsonOf(response);
+    expect(body.models.length).toBeGreaterThan(0);
+    expect(body.defaultModel).toBeTruthy();
+    const runtime = await get('/api/providers/runtime-options?provider=anthropic-compatible');
+    expect(runtime.status).toBe(200);
+    expect(await runtime.json()).toMatchObject({ modeOptions: [], thinkingOptions: [], source: 'static' });
+  });
+
+  it('protects setup endpoints and rejects malformed saves without writing', async () => {
+    expect((await getNoToken('/api/providers/zai/setup')).status).toBe(401);
+    const status = await get('/api/providers/zai/setup');
+    expect(status.status).toBe(200);
+    expect(status.headers.get('cache-control')).toBe('no-store');
+    const body = await status.json();
+    expect(body).not.toHaveProperty('apiKey');
+    expect(body).not.toHaveProperty('authToken');
+    const rejected = await app.request('/api/providers/zai/setup' + Q, { method: 'POST', headers: { origin: 'https://evil.example', 'content-type': 'application/json' }, body: JSON.stringify({ apiKey: 'synthetic-key' }) });
+    expect(rejected.status).toBe(403);
+    const invalid = await app.request('/api/providers/zai/setup' + Q, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ arbitraryEnv: 'disallowed' }) });
+    expect(invalid.status).toBe(400);
+  });
+
   it('reports selectable Gemini and Codex model providers', async () => {
     const geminiRes = await get('/api/providers/models?provider=gemini');
     expect(geminiRes.status).toBe(200);

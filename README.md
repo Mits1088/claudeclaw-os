@@ -467,6 +467,8 @@ The skill reads `GOOGLE_API_KEY` from the environment automatically.
 
 The model dropdown is populated live from OpenRouter's `/models` endpoint (cached 5 minutes server-side). Type-ahead works — start typing `openai/`, `anthropic/`, `:free` to narrow.
 
+Open an agent's **Provider Setup**, select **OpenRouter**, and save your API key before choosing a model. The key is stored as `OPENROUTER_API_KEY` in the installation's `.env` and is shared by agents using OpenRouter. Changes apply on the next turn. Keys supplied by the service environment must be updated there.
+
 **Known-good models to try:**
 
 | Model id | Notes |
@@ -482,58 +484,17 @@ The model dropdown is populated live from OpenRouter's `/models` endpoint (cache
 
 ---
 
-### Z.ai GLM (full Claude Code tool surface)
+### Z.ai (GLM)
 
-**What it does:** Runs GLM from Z.ai through the *same* Claude Code subprocess
-the Claude provider uses, so the model keeps the whole Claude Code tool
-surface: shell, files, MCP servers. ClaudeClaw's current OpenRouter integration
-is chat-only because its adapter sends no tool definitions and runs no
-multi-turn tool loop — this path instead hands Z.ai Claude Code's mature tool
-harness, without first building a separate agent loop.
+Use GLM models from Z.ai with tools for files, commands, and configured integrations. Tool access follows the agent's permissions.
 
-Internally the provider type is `anthropic-compatible` (the internal
-abstraction), and other endpoints speaking the same wire protocol — Moonshot,
-DeepSeek, a corporate Anthropic gateway — remain available as advanced
-configuration.
+Open an agent's **Provider Setup**, select **Z.ai (GLM)**, and add your Z.ai API key. Save the key, choose a model, then save the provider. The dialog shows configuration status and any restart instructions. The key is shared by agents using Z.ai in this installation; the provider and model selection belong to the individual agent. A configured key has not necessarily been verified by Z.ai.
 
-**Setup:** put an unquoted key in `.env` and pick the provider **Z.ai (GLM)**.
+For manual configuration, add `ZAI_API_KEY=your-key-here` to the server's `.env` and restart the service. `ANTHROPIC_COMPAT_API_KEY` and `GLM_API_KEY` remain supported for existing installations, but set only one key name. The dashboard can migrate an existing key to `ZAI_API_KEY` without displaying it. Process-managed credentials must be changed in the service configuration.
 
-```
-ANTHROPIC_COMPAT_API_KEY=your-key-here
-# ANTHROPIC_COMPAT_MODEL=glm-5.3[1m]     # [1m] declares the real context window
-```
+Usage is charged through your Z.ai account. ClaudeClaw currently records these turns as unpriced. `ENABLE_ACP` is not required. `ANTHROPIC_COMPAT_ENABLED=false` disables new turns.
 
-The built-in, tested default endpoint is z.ai. A different vendor needs **both**
-`ANTHROPIC_COMPAT_ALLOW_CUSTOM_ENDPOINTS=true` and an entry in
-`ANTHROPIC_COMPAT_ALLOWED_HOSTS` — a URL that fails either check aborts the
-turn rather than falling back, so a key meant for one vendor never travels to
-another.
-
-**Credential and deployment boundary.** ClaudeClaw is a single-owner,
-self-hosted fleet: the deployment owner supplies their own Z.ai credential,
-and ClaudeClaw does not share, proxy, resell, or otherwise provide other users
-access to that quota — personal and headless-agent use for the owner is the
-intended scope. One hard boundary holds regardless of configuration: **no
-Anthropic Max/Pro OAuth credential may ever be sent to the compatible
-endpoint.** The environment allow-list enforces that technically — nothing the
-subprocess did not explicitly get can reach the child process.
-
-**What is contained, and why.** These turns run unattended, so the subprocess
-gets its own generated config directory. Without one it would load the whole
-machine's MCP configuration — on a developer machine that measured 24 servers
-and 273 tools — regardless of the agent's `mcp_servers` allow-list. With one,
-that allow-list *is* the tool surface. Chat turns get the strictest tool
-profile, fleet dispatch is off unless you opt in, and `hive_read` stays
-withheld even then. `ANTHROPIC_COMPAT_ENABLED=false` stops new turns on every
-agent immediately, without a restart.
-
-**Cost:** the SDK still reports a dollar figure for these turns — Anthropic
-list pricing applied to somebody else's model. ClaudeClaw records it as
-unpriced and shows an em dash rather than a number that looks like money and
-is not.
-
-Design, measurements and the terms-of-service discussion:
-[`docs/rfcs/anthropic-compatible-provider.md`](docs/rfcs/anthropic-compatible-provider.md).
+Custom endpoints remain an advanced, manually configured option. Endpoint restrictions, credential isolation, and tool boundaries are documented in [the provider design](docs/rfcs/anthropic-compatible-provider.md).
 
 ### OpenAI (native Codex)
 

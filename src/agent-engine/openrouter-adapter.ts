@@ -1,9 +1,10 @@
+import { openRouterApiKey } from '../openrouter-setup.js';
 import fs from 'fs';
 import path from 'path';
 
 import OpenAI from 'openai';
 
-import { OPENROUTER_API_KEY, DEFAULT_OPENROUTER_MODEL } from '../config.js';
+import { DEFAULT_OPENROUTER_MODEL } from '../config.js';
 import { logger } from '../logger.js';
 import type { AgentEngine, AgentEngineEvent, AgentTurnInput } from './types.js';
 import { emptyUsage } from './types.js';
@@ -46,13 +47,14 @@ function readSystemPromptFromCwd(cwd: string): string | undefined {
 
 export class OpenRouterEngineAdapter implements AgentEngine {
   async *invoke(input: AgentTurnInput): AsyncIterable<AgentEngineEvent> {
-    if (!OPENROUTER_API_KEY) {
+    const apiKey = openRouterApiKey();
+    if (!apiKey) {
       // agent.ts consumes every engine event type EXCEPT 'error', so a bare
       // 'error' event would end the turn with no visible output. Surface this
       // via the same text_delta + result path the catch block uses for a
       // rejected key (401), so the user sees actionable setup instructions.
       const friendly =
-        'OpenRouter API key is not set. Add OPENROUTER_API_KEY to .env and restart with `pm2 restart claudeclaw --update-env`.';
+        'OpenRouter API key is not set. Open Provider Setup Provider Setup to add it, or set OPENROUTER_API_KEY in the server configuration.';
       yield { type: 'text_delta', delta: friendly, accumulatedText: friendly, raw: { status: 401, message: friendly } };
       yield { type: 'result', text: friendly, usage: emptyUsage(), stopReason: 'error' };
       return;
@@ -63,7 +65,7 @@ export class OpenRouterEngineAdapter implements AgentEngine {
     const systemPrompt = composeSystemPrompt(persona, input.runtimeIdentity);
 
     const client = new OpenAI({
-      apiKey: OPENROUTER_API_KEY,
+      apiKey,
       baseURL: OPENROUTER_BASE_URL,
       defaultHeaders: {
         'HTTP-Referer': REFERRER,
@@ -148,7 +150,7 @@ export class OpenRouterEngineAdapter implements AgentEngine {
       } else if (status === 429) {
         friendly = `Rate-limited on \`${model}\` (429). Free models share upstream quotas — try a different model in Settings, or wait a few seconds.`;
       } else if (status === 401) {
-        friendly = `OpenRouter rejected the API key (401). Check OPENROUTER_API_KEY in .env and restart with \`pm2 restart claudeclaw --update-env\`.`;
+        friendly = `OpenRouter rejected the API key (401). Replace the key in Provider Setup, or update OPENROUTER_API_KEY in the service configuration.`;
       } else if (status === 402) {
         friendly = `OpenRouter says credits are exhausted (402). Top up at https://openrouter.ai/credits or switch to a free model.`;
       } else if (status === 500 || status === 502 || status === 503) {

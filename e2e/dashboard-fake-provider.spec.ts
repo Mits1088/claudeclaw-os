@@ -9,6 +9,7 @@ type ProviderType = 'opencode' | 'gemini' | 'acp-codex' | 'claude' | 'acp';
 // renamed ACP provider is offered as acp-codex and nothing else.
 const PROVIDER_OPTIONS = [
   { type: 'claude', label: 'Claude', tier: 'stable' },
+  { type: 'anthropic-compatible', label: 'Z.ai (GLM)', tier: 'experimental' },
   { type: 'openai', label: 'OpenAI', tier: 'stable' },
   { type: 'acp-codex', label: 'Codex (ACP)', tier: 'experimental' },
   { type: 'gemini', label: 'Gemini', tier: 'experimental' },
@@ -235,18 +236,20 @@ async function saveProvider(page: Page) {
 }
 
 test('provider picker switches built-in and custom providers', async ({ page }) => {
-  await page.goto('/settings?token=test&chatId=e2e');
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
 
-  await expect(page.getByText('Agent provider')).toBeVisible();
+  await expect(page.getByText('Main Provider Setup')).toBeVisible();
   const picker = page.getByLabel('Provider', { exact: true });
 
   for (const provider of ['claude', 'opencode', 'gemini', 'acp-codex'] as ProviderType[]) {
+    if (provider !== 'claude') await page.getByRole('button', { name: 'Configure provider for Main' }).click();
     await picker.selectOption(provider);
     if (provider === 'acp-codex') {
       // The model list is fetched per provider, so wait for THIS provider's
       // options to land rather than selecting into the previous provider's
       // list (Gemini's, in the iteration order above).
-      const modelPicker = page.getByLabel('Model');
+      const modelPicker = page.getByRole('combobox', { name: 'Model', exact: true });
       await expect(modelPicker).toBeEnabled();
       await expect(modelPicker.locator('option[value="gpt-5.5"]')).toHaveCount(1);
       await modelPicker.selectOption('gpt-5.5');
@@ -260,7 +263,8 @@ test('provider picker switches built-in and custom providers', async ({ page }) 
   await page.goto('/chat?token=test&chatId=e2e');
   await expect(page.getByRole('main').getByText('gpt-5.5')).toBeVisible();
 
-  await page.goto('/settings?token=test&chatId=e2e');
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
   const customPicker = page.getByLabel('Provider', { exact: true });
   await customPicker.selectOption('acp');
   await page.getByPlaceholder('my-acp-agent').fill('fake-acp');
@@ -275,7 +279,8 @@ test('provider picker switches built-in and custom providers', async ({ page }) 
 // never be offered as its own choice in the UI — otherwise an operator can pick
 // a provider id that no longer exists in the registry.
 test('the provider picker offers acp-codex and never the legacy codex id', async ({ page }) => {
-  await page.goto('/settings?token=test&chatId=e2e');
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
 
   const picker = page.getByLabel('Provider', { exact: true });
   await expect(picker.locator('option[value="acp-codex"]')).toHaveCount(1);
@@ -295,9 +300,10 @@ test('dashboard status shows active provider and model in chat', async ({ page }
   await expect(page.getByRole('main').getByText('Model')).toBeVisible();
   await expect(page.getByRole('main').getByText('opencode')).toBeVisible();
 
-  await page.goto('/settings?token=test&chatId=e2e');
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
   await page.getByLabel('Provider', { exact: true }).selectOption('acp-codex');
-  const modelPicker = page.getByLabel('Model');
+  const modelPicker = page.getByRole('combobox', { name: 'Model', exact: true });
   await expect(modelPicker.locator('option[value="gpt-5.5"]')).toHaveCount(1);
   await modelPicker.selectOption('gpt-5.5');
   await saveProvider(page);
@@ -388,4 +394,154 @@ test('stop button aborts an active fake-provider turn', async ({ page }) => {
   });
   await page.getByRole('button', { name: /stop/i }).click();
   await expect(page.getByRole('button', { name: /send/i })).toBeVisible();
+});
+
+
+test('Z.ai setup shows models, saves a masked key, and clears it on provider switch', async ({ page }) => {
+  let configured = false;
+  let savedBody: unknown;
+  await page.route('**/api/providers/zai/setup*', async (route) => {
+    if (route.request().method() === 'POST') {
+      savedBody = route.request().postDataJSON();
+      configured = true;
+      return route.fulfill({ json: { saved: true, restartRequired: true } });
+    }
+    return route.fulfill({ json: { configured, enabled: true, ready: configured, canEdit: true, legacyKey: false, message: configured ? 'API key configured.' : 'Add your Z.ai API key to finish setup.' } });
+  });
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  const picker = page.getByRole('combobox').first();
+  await picker.selectOption('anthropic-compatible');
+  await expect(page.getByRole('combobox', { name: 'Model', exact: true })).toHaveValue('anthropic-compatible-default');
+  await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeDisabled();
+  const password = page.locator('input[aria-label="Z.ai API key"]');
+  await expect(password).toHaveAttribute('type', 'password');
+  await password.fill('synthetic-browser-key');
+  await page.getByRole('button', { name: 'Save key', exact: true }).click();
+  await expect(password).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeEnabled();
+  expect(savedBody).toEqual({ apiKey: 'synthetic-browser-key' });
+  await expect(page.getByText('Key saved. Restart other running agents', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Replace API key' }).click();
+  await password.fill('unsaved-secret');
+  await picker.selectOption('claude');
+  await picker.selectOption('anthropic-compatible');
+  await page.getByRole('button', { name: 'Replace API key' }).click();
+  await expect(password).toHaveValue('');
+});
+
+test('Z.ai model failures remain visible and retry restores selection', async ({ page }) => {
+  let fail = true;
+  await page.route('**/api/providers/models*', async (route) => {
+    if (new URL(route.request().url()).searchParams.get('provider') !== 'anthropic-compatible') return route.fallback();
+    return route.fulfill({ status: fail ? 500 : 200, json: fail ? { error: 'Unavailable' } : { provider: 'anthropic-compatible', models: [{ id: 'glm-test', label: 'GLM test' }], defaultModel: 'glm-test', selectable: true } });
+  });
+  await page.route('**/api/providers/zai/setup*', (route) => route.fulfill({ json: { configured: true, enabled: true, ready: true, canEdit: true, legacyKey: false, message: 'API key configured.' } }));
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await page.getByRole('combobox').first().selectOption('anthropic-compatible');
+  await expect(page.getByText('Could not load models.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeDisabled();
+  fail = false;
+  await page.getByRole('button', { name: 'Retry', exact: true }).click();
+  await expect(page.getByRole('combobox', { name: 'Model', exact: true })).toHaveValue('glm-test');
+  await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeEnabled();
+});
+
+
+test('Z.ai preserves an existing custom endpoint when saving its model', async ({ page }) => {
+  await page.route('**/api/agents?*', (route) => route.fulfill({ json: { agents: [{ id: 'main', name: 'Main', running: true, model: 'custom-glm', provider: { type: 'anthropic-compatible', model: 'custom-glm', baseUrl: 'https://example.com/anthropic' } }] } }));
+  await page.route('**/api/providers/zai/setup*', (route) => {
+    expect(new URL(route.request().url()).searchParams.get('baseUrl')).toBe('https://example.com/anthropic');
+    return route.fulfill({ json: { configured: true, enabled: true, ready: true, canEdit: false, legacyKey: true, message: 'A custom endpoint is configured. Manage its credential in the server configuration.' } });
+  });
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await expect(page.getByText('A custom endpoint is configured.', { exact: false })).toBeVisible();
+  await expect(page.locator('input[aria-label="Z.ai API key"]')).toHaveCount(0);
+  const request = page.waitForRequest((req) => req.url().includes('/api/agents/main/provider') && req.method() === 'PATCH');
+  await saveProvider(page);
+  expect((await request).postDataJSON().provider).toMatchObject({ baseUrl: 'https://example.com/anthropic', model: 'custom-glm' });
+});
+
+
+test('Settings directs provider changes to the agent setup dialog', async ({ page }) => {
+  await page.goto('/settings?token=test&chatId=e2e');
+  await expect(page.getByRole('button', { name: 'Save provider' })).toHaveCount(0);
+  await expect(page.getByLabel('Provider', { exact: true })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Manage agent providers' }).click();
+  await expect(page).toHaveURL(/\/agents/);
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await expect(page.getByText('Main Provider Setup')).toBeVisible();
+});
+
+test('OpenRouter setup shows models, saves a masked key, and clears it on provider switch', async ({ page }) => {
+  let configured = false;
+  let savedBody: unknown;
+  await page.route('**/api/providers/openrouter/setup*', async (route) => {
+    if (route.request().method() === 'POST') {
+      savedBody = route.request().postDataJSON();
+      configured = true;
+      return route.fulfill({ json: { saved: true, restartRequired: true } });
+    }
+    return route.fulfill({ json: { configured, enabled: true, ready: configured, canEdit: true, legacyKey: false, message: configured ? 'API key configured.' : 'Add your OpenRouter API key to finish setup.' } });
+  });
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  const picker = page.getByRole('combobox').first();
+  await picker.selectOption('openrouter');
+  await expect(page.getByRole('combobox', { name: 'Model', exact: true })).toHaveValue('openrouter-default');
+  await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeDisabled();
+  const password = page.locator('input[aria-label="OpenRouter API key"]');
+  await expect(password).toHaveAttribute('type', 'password');
+  await password.fill('synthetic-browser-key');
+  await page.getByRole('button', { name: 'Save key', exact: true }).click();
+  await expect(password).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeEnabled();
+  expect(savedBody).toEqual({ apiKey: 'synthetic-browser-key' });
+  await expect(page.getByText('Key saved. OpenRouter will use it on the next turn.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'Replace API key' }).click();
+  await password.fill('unsaved-secret');
+  await picker.selectOption('claude');
+  await picker.selectOption('openrouter');
+  await page.getByRole('button', { name: 'Replace API key' }).click();
+  await expect(password).toHaveValue('');
+});
+
+test('OpenRouter search, free filter and server sort preserve the selected model', async ({ page }) => {
+  const sorts: string[] = [];
+  await page.route('**/api/providers/models*', (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.get('provider') !== 'openrouter') return route.fallback();
+    const sort = query.get('sort')!;
+    sorts.push(sort);
+    const models = [{ id: 'paid/model', label: 'paid/model', free: false }, { id: 'free/model', label: 'free/model', free: true }];
+    if (sort !== 'most-popular') models.reverse();
+    return route.fulfill({ json: { provider: 'openrouter', models, defaultModel: models[0].id, allowCustom: true, selectable: true } });
+  });
+  await page.route('**/api/providers/openrouter/setup*', (route) => route.fulfill({ json: { configured: true, enabled: true, ready: true, canEdit: true } }));
+  await page.goto('/agents?token=test&chatId=e2e');
+  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await page.getByRole('combobox', { name: 'Provider', exact: true }).selectOption('openrouter');
+  const model = page.getByRole('combobox', { name: 'Model', exact: true });
+  await expect(model).toHaveValue('paid/model');
+  const searchBounds = await page.getByRole('searchbox', { name: 'Search models' }).boundingBox();
+  const modelBounds = await model.boundingBox();
+  expect(searchBounds!.y).toBeLessThan(modelBounds!.y);
+  await page.screenshot({ path: 'workspace/scratch/provider-polish.png' });
+  await page.getByRole('checkbox', { name: 'Free only' }).check();
+  await expect(model).toHaveValue('paid/model');
+  await page.getByRole('searchbox', { name: 'Search models' }).fill('no-match');
+  await expect(page.getByText('0 matches', { exact: false })).toBeVisible();
+  await expect(model).toHaveValue('paid/model');
+  await page.getByRole('combobox', { name: 'Sort models', exact: true }).selectOption('newest');
+  await expect(model).toBeEnabled();
+  await expect(model).toHaveValue('paid/model');
+  await page.getByRole('combobox', { name: 'Sort models', exact: true }).selectOption('pricing-low-to-high');
+  await expect(model).toBeEnabled();
+  await expect(model).toHaveValue('paid/model');
+  expect(sorts).toEqual(['most-popular', 'newest', 'pricing-low-to-high']);
+  const request = page.waitForRequest((req) => req.url().includes('/api/agents/main/provider') && req.method() === 'PATCH');
+  await saveProvider(page);
+  expect((await request).postDataJSON().provider.model).toBe('paid/model');
 });

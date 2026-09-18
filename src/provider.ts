@@ -636,7 +636,7 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
             compatEnvSource().ZAI_API_KEY,
             compatEnvSource().GLM_API_KEY,
           ]),
-          setupHint: 'Set ANTHROPIC_COMPAT_API_KEY in .env (unquoted), then restart the service.',
+          setupHint: 'Open Provider Setup to configure Z.ai, or set ZAI_API_KEY in .env and restart the service. Existing ANTHROPIC_COMPAT_API_KEY remains supported; use only one key name.',
           docsUrl: 'https://docs.claude.com/en/docs/claude-code/llm-gateway',
         };
       }
@@ -652,7 +652,7 @@ export function checkProviderAvailability(provider: ProviderConfig): ProviderAva
       return {
         ok: false,
         error: 'OPENROUTER_API_KEY is not set.',
-        setupHint: 'Get a key from https://openrouter.ai/keys, then add OPENROUTER_API_KEY=sk-or-v1-... to .env and restart with `pm2 restart claudeclaw --update-env`.',
+        setupHint: 'Open Provider Setup to save your OpenRouter key, or set OPENROUTER_API_KEY in the server configuration. Get a key from https://openrouter.ai/keys.',
         docsUrl: 'https://openrouter.ai/docs',
       };
     }

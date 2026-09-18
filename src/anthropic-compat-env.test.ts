@@ -50,7 +50,7 @@ describe('resolveCompatApiKey', () => {
     expect(() => resolveCompatApiKey({ ANTHROPIC_COMPAT_API_KEY: KEY, ZAI_API_KEY: KEY }))
       .toThrow(CompatConfigError);
     expect(() => resolveCompatApiKey({ ZAI_API_KEY: KEY, GLM_API_KEY: 'a-different-value' }))
-      .toThrow(/ANTHROPIC_COMPAT_API_KEY/);
+      .toThrow(/ZAI_API_KEY/);
   });
 
   it('refuses a missing or blank key instead of falling back', () => {

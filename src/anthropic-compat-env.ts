@@ -43,13 +43,13 @@ export const COMPAT_CONTEXT_TOKENS = '1000000';
 export const COMPAT_API_TIMEOUT_MS = '3000000';
 
 /** The canonical credential name. Everything else is a tolerated alias. */
-const CANONICAL_KEY_NAME = 'ANTHROPIC_COMPAT_API_KEY';
+const CANONICAL_KEY_NAME = 'ZAI_API_KEY';
 /**
  * Aliases exist because operators already have these in their .env from running
  * the CLI by hand. They are read, but two names set at once is an ERROR: a
  * forgotten old value must never quietly win a precedence contest.
  */
-const KEY_ALIASES = ['ZAI_API_KEY', 'GLM_API_KEY'] as const;
+const KEY_ALIASES = ['ANTHROPIC_COMPAT_API_KEY', 'GLM_API_KEY'] as const;
 
 /**
  * Everything the subprocess is allowed to inherit. A blocklist was tried first

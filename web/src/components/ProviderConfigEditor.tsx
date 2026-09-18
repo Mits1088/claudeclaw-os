@@ -1,16 +1,18 @@
+import { apiPost, ApiError } from '@/lib/api';
 import { useEffect, useRef, useState } from 'preact/hooks';
 import { useFetch } from '@/lib/useFetch';
 
 export interface ProviderConfig {
-  type: 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp' | 'anthropic-compatible';
+  type: 'openrouter' | 'claude' | 'opencode' | 'gemini' | 'acp-codex' | 'openai' | 'acp' | 'anthropic-compatible';
   model?: string;
+  baseUrl?: string;
   runtimeMode?: string;
   thinkingMode?: string;
   command?: string;
   args?: string[];
 }
 
-interface ProviderModelOption { id: string; label: string; }
+interface ProviderModelOption { id: string; label: string; free?: boolean; }
 interface ProviderModelsResponse {
   provider: string;
   models: ProviderModelOption[];
@@ -72,7 +74,29 @@ export function ProviderConfigEditor({
   const availableProviders = providers && providers.length > 0 ? providers : CLAUDE_ONLY;
   const initial = value ?? { type: 'claude' as const };
   const [type, setType] = useState<ProviderConfig['type']>(initial.type);
-  const models = useFetch<ProviderModelsResponse>('/api/providers/models?provider=' + encodeURIComponent(type), 0);
+  const [modelSort, setModelSort] = useState('most-popular');
+  const [modelSearch, setModelSearch] = useState('');
+  const [freeOnly, setFreeOnly] = useState(false);
+  const models = useFetch<ProviderModelsResponse>('/api/providers/models?provider=' + encodeURIComponent(type) + (type === 'openrouter' ? '&sort=' + modelSort : ''), 0);
+  const keyProvider = type === 'openrouter' ? 'OpenRouter' : 'Z.ai';
+  const keyEndpoint = type === 'openrouter' ? '/api/providers/openrouter/setup' : '/api/providers/zai/setup';
+  const usesKeySetup = type === 'anthropic-compatible' || type === 'openrouter';
+  const zai = useFetch<{ configured: boolean; enabled: boolean; ready: boolean; canEdit: boolean; legacyKey: boolean; message: string }>(usesKeySetup ? keyEndpoint + (type === 'anthropic-compatible' && value?.baseUrl ? '?baseUrl=' + encodeURIComponent(value.baseUrl) : '') : null, 0);
+  const [apiKey, setApiKey] = useState('');
+  const [keyBusy, setKeyBusy] = useState(false);
+  const [keyMessage, setKeyMessage] = useState('');
+  const [editingKey, setEditingKey] = useState(false);
+  async function saveKey(migrate = false) {
+    setKeyBusy(true); setKeyMessage('');
+    try {
+      await apiPost(keyEndpoint, migrate ? { migrate: true } : { apiKey });
+      setApiKey(''); setEditingKey(false);
+      setKeyMessage(type === 'openrouter' ? 'Key saved. OpenRouter will use it on the next turn.' : 'Key saved. Restart other running agents that use Z.ai to load the change.');
+      zai.refresh();
+    } catch (err) {
+      setKeyMessage(err instanceof ApiError ? (err.body as { error?: string })?.error ?? 'Could not save key.' : 'Could not save key.');
+    } finally { setKeyBusy(false); }
+  }
   const [model, setModel] = useState(initial.model ?? fallbackModel ?? '');
   const [customModel, setCustomModel] = useState('');
   const [runtimeMode, setRuntimeMode] = useState(initial.runtimeMode ?? '');
@@ -96,6 +120,7 @@ export function ProviderConfigEditor({
   function providerPayload(): ProviderConfig {
     const selectedModel = model === '__custom__' ? customModel.trim() : model.trim();
     const provider: ProviderConfig = { type };
+    if (type === 'anthropic-compatible' && value?.baseUrl) provider.baseUrl = value.baseUrl;
     if (selectedModel && selectedModel !== 'provider-default') provider.model = selectedModel;
     if (runtimeMode) provider.runtimeMode = runtimeMode;
     if (thinkingMode) provider.thinkingMode = thinkingMode;
@@ -131,6 +156,7 @@ export function ProviderConfigEditor({
   }, [providerKey, type]);
 
   useEffect(() => {
+    if (models.data?.provider !== type) return;
     const defaultModel = models.data?.defaultModel;
     if (!defaultModel) return;
     const available = models.data?.models ?? [];
@@ -144,9 +170,10 @@ export function ProviderConfigEditor({
       }
       return defaultModel;
     });
-  }, [models.data?.defaultModel, models.data?.allowCustom, JSON.stringify(models.data?.models ?? [])]);
+  }, [type, models.data?.provider, models.data?.defaultModel, models.data?.allowCustom, JSON.stringify(models.data?.models ?? [])]);
 
   useEffect(() => {
+    if (runtimeOptions.data?.provider !== type) return;
     const modeOptions = runtimeOptions.data?.modeOptions ?? [];
     const thinkingOptions = runtimeOptions.data?.thinkingOptions ?? [];
     setRuntimeMode((existing) => {
@@ -159,7 +186,7 @@ export function ProviderConfigEditor({
       if (existing && thinkingOptions.some((option) => option.id === existing)) return existing;
       return thinkingOptions.find((option) => option.current)?.id ?? thinkingOptions[0].id;
     });
-  }, [JSON.stringify(runtimeOptions.data?.modeOptions ?? []), JSON.stringify(runtimeOptions.data?.thinkingOptions ?? [])]);
+  }, [type, runtimeOptions.data?.provider, JSON.stringify(runtimeOptions.data?.modeOptions ?? []), JSON.stringify(runtimeOptions.data?.thinkingOptions ?? [])]);
 
   useEffect(() => {
     onChange?.(providerPayload());
@@ -170,16 +197,23 @@ export function ProviderConfigEditor({
   const experimentalOptions = availableProviders.filter((p) => p.tier === 'experimental');
   const onlyStable = experimentalOptions.length === 0;
 
+  const filteredModels = (models.data?.models ?? []).filter((m) => type !== 'openrouter' || ((!freeOnly || m.free === true) && (m.id + ' ' + m.label).toLowerCase().includes(modelSearch.trim().toLowerCase())));
+  const selectedOutsideFilter = model && model !== '__custom__' && !filteredModels.some((m) => m.id === model);
+
   return (
     <div class="space-y-3">
       <EditorField label="Provider">
         <select
+          aria-label="Provider"
           value={type}
-          disabled={!loaded}
+          disabled={!loaded || keyBusy}
           onChange={(event) => {
             setType(normalizeProviderType((event.currentTarget as HTMLSelectElement).value as ProviderConfig['type'], availableProviders));
             setModel('');
             setCustomModel('');
+            setModelSearch(''); setFreeOnly(false);
+            setApiKey(''); setKeyMessage(''); setEditingKey(false);
+            setRuntimeMode(''); setThinkingMode('');
             markDirty();
           }}
           class="w-full h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
@@ -199,23 +233,71 @@ export function ProviderConfigEditor({
                 </>
               )}
         </select>
-        {loaded && onlyStable && (
-          <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">
+        {loaded && !availableProviders.some((p) => ['acp', 'acp-codex', 'gemini', 'opencode', 'openrouter'].includes(p.type)) && (
+          <div class="text-[12px] text-[var(--color-text-muted)] mt-1">
             Experimental providers (ACP: Gemini, OpenCode, Codex-ACP, custom) are hidden. Set ENABLE_ACP=true in .env to enable them.
           </div>
         )}
       </EditorField>
 
-      <EditorField label="Model" hint="Saved with the provider. ACP providers receive it through session/set_model when supported.">
+      {usesKeySetup && <p class="text-[12px] leading-relaxed text-[var(--color-text-muted)]">{type === 'openrouter' ? 'Chat only, without tools. Each message starts fresh; saved memory still applies.' : 'Run GLM with this agent’s permitted tools.'} One API key serves all agents using {keyProvider}.</p>}
+      {usesKeySetup && (
+        <div class="space-y-2 rounded-md border border-[var(--color-border)] p-3 text-[12px]">
+          <div class="flex items-center justify-between gap-3">
+            <span class="font-medium">API key</span>
+            <div class="flex items-center gap-3"><span class="text-[var(--color-text-muted)]">{zai.loading ? 'Checking...' : zai.data?.configured ? 'Key saved' : 'Setup required'}</span>
+            {zai.data?.configured && zai.data.canEdit && !editingKey && <button type="button" onClick={() => setEditingKey(true)} class="rounded px-2 py-1 hover:bg-[var(--color-elevated)]">Replace API key</button>}</div>
+          </div>
+
+          {!zai.loading && (!zai.data?.ready || !zai.data?.canEdit) && <p>{zai.data?.message}</p>}
+          {zai.error && <p role="alert">Could not load setup. <button type="button" onClick={zai.refresh}>Retry</button></p>}
+          {zai.data?.canEdit && (!zai.data.configured || editingKey) && (
+            <>
+              <a href={type === 'openrouter' ? 'https://openrouter.ai/keys' : 'https://z.ai/manage-apikey/apikey-list'} target="_blank" rel="noopener noreferrer" class="underline">Get a {keyProvider} API key</a>
+              <input type="password" disabled={keyBusy} value={apiKey} autoComplete="new-password" aria-label={keyProvider + ' API key'} placeholder={zai.data.configured ? 'Enter a replacement key' : 'Paste your ' + keyProvider + ' API key'} onInput={(event) => setApiKey((event.currentTarget as HTMLInputElement).value)} class="w-full rounded border border-[var(--color-border)] bg-[var(--color-elevated)] p-2" />
+              <button type="button" disabled={keyBusy || !apiKey} onClick={() => saveKey()} class="underline disabled:opacity-50">{keyBusy ? 'Saving...' : 'Save key'}</button>
+              {zai.data.legacyKey && <button type="button" disabled={keyBusy} onClick={() => saveKey(true)} class="ml-3 underline">Migrate existing key to ZAI_API_KEY</button>}
+              <p class="text-[var(--color-text-muted)]">Stored privately in the server’s .env. Saved keys are never displayed.</p>
+              {zai.data.configured && <button type="button" onClick={() => { setEditingKey(false); setApiKey(''); }} class="ml-3 underline">Cancel</button>}
+            </>
+          )}
+          {zai.data && !zai.data.ready && <button type="button" onClick={zai.refresh} class="underline">Check setup again</button>}
+          {keyMessage && <p role="status">{keyMessage}</p>}
+        </div>
+      )}
+      {type === 'openrouter' && (
+        <div class="space-y-2 text-[12px]">
+          <input type="search" aria-label="Search models" placeholder="Search models" value={modelSearch} onInput={(event) => setModelSearch(event.currentTarget.value)} class="w-full rounded border border-[var(--color-border)] bg-[var(--color-elevated)] p-2" />
+          <div class="flex items-center justify-between gap-3 flex-wrap">
+          <label class="flex items-center gap-2">Sort
+            <select aria-label="Sort models" value={modelSort} onChange={(event) => setModelSort(event.currentTarget.value)} class="rounded border border-[var(--color-border)] bg-[var(--color-elevated)] p-1">
+              <option value="most-popular">Popular</option>
+              <option value="newest">Newest</option>
+              <option value="pricing-low-to-high">Cheapest first</option>
+            </select>
+          </label>
+          <label class="flex items-center gap-2"><input type="checkbox" checked={freeOnly} onChange={(event) => setFreeOnly(event.currentTarget.checked)} />Free only</label>
+          <span class="text-[var(--color-text-muted)]">{filteredModels.length} matches</span>
+          </div>
+          {selectedOutsideFilter && <p class="text-[var(--color-text-muted)]">Selected model kept below</p>}
+        </div>
+      )}
+
+      <EditorField label="Model">
         <select
+          aria-label="Model"
           value={model}
           onChange={(event) => { setModel((event.currentTarget as HTMLSelectElement).value); markDirty(); }}
           disabled={models.loading}
           class="w-full h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
         >
-          {(models.data?.models ?? []).map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
+          {models.loading && <option value="">Loading models...</option>}
+          {!models.loading && !models.data && <option value="">Models unavailable</option>}
+          {selectedOutsideFilter && <option value={model}>{model} (selected)</option>}
+          {filteredModels.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}
           {models.data?.allowCustom && <option value="__custom__">Custom model...</option>}
         </select>
+        {models.error && <p role="alert" class="text-[12px]">Could not load models. <button type="button" onClick={models.refresh}>Retry</button></p>}
         {model === '__custom__' && (
           <input
             type="text"
@@ -225,7 +307,7 @@ export function ProviderConfigEditor({
             class="mt-1.5 w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
           />
         )}
-        {models.data?.note && <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1 leading-snug">{models.data.note}</div>}
+        {models.data?.note && !usesKeySetup && <div class="text-[12px] text-[var(--color-text-muted)] mt-1 leading-snug">{models.data.note}</div>}
       </EditorField>
 
       {(runtimeOptions.data?.modeOptions?.length ?? 0) > 0 && (
@@ -248,9 +330,9 @@ export function ProviderConfigEditor({
         </EditorField>
       )}
 
-      {runtimeOptions.loading && <div class="text-[11px] text-[var(--color-text-faint)]">Checking provider runtime options...</div>}
+      {runtimeOptions.loading && <div class="text-[11px] text-[var(--color-text-muted)]">Checking provider runtime options...</div>}
       {runtimeOptions.data?.source === 'fallback' && runtimeOptions.data.error && (
-        <div class="text-[11px] text-[var(--color-text-faint)] leading-snug">Using fallback options: {runtimeOptions.data.error}</div>
+        <div class="text-[11px] text-[var(--color-text-muted)] leading-snug">Using fallback options: {runtimeOptions.data.error}</div>
       )}
 
       {type === 'acp' && (
@@ -281,7 +363,7 @@ export function ProviderConfigEditor({
           <button
             type="button"
             onClick={() => onSave(providerPayload())}
-            disabled={busy}
+            disabled={busy || keyBusy || !loaded || models.loading || !!models.error || !models.data || !(model === '__custom__' ? customModel.trim() : model.trim()) || (usesKeySetup && (!zai.data?.ready || zai.loading || !!zai.error))}
             class="px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-60"
           >
             {busy ? 'Saving...' : saveLabel}
@@ -295,9 +377,9 @@ export function ProviderConfigEditor({
 function EditorField({ label, hint, children }: { label: string; hint?: string; children: any }) {
   return (
     <div>
-      <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-faint)] mb-1">{label}</label>
+      <label class="block text-[10px] uppercase tracking-wider text-[var(--color-text-muted)] mb-1">{label}</label>
       {children}
-      {hint && <div class="text-[10.5px] text-[var(--color-text-faint)] mt-1">{hint}</div>}
+      {hint && <div class="text-[12px] text-[var(--color-text-muted)] mt-1">{hint}</div>}
     </div>
   );
 }
