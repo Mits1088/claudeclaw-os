@@ -36,7 +36,7 @@ export function App() {
   }, [agentList.data]);
 
   return (
-    <div class="flex h-screen h-[100dvh] bg-[var(--color-bg)] text-[var(--color-text)]">
+    <div class="app-shell flex min-h-0 bg-[var(--color-bg)] text-[var(--color-text)]">
       {/* Mobile-only hamburger. Hidden on >=md where the sidebar is
        *  always inline. */}
       <button
@@ -51,7 +51,7 @@ export function App() {
       {/* Backdrop when the mobile drawer is open. Tapping it closes. */}
       {open && (
         <div
-          class="md:hidden fixed inset-0 bg-black/60 z-40"
+          class="viewport-overlay md:hidden fixed inset-0 bg-black/60 z-40"
           onClick={closeSidebar}
         />
       )}

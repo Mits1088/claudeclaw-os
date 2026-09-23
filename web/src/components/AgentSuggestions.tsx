@@ -73,7 +73,7 @@ export function AgentSuggestionModal({ suggestion, onClose, onActed, onChange }:
           <button
             type="button"
             onClick={act}
-            class="ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
+            class="control-button ml-auto inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium control-accent transition-colors"
           >
             <Sparkles size={13} /> Open wizard with these values
           </button>
@@ -131,7 +131,7 @@ export function AgentSuggestionBadge({ agentId, suggestions, onOpen }: BadgeProp
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onOpen(match); }}
-      class="inline-flex items-center justify-center w-5 h-5 rounded-full bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white transition-colors"
+      class="control-button inline-flex items-center justify-center w-5 h-5 rounded-full control-accent transition-colors"
       title={`Suggestion: spin off "${match.suggested_name}"`}
       aria-label="Agent split suggestion"
     >

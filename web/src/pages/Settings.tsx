@@ -1,11 +1,13 @@
 import { useEffect, useRef, useState } from 'preact/hooks';
-import { Check, Pipette, RotateCcw } from 'lucide-preact';
+import { Check, Monitor, Moon, Pipette, RotateCcw, Sun } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
 import { PageState } from '@/components/PageState';
 import { Toggle } from '@/components/Toggle';
 import { invalidateFetchCache, useFetch } from '@/lib/useFetch';
 import { ApiError, apiPatch, apiPost } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
+import { appearanceMode, resolvedAppearance, setAppearanceMode } from '@/lib/appearance';
+import { textWeight, setTextWeight } from '@/lib/typography';
 import {
   theme, themeMeta, setTheme, type ThemeName,
   customAccent, setCustomAccent,
@@ -57,49 +59,163 @@ const KILL_SWITCH_LABELS: Record<string, { label: string; description: string }>
 };
 
 const THEME_ORDER: ThemeName[] = ['graphite', 'midnight', 'crimson'];
+const SETTINGS_SECTIONS = [
+  ['workspace', 'Workspace'], ['display', 'Display'], ['keyboard', 'Keyboard'],
+  ['providers', 'Providers'], ['knowledge', 'Knowledge'], ['system', 'System'], ['about', 'About'],
+] as const;
+
+type SettingsSectionId = typeof SETTINGS_SECTIONS[number][0];
+
+function settingsSectionFromHash(): SettingsSectionId | null {
+  if (typeof window === 'undefined') return null;
+  if (!window.location.hash.startsWith('#settings-')) return null;
+  const id = window.location.hash.replace(/^#settings-/, '');
+  return SETTINGS_SECTIONS.some(([sectionId]) => sectionId === id)
+    ? id as SettingsSectionId
+    : null;
+}
 
 export function Settings() {
   const health = useFetch<Health>('/api/health', 30_000);
   const security = useFetch<SecurityStatus>('/api/security/status', 60_000);
+  const settingsScrollRef = useRef<HTMLDivElement>(null);
+  const [activeSection, setActiveSection] = useState<SettingsSectionId>(() => settingsSectionFromHash() ?? 'workspace');
 
   const error = health.error || security.error;
+  const settingsReady = Boolean(health.data);
+
+  useEffect(() => {
+    if (!settingsReady) return;
+    const scroller = settingsScrollRef.current;
+    if (!scroller) return;
+
+    let frame = 0;
+    let scrollFrame = 0;
+    const updateActiveSection = () => {
+      window.cancelAnimationFrame(frame);
+      frame = window.requestAnimationFrame(() => {
+        const atBottom = scroller.scrollHeight > scroller.clientHeight + 2
+          && scroller.scrollTop + scroller.clientHeight >= scroller.scrollHeight - 2;
+        if (atBottom) {
+          setActiveSection('about');
+          return;
+        }
+
+        const activationLine = scroller.getBoundingClientRect().top + 48 * uiScale.value;
+        let next: SettingsSectionId = 'workspace';
+        for (const [id] of SETTINGS_SECTIONS) {
+          const section = document.getElementById(`settings-${id}`);
+          if (section && section.getBoundingClientRect().top <= activationLine) next = id;
+        }
+        setActiveSection(next);
+      });
+    };
+
+    const scrollToHash = () => {
+      window.cancelAnimationFrame(scrollFrame);
+      const id = settingsSectionFromHash();
+      if (!id) {
+        setActiveSection('workspace');
+        scroller.scrollTo({ top: 0, behavior: 'auto' });
+        return;
+      }
+
+      setActiveSection(id);
+      scrollFrame = window.requestAnimationFrame(() => {
+        const section = document.getElementById(`settings-${id}`);
+        if (!section) return;
+        const top = scroller.scrollTop
+          + (section.getBoundingClientRect().top - scroller.getBoundingClientRect().top) / uiScale.value
+          - 16;
+        scroller.scrollTo({ top, behavior: 'auto' });
+        updateActiveSection();
+      });
+    };
+
+    scroller.addEventListener('scroll', updateActiveSection, { passive: true });
+    window.addEventListener('hashchange', scrollToHash);
+    const resizeObserver = new ResizeObserver(updateActiveSection);
+    if (scroller.firstElementChild) resizeObserver.observe(scroller.firstElementChild);
+    scrollToHash();
+
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.cancelAnimationFrame(scrollFrame);
+      scroller.removeEventListener('scroll', updateActiveSection);
+      window.removeEventListener('hashchange', scrollToHash);
+      resizeObserver.disconnect();
+    };
+  }, [settingsReady]);
 
   return (
-    <div class="flex flex-col h-full">
+    <div class="flex flex-col h-full min-h-0">
       <PageHeader title="Settings" />
 
       {error && <PageState error={error} />}
       {(health.loading || security.loading) && !health.data && <PageState loading />}
 
       {health.data && (
-        <div class="flex-1 overflow-y-auto p-6 space-y-5 max-w-3xl">
+        <>
+        <nav aria-label="Settings sections" class="page-toolbar flex shrink-0 gap-1 overflow-x-auto border-b border-[var(--color-border)] px-4 py-2 md:px-6">
+          {SETTINGS_SECTIONS.map(([id, label]) => {
+            const active = activeSection === id;
+            return (
+              <a
+                key={id}
+                href={`#settings-${id}`}
+                aria-current={active ? 'location' : undefined}
+                onClick={() => setActiveSection(id)}
+                class={[
+                  'toolbar-control control-button shrink-0 rounded-md border px-3 font-medium transition-colors focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]',
+                  active
+                    ? 'control-accent'
+                    : 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:bg-[var(--color-control-hover)] hover:text-[var(--color-text)]',
+                ].join(' ')}
+              >
+                {label}
+              </a>
+            );
+          })}
+        </nav>
+        <div ref={settingsScrollRef} class="flex-1 min-h-0 overflow-y-auto">
+        <div class="settings-content w-full max-w-[960px] p-4 md:p-6 space-y-7">
 
           <Section
+            id="workspace"
             title="Workspace"
-            subtitle="Identity for this dashboard. Stored in the database so it shows up in any browser pointed at this server."
+            subtitle="Your workspace name is shared across browsers. Colors are saved in this browser."
           >
             <Card>
               <Row label="Name" hint="Up to 32 characters. Empty resets to ClaudeClaw.">
                 <WorkspaceNameField />
               </Row>
               <Divider />
-              <Row label="Theme" hint="Switches CSS variables across the app.">
+              <Row label="Appearance" hint="System follows your computer's light or dark setting.">
+                <AppearancePicker />
+              </Row>
+              <Divider />
+              <Row label="Theme" hint="Choose the dashboard's colors.">
                 <ThemePicker />
               </Row>
               <Divider />
-              <Row label="Custom accent" hint="Override the theme's accent with any hex. Reset clears it.">
+              <Row label="Custom accent" hint="Choose a color or enter its hex code. Reset restores the theme's accent.">
                 <AccentPicker />
               </Row>
             </Card>
           </Section>
 
           <Section
+            id="display"
             title="Display"
-            subtitle="Per-browser display preferences. Stored in localStorage, not per-workspace."
+            subtitle="Saved in this browser."
           >
             <Card>
-              <Row label="UI scale" hint="Zooms the whole app proportionally so layout stays correct.">
+              <Row label="UI scale" hint="Adjust text and controls to suit your screen.">
                 <ScalePicker />
+              </Row>
+              <Divider />
+              <Row label="Text weight" hint="Small adjustments for easier reading, without changing text size.">
+                <TextWeightPicker />
               </Row>
               <Divider />
               <Row label="Show costs" hint="Hide if you're on a Claude Code subscription — costs only matter on the API path.">
@@ -113,6 +229,7 @@ export function Settings() {
           </Section>
 
           <Section
+            id="keyboard"
             title="Keyboard"
             subtitle="Pick which modifier opens the command palette and quick-jump search."
           >
@@ -123,16 +240,17 @@ export function Settings() {
             </Card>
           </Section>
 
-          <Section title="Agent providers" subtitle="Each agent has its own provider, model, and effort settings.">
+          <Section id="providers" title="Agent providers" subtitle="Each agent has its own provider, model, and effort settings.">
             <Card>
               <p class="text-[12px] text-[var(--color-text-muted)] mb-3">Open Provider Setup on an agent's card to configure it. Z.ai and OpenRouter API keys are shared across this installation; choosing a model changes only that agent.</p>
-              <a href="/agents" class="inline-block px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white">Manage agent providers</a>
+              <a href="/agents" class="control-button inline-block px-3 py-1.5 rounded-md text-[12px] font-medium control-accent">Manage agent providers</a>
             </Card>
           </Section>
 
           <Section
+            id="knowledge"
             title="Knowledge (Obsidian)"
-            subtitle="A shared, git-synced Obsidian vault agents can read and write. Ships inert — enabling it here is what provisions it."
+            subtitle="Connect a shared Obsidian vault for your agents to read and write. Enable it to get started."
           >
             <Card>
               <ObsidianConfigPanel />
@@ -140,8 +258,9 @@ export function Settings() {
           </Section>
 
           <Section
+            id="system"
             title="Kill switches"
-            subtitle="Runtime feature gates. Toggling writes the flag to .env atomically; the runtime re-reads it within 1.5s so changes take effect without a restart."
+            subtitle="Turn runtime features on or off. Changes apply to all browsers within 1.5 seconds, without a restart."
           >
             <div class="space-y-2">
               {Object.entries(health.data.killSwitches).map(([key, on]) => {
@@ -162,19 +281,21 @@ export function Settings() {
             </div>
           </Section>
 
-          <Section title="Read-only" subtitle="System limits and bundled assets.">
+          <Section title="System information" subtitle="Current context usage.">
             <Card>
               <ReadOnlyRow label="Context window" value={health.data.contextPct + '%'} />
             </Card>
           </Section>
 
-          <Section title="Acknowledgements">
+          <Section id="about" title="Acknowledgements">
             <Card>
               <ReadOnlyRow label="3D brain model" value="Detailed Human Brain Model, NIH 3D 3DPX-021161, CC-BY" />
             </Card>
           </Section>
 
         </div>
+        </div>
+        </>
       )}
     </div>
   );
@@ -197,6 +318,7 @@ function WorkspaceNameField() {
     <div class="flex items-center gap-2">
       <input
         type="text"
+        aria-label="Workspace name"
         value={value}
         onInput={onInput}
         maxLength={32}
@@ -210,9 +332,28 @@ function WorkspaceNameField() {
 
 // ── Theme picker ──────────────────────────────────────────────────────
 
+function AppearancePicker() {
+  const modes = [
+    { value: 'dark', label: 'Dark', icon: Moon },
+    { value: 'light', label: 'Light', icon: Sun },
+    { value: 'system', label: 'System', icon: Monitor },
+  ] as const;
+  return (
+    <div role="group" aria-label="Appearance mode" class="flex flex-wrap items-center gap-1.5">
+      {modes.map(({ value, label, icon: Icon }) => (
+        <button key={value} type="button" onClick={() => setAppearanceMode(value)}
+          aria-pressed={appearanceMode.value === value}
+          class={`control-button inline-flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-[12.5px] transition-colors ${appearanceMode.value === value ? 'control-accent' : 'bg-[var(--color-card)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)]'}`}>
+          <Icon size={13} />{label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function ThemePicker() {
   return (
-    <div class="flex items-center gap-1.5">
+    <div class="flex flex-wrap items-center gap-1.5">
       {THEME_ORDER.map((name) => {
         const active = theme.value === name;
         const meta = themeMeta[name];
@@ -221,16 +362,17 @@ function ThemePicker() {
             key={name}
             type="button"
             onClick={() => setTheme(name)}
+            aria-pressed={active}
             class={[
-              'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12.5px] border transition-colors',
+              'control-button inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12.5px] border transition-colors',
               active
-                ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-text)]'
+                ? 'control-accent'
                 : 'bg-[var(--color-card)] border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)]',
             ].join(' ')}
           >
             <div
               class="w-3.5 h-3.5 rounded-sm shrink-0"
-              style={{ background: meta.swatch, border: '1px solid var(--color-border)' }}
+              style={{ background: resolvedAppearance.value === 'light' ? meta.lightSwatch : meta.swatch, border: '1px solid var(--color-border)' }}
             />
             {meta.label}
             {active && <Check size={12} class="text-[var(--color-accent)]" />}
@@ -245,12 +387,14 @@ function ThemePicker() {
 
 function AccentPicker() {
   const current = customAccent.value;
+  const meta = themeMeta[theme.value];
+  const defaultAccent = resolvedAppearance.value === 'light' ? meta.lightSwatch : meta.swatch;
   const [draft, setDraft] = useState(current ?? '#');
   function commit(next: string) {
     if (/^#[0-9a-fA-F]{6}$/.test(next)) setCustomAccent(next);
   }
   return (
-    <div class="flex items-center gap-2">
+    <div class="flex flex-wrap items-center gap-2">
       <label
         class="relative inline-flex items-center justify-center w-8 h-8 rounded border border-[var(--color-border)] cursor-pointer overflow-hidden"
         style={{ backgroundColor: current || 'var(--color-elevated)' }}
@@ -259,7 +403,8 @@ function AccentPicker() {
         <Pipette size={13} class={current ? 'text-white mix-blend-difference' : 'text-[var(--color-text-faint)]'} />
         <input
           type="color"
-          value={current || '#8b8af0'}
+          aria-label="Pick custom accent color"
+          value={current || defaultAccent}
           onInput={(e) => {
             const v = (e.target as HTMLInputElement).value.toLowerCase();
             setDraft(v); commit(v);
@@ -269,13 +414,14 @@ function AccentPicker() {
       </label>
       <input
         type="text"
+        aria-label="Custom accent hex code"
         value={draft}
         onInput={(e) => {
           const v = (e.target as HTMLInputElement).value;
           setDraft(v);
           if (/^#[0-9a-fA-F]{6}$/.test(v)) setCustomAccent(v);
         }}
-        placeholder="#8b8af0"
+        placeholder={defaultAccent}
         maxLength={7}
         class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)] w-[110px]"
       />
@@ -283,7 +429,7 @@ function AccentPicker() {
         <button
           type="button"
           onClick={() => { setCustomAccent(null); setDraft('#'); }}
-          class="inline-flex items-center gap-1 px-2 py-1.5 rounded text-[11.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors"
+          class="inline-flex items-center gap-1 px-2 py-1.5 rounded text-[11.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border border-[var(--color-border)] transition-colors"
           title="Restore theme accent"
         >
           <RotateCcw size={11} /> Reset
@@ -314,10 +460,11 @@ function ScalePicker() {
             key={p.value}
             type="button"
             onClick={() => setUiScale(p.value)}
+            aria-pressed={active}
             class={[
-              'inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12.5px] border transition-colors tabular-nums',
+              'control-button inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-[12.5px] border transition-colors tabular-nums',
               active
-                ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-text)]'
+                ? 'control-accent'
                 : 'bg-[var(--color-card)] border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)]',
             ].join(' ')}
           >
@@ -330,40 +477,40 @@ function ScalePicker() {
   );
 }
 
-function SegmentedControl({
-  value,
-  options,
-  onChange,
-}: {
-  value: string;
-  options: Array<{ value: string; label: string }>;
-  onChange: (value: string) => void;
-}) {
+// ── Hotkey picker ─────────────────────────────────────────────────────
+
+function TextWeightPicker() {
+  const current = textWeight.value;
   return (
-    <div class="inline-flex rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] p-0.5">
-      {options.map((option) => {
-        const active = value === option.value;
-        return (
-          <button
-            key={option.value}
-            type="button"
-            onClick={() => onChange(option.value)}
-            class={[
-              'px-2.5 py-1 rounded text-[12px] font-medium transition-colors',
-              active
-                ? 'bg-[var(--color-accent)] text-white'
-                : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
-            ].join(' ')}
-          >
-            {option.label}
-          </button>
-        );
-      })}
+    <div class="flex items-center gap-3 w-[300px] max-w-full">
+      <div class="flex-1 min-w-0">
+        <input
+          type="range"
+          aria-label="Text weight"
+          min={400}
+          max={600}
+          step={25}
+          value={current}
+          onInput={(event) => setTextWeight(Number((event.target as HTMLInputElement).value))}
+          class="text-weight-slider"
+          style={{ '--range-progress': `${(current - 400) / 200 * 100}%` }}
+        />
+        <div class="flex justify-between mt-1 text-[10.5px] text-[var(--color-text-muted)]">
+          <span>Regular</span><span>Fuller</span>
+        </div>
+      </div>
+      <output class="w-7 text-right text-[12px] tabular-nums text-[var(--color-text)]" aria-live="off">{current}</output>
+      <button
+        type="button"
+        aria-label="Reset text weight"
+        title="Reset text weight to 450"
+        disabled={current === 450}
+        onClick={() => setTextWeight(450)}
+        class="control-button p-2 rounded-md text-[var(--color-text-muted)] hover:bg-[var(--color-control-hover)] disabled:opacity-40 transition-colors"
+      ><RotateCcw size={13} /></button>
     </div>
   );
 }
-
-// ── Hotkey picker ─────────────────────────────────────────────────────
 
 function HotkeyPicker() {
   const current = hotkeyMod.value;
@@ -381,10 +528,11 @@ function HotkeyPicker() {
             key={o.v}
             type="button"
             onClick={() => setHotkeyMod(o.v)}
+            aria-pressed={active}
             class={[
-              'inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12.5px] border transition-colors',
+              'control-button inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12.5px] border transition-colors',
               active
-                ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-text)]'
+                ? 'control-accent'
                 : 'bg-[var(--color-card)] border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)]',
             ].join(' ')}
             title={o.hint}
@@ -480,6 +628,7 @@ function ObsidianConfigPanel() {
         <div class="flex items-center gap-2">
           <input
             type="text"
+            aria-label="Vault name"
             value={vaultName}
             onInput={(e) => { setVaultName((e.target as HTMLInputElement).value); dirtyRef.current = true; }}
             onBlur={() => { if (dirtyRef.current) save({ vaultName }); }}
@@ -493,6 +642,7 @@ function ObsidianConfigPanel() {
         <div class="flex items-center gap-2">
           <input
             type="text"
+            aria-label="Vault folder"
             value={vaultPath}
             placeholder="(managed default)"
             onInput={(e) => { setVaultPath((e.target as HTMLInputElement).value); pathDirtyRef.current = true; }}
@@ -552,9 +702,9 @@ function KillSwitchRow({ switchKey, label, description, on, refusals, onChange }
   return (
     <div class="flex items-start gap-3 bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg px-4 py-3.5">
       <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2 mb-0.5">
+        <div class="flex flex-wrap items-center gap-x-2 gap-y-1 mb-0.5">
           <span class="text-[13.5px] font-medium text-[var(--color-text)]">{label}</span>
-          <code class="text-[10.5px] text-[var(--color-text-faint)] font-mono">{switchKey}</code>
+          <code class="text-[10.5px] text-[var(--color-text-faint)] font-mono break-all">{switchKey}</code>
         </div>
         <div class="text-[12px] text-[var(--color-text-muted)] leading-snug">{description}</div>
         {refusals > 0 && (
@@ -570,15 +720,15 @@ function KillSwitchRow({ switchKey, label, description, on, refusals, onChange }
 
 // ── Layout primitives ─────────────────────────────────────────────────
 
-function Section({ title, subtitle, children }: { title: string; subtitle?: string; children: any }) {
+function Section({ id, title, subtitle, children }: { id?: string; title: string; subtitle?: string; children: any }) {
   return (
-    <div>
+    <section id={id ? `settings-${id}` : undefined} class="scroll-mt-6">
       <div class="mb-2.5">
         <h2 class="text-[14px] font-semibold text-[var(--color-text)]">{title}</h2>
         {subtitle && <p class="text-[12px] text-[var(--color-text-muted)] leading-snug mt-1">{subtitle}</p>}
       </div>
       {children}
-    </div>
+    </section>
   );
 }
 
@@ -590,12 +740,12 @@ function Card({ children }: { children: any }) {
 
 function Row({ label, hint, children }: { label: string; hint?: string; children: any }) {
   return (
-    <div class="flex items-center gap-4 py-1.5">
+    <div class="settings-row py-2">
       <div class="flex-1 min-w-0">
         <div class="text-[13px] text-[var(--color-text)]">{label}</div>
         {hint && <div class="text-[11px] text-[var(--color-text-faint)] mt-0.5">{hint}</div>}
       </div>
-      {children}
+      <div class="settings-control min-w-0 max-w-full">{children}</div>
     </div>
   );
 }
@@ -606,9 +756,9 @@ function Divider() {
 
 function ReadOnlyRow({ label, value }: { label: string; value: string }) {
   return (
-    <div class="flex items-center justify-between py-1.5">
-      <span class="text-[13px] text-[var(--color-text-muted)]">{label}</span>
-      <span class="font-mono text-[12.5px] text-[var(--color-text)] tabular-nums">{value}</span>
+    <div class="flex flex-wrap items-start justify-between gap-x-6 gap-y-2 py-1.5">
+      <span class="shrink-0 text-[13px] text-[var(--color-text-muted)]">{label}</span>
+      <span class="min-w-0 break-words font-mono text-[12.5px] text-[var(--color-text)] tabular-nums">{value}</span>
     </div>
   );
 }

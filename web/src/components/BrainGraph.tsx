@@ -598,7 +598,7 @@ function DetailPanel({
         <button
           type="button"
           onClick={onClose}
-          class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+          class="p-1 rounded hover:bg-[var(--color-control-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
         >
           <X size={13} />
         </button>
@@ -671,7 +671,7 @@ function FilterPanel({
         <button
           type="button"
           onClick={onReset}
-          class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+          class="p-1 rounded hover:bg-[var(--color-control-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
           title="Reset all filters"
         >
           <RotateCw size={11} />
@@ -679,7 +679,7 @@ function FilterPanel({
         <button
           type="button"
           onClick={onClose}
-          class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
+          class="p-1 rounded hover:bg-[var(--color-control-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors"
           title="Close panel"
         >
           <X size={13} />
@@ -714,7 +714,7 @@ function FilterPanel({
                   key={id}
                   type="button"
                   onClick={() => toggleHidden('hiddenAgents', id)}
-                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors text-left"
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-control-hover)] transition-colors text-left"
                 >
                   <span
                     class="inline-block w-2 h-2 rounded-full shrink-0"
@@ -749,7 +749,7 @@ function FilterPanel({
                   key={l.id}
                   type="button"
                   onClick={() => toggleHidden('hiddenLobes', l.id)}
-                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors text-left"
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-control-hover)] transition-colors text-left"
                 >
                   <span
                     class="inline-block w-2.5 h-2.5 rounded-sm shrink-0"

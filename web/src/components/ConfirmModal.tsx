@@ -37,7 +37,7 @@ export function ConfirmModal({
           <button
             type="button"
             onClick={onClose}
-            class="px-3 py-1.5 rounded text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+            class="px-3 py-1.5 rounded text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
           >
             {cancelLabel}
           </button>
@@ -45,10 +45,10 @@ export function ConfirmModal({
             type="button"
             onClick={() => { onConfirm(); onClose(); }}
             class={[
-              'ml-auto px-3 py-1.5 rounded text-[12.5px] font-medium transition-colors',
+              'control-button ml-auto px-3 py-1.5 rounded text-[12.5px] font-medium transition-colors',
               destructive
                 ? 'bg-[var(--color-status-failed)] text-white hover:opacity-90'
-                : 'bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)]',
+                : 'control-accent',
             ].join(' ')}
           >
             {confirmLabel}

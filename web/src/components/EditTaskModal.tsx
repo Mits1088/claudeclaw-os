@@ -85,7 +85,7 @@ export function EditTaskModal({ open, task, onClose, onSaved }: Props) {
           <button
             type="button"
             onClick={onClose}
-            class="px-3 py-1.5 rounded text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+            class="px-3 py-1.5 rounded text-[12.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
           >
             Cancel
           </button>
@@ -93,7 +93,7 @@ export function EditTaskModal({ open, task, onClose, onSaved }: Props) {
             type="button"
             onClick={save}
             disabled={busy || !dirty || !cronPreview.ok || !prompt.trim()}
-            class="ml-auto px-3 py-1.5 rounded text-[12.5px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+            class="control-button ml-auto px-3 py-1.5 rounded text-[12.5px] font-medium control-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             {busy ? 'Saving…' : 'Save changes'}
           </button>
@@ -129,9 +129,9 @@ export function EditTaskModal({ open, task, onClose, onSaved }: Props) {
                 type="button"
                 onClick={() => setSchedule(p.cron)}
                 class={[
-                  'text-[10.5px] px-2 py-1 rounded transition-colors',
+                  'control-button text-[10.5px] px-2 py-1 rounded transition-colors',
                   schedule === p.cron
-                    ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border border-[var(--color-accent)]'
+                    ? 'control-accent border'
                     : 'bg-[var(--color-elevated)] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)]',
                 ].join(' ')}
               >

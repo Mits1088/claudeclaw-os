@@ -37,7 +37,7 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { _initTestDatabase, getSession, setSession } from './db.js';
+import { _initTestDatabase, createScheduledTask, getSession, setSession } from './db.js';
 import { buildDashboardApp } from './dashboard.js';
 import { STORE_DIR, CLAUDECLAW_CONFIG, DEFAULT_OPENAI_MODEL, updateAgentProvider } from './config.js';
 import { getSelectedProviderConfig } from './active-provider.js';
@@ -304,11 +304,35 @@ describe('GET /api/agents', () => {
 });
 
 describe('GET /api/tasks (scheduled)', () => {
-  it('returns { tasks: [] }', async () => {
+  it('returns tasks and Run now capability metadata', async () => {
     const res = await get('/api/tasks');
     expect(res.status).toBe(200);
     const body = await jsonOf(res);
-    expect(body).toMatchObject({ tasks: expect.any(Array) });
+    expect(body).toMatchObject({
+      tasks: expect.any(Array),
+      capabilities: { runNow: true, runNowAgent: 'main' },
+    });
+  });
+
+  it('returns 404 when an immediate run targets a missing task', async () => {
+    const res = await app.request('/api/tasks/missing/run' + Q, { method: 'POST' });
+    expect(res.status).toBe(404);
+    expect(await jsonOf(res)).toMatchObject({ ok: false, error: 'task not found' });
+  });
+
+  it('marks only tasks owned by this scheduler as eligible to Run now', async () => {
+    createScheduledTask('main-job', 'main work', '0 9 * * *', 2_000_000_000, 'main');
+    createScheduledTask('research-job', 'research work', '0 10 * * *', 2_000_000_100, 'research');
+
+    const body = await jsonOf(await get('/api/tasks'));
+    expect(body.tasks.find((task: any) => task.id === 'main-job')).toMatchObject({
+      can_run_now: true,
+      run_now_disabled_reason: null,
+    });
+    expect(body.tasks.find((task: any) => task.id === 'research-job')).toMatchObject({
+      can_run_now: false,
+      run_now_disabled_reason: expect.stringContaining('research'),
+    });
   });
 });
 

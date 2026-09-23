@@ -1,21 +1,30 @@
+import { signal } from '@preact/signals';
+
 // Tiny formatters used across pages.
 
 // ── Agent display name resolution ────────────────────────────────────
 // Global cache populated by any page that fetches /api/agents. Keyed by
 // agent id, value is the configured display name. resolveAgentName()
 // returns the cached name or a capitalized fallback.
-const _agentNameCache: Record<string, string> = {};
+const _agentNameCache = signal<Record<string, string>>({});
 
 /** Populate the display-name cache from an /api/agents response. */
 export function seedAgentNames(agents: Array<{ id: string; name?: string }>): void {
+  const names = { ..._agentNameCache.peek() };
+  let changed = false;
   for (const a of agents) {
-    if (a.id && a.name) _agentNameCache[a.id] = a.name;
+    if (a.id && a.name && names[a.id] !== a.name) {
+      names[a.id] = a.name;
+      changed = true;
+    }
   }
+  // Consumers such as Audit must repaint when names arrive after their rows.
+  if (changed) _agentNameCache.value = names;
 }
 
 /** Resolve display name for an agent id. Returns cached name or capitalized id. */
 export function resolveAgentName(agentId: string): string {
-  return _agentNameCache[agentId] || agentId.charAt(0).toUpperCase() + agentId.slice(1);
+  return _agentNameCache.value[agentId] || agentId.charAt(0).toUpperCase() + agentId.slice(1);
 }
 
 export function formatRelativeTime(unixSeconds: number): string {

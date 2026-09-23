@@ -1481,7 +1481,7 @@ function DetailPanel({
         <span class="text-[10.5px] text-[var(--color-text-faint)] ml-auto tabular-nums">
           {formatRelativeTime(entry.created_at)}
         </span>
-        <button type="button" onClick={onClose} class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors">
+        <button type="button" onClick={onClose} class="p-1 rounded hover:bg-[var(--color-control-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors">
           <X size={13} />
         </button>
       </header>
@@ -1539,10 +1539,10 @@ function FilterPanel({
         <span class="text-[10.5px] text-[var(--color-text-faint)] ml-auto tabular-nums">
           {visibleEntries} / {totalEntries}
         </span>
-        <button type="button" onClick={onReset} class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors" title="Reset">
+        <button type="button" onClick={onReset} class="p-1 rounded hover:bg-[var(--color-control-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors" title="Reset">
           <RotateCw size={11} />
         </button>
-        <button type="button" onClick={onClose} class="p-1 rounded hover:bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors" title="Close">
+        <button type="button" onClick={onClose} class="p-1 rounded hover:bg-[var(--color-control-hover)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors" title="Close">
           <X size={13} />
         </button>
       </header>
@@ -1567,7 +1567,7 @@ function FilterPanel({
                   key={id}
                   type="button"
                   onClick={() => toggleHidden('hiddenAgents', id)}
-                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors text-left"
+                  class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-control-hover)] transition-colors text-left"
                 >
                   <span class="inline-block w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: color, boxShadow: on ? `0 0 6px ${color}` : 'none' }} />
                   <span class={'font-mono text-[11.5px] ' + (on ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)]')}>@{id}</span>
@@ -1585,7 +1585,7 @@ function FilterPanel({
               const on = !filters.hiddenLobes.has(l.id);
               const colorHex = `#${l.color.getHexString()}`;
               return (
-                <button key={l.id} type="button" onClick={() => toggleHidden('hiddenLobes', l.id)} class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-elevated)] transition-colors text-left">
+                <button key={l.id} type="button" onClick={() => toggleHidden('hiddenLobes', l.id)} class="w-full flex items-center gap-2 px-2 py-1.5 rounded hover:bg-[var(--color-control-hover)] transition-colors text-left">
                   <span class="inline-block w-2.5 h-2.5 rounded-sm shrink-0" style={{ backgroundColor: colorHex, opacity: on ? 1 : 0.3, boxShadow: on ? `0 0 6px ${colorHex}` : 'none' }} />
                   <span class={'text-[12px] ' + (on ? 'text-[var(--color-text)]' : 'text-[var(--color-text-faint)]')}>{l.label}</span>
                   <span class={'brain-switch ml-auto ' + (on ? 'is-on' : '')} />

@@ -32,6 +32,43 @@ interface ProviderRuntimeOptionsResponse {
   error?: string;
 }
 
+type ProviderEditorVariant = 'compact' | 'settings';
+
+const PROVIDER_DETAILS: Record<ProviderConfig['type'], { summary: string; runtime: string }> = {
+  claude: {
+    summary: 'Claude models for tool-supported agent tasks.',
+    runtime: 'Bundled SDK',
+  },
+  openai: {
+    summary: 'OpenAI models with model-specific reasoning controls.',
+    runtime: 'Native SDK',
+  },
+  'anthropic-compatible': {
+    summary: 'GLM models with agent tools. Uses one shared Z.ai API key.',
+    runtime: 'API endpoint',
+  },
+  'acp-codex': {
+    summary: 'Run Codex through the local ACP command-line bridge.',
+    runtime: 'ACP bridge',
+  },
+  gemini: {
+    summary: 'Run Gemini through its local ACP command-line bridge.',
+    runtime: 'ACP bridge',
+  },
+  opencode: {
+    summary: 'Run OpenCode through its local ACP command-line bridge.',
+    runtime: 'ACP bridge',
+  },
+  openrouter: {
+    summary: 'A hosted model catalog for chat. No tools, and each message starts a fresh session.',
+    runtime: 'Hosted routing',
+  },
+  acp: {
+    summary: 'Connect any local ACP-compatible command and pass your own arguments.',
+    runtime: 'Local command',
+  },
+};
+
 export type ProviderTier = 'stable' | 'experimental';
 export interface ProviderOption {
   type: ProviderConfig['type'];
@@ -56,8 +93,11 @@ export function ProviderConfigEditor({
   providers,
   onChange,
   onSave,
+  onReset,
+  onStateChange,
   saveLabel = 'Save provider',
   busy = false,
+  variant = 'compact',
 }: {
   value?: ProviderConfig;
   fallbackModel?: string;
@@ -67,8 +107,13 @@ export function ProviderConfigEditor({
   providers?: ProviderOption[];
   onChange?: (provider: ProviderConfig) => void;
   onSave?: (provider: ProviderConfig) => void | Promise<void>;
+  onReset?: () => void;
+  onStateChange?: (state: { dirty: boolean; busy: boolean }) => void;
   saveLabel?: string;
   busy?: boolean;
+  /** The settings view uses the available width for a provider guide. Wizards
+   * keep the compact, single-column selector. */
+  variant?: ProviderEditorVariant;
 }) {
   const loaded = providers !== undefined;
   const availableProviders = providers && providers.length > 0 ? providers : CLAUDE_ONLY;
@@ -104,6 +149,11 @@ export function ProviderConfigEditor({
   const [command, setCommand] = useState(initial.command ?? '');
   const [args, setArgs] = useState((initial.args ?? []).join(' '));
   const dirtyRef = useRef(false);
+  const [touched, setTouched] = useState(false);
+
+  useEffect(() => {
+    onStateChange?.({ dirty: touched || apiKey.length > 0, busy: busy || keyBusy });
+  }, [touched, apiKey, busy, keyBusy, onStateChange]);
 
   const runtimeOptionsPath = type === 'acp' && !command.trim()
     ? null
@@ -115,6 +165,7 @@ export function ProviderConfigEditor({
 
   function markDirty() {
     dirtyRef.current = true;
+    setTouched(true);
   }
 
   function providerPayload(): ProviderConfig {
@@ -200,21 +251,41 @@ export function ProviderConfigEditor({
   const filteredModels = (models.data?.models ?? []).filter((m) => type !== 'openrouter' || ((!freeOnly || m.free === true) && (m.id + ' ' + m.label).toLowerCase().includes(modelSearch.trim().toLowerCase())));
   const selectedOutsideFilter = model && model !== '__custom__' && !filteredModels.some((m) => m.id === model);
 
+  function chooseProvider(nextType: ProviderConfig['type']) {
+    if (nextType === type) return;
+    setType(normalizeProviderType(nextType, availableProviders));
+    setModel('');
+    setCustomModel('');
+    setModelSearch('');
+    setFreeOnly(false);
+    setApiKey('');
+    setKeyMessage('');
+    setEditingKey(false);
+    setRuntimeMode('');
+    setThinkingMode('');
+    markDirty();
+  }
+
+  const selectedProvider = availableProviders.find((provider) => provider.type === type);
+  const selectedDetails = PROVIDER_DETAILS[type];
+  const settingsView = variant === 'settings';
+
   return (
-    <div class="space-y-3">
-      <EditorField label="Provider">
+    <div class={settingsView ? 'grid gap-5 lg:grid-cols-[minmax(250px,0.82fr)_minmax(0,1.45fr)] lg:items-start' : 'space-y-3'}>
+      <section class={settingsView ? 'rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)]/35 p-3.5' : ''}>
+        {settingsView && (
+          <div class="mb-3">
+            <h4 class="text-[12.5px] font-semibold text-[var(--color-text)]">Choose a provider</h4>
+            <p class="mt-0.5 text-[11px] leading-relaxed text-[var(--color-text-muted)]">Stable providers are the default tier. Experimental providers may require additional setup.</p>
+          </div>
+        )}
+        {!settingsView ? <EditorField label="Provider">
         <select
           aria-label="Provider"
           value={type}
           disabled={!loaded || keyBusy}
           onChange={(event) => {
-            setType(normalizeProviderType((event.currentTarget as HTMLSelectElement).value as ProviderConfig['type'], availableProviders));
-            setModel('');
-            setCustomModel('');
-            setModelSearch(''); setFreeOnly(false);
-            setApiKey(''); setKeyMessage(''); setEditingKey(false);
-            setRuntimeMode(''); setThinkingMode('');
-            markDirty();
+            chooseProvider((event.currentTarget as HTMLSelectElement).value as ProviderConfig['type']);
           }}
           class="w-full h-8 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 text-[12.5px] text-[var(--color-text)] disabled:opacity-60"
         >
@@ -238,7 +309,68 @@ export function ProviderConfigEditor({
             Experimental providers (ACP: Gemini, OpenCode, Codex-ACP, custom) are hidden. Set ENABLE_ACP=true in .env to enable them.
           </div>
         )}
-      </EditorField>
+        </EditorField> : (
+          <>
+            <div class="lg:hidden">
+              <EditorField label="Provider">
+                <select aria-label="Provider" value={type} disabled={!loaded || keyBusy}
+                  onChange={(event) => chooseProvider((event.currentTarget as HTMLSelectElement).value as ProviderConfig['type'])}
+                  class="w-full h-9 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2.5 text-[12.5px] text-[var(--color-text)] disabled:opacity-60">
+                  {!loaded
+                    ? <option value={type}>{type}</option>
+                    : onlyStable
+                      ? stableOptions.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)
+                      : <><optgroup label="Stable">{stableOptions.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)}</optgroup><optgroup label="Experimental">{experimentalOptions.map((provider) => <option key={provider.type} value={provider.type}>{provider.label}</option>)}</optgroup></>}
+                </select>
+              </EditorField>
+              <div class="mt-2 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)]/50 px-3 py-2.5">
+                <div class="flex items-center justify-between gap-2">
+                  <span class="text-[12px] font-medium text-[var(--color-text)]">{selectedProvider?.label ?? type}</span>
+                  {selectedProvider && <span class="text-[9px] font-medium uppercase tracking-wide text-[var(--color-text-muted)]">{selectedProvider.tier}</span>}
+                </div>
+                <p class="mt-1 text-[10.5px] leading-snug text-[var(--color-text-muted)]">{selectedDetails.summary}</p>
+              </div>
+            </div>
+            <div role="group" aria-label="Provider choices"
+              style={{ maxHeight: 'clamp(160px, calc(var(--app-height) - 380px), 420px)' }}
+              class="hidden space-y-1.5 lg:block lg:overflow-y-auto lg:pr-1">
+              {!loaded && (
+                <div class="rounded-md border border-[var(--color-border)] px-3 py-2.5 text-[12px] text-[var(--color-text-muted)]">Loading providers…</div>
+              )}
+              {loaded && availableProviders.map((provider) => {
+                const active = provider.type === type;
+                const details = PROVIDER_DETAILS[provider.type];
+                return (
+                  <button key={provider.type} type="button" data-provider={provider.type} aria-label={`Use ${provider.label}`} aria-pressed={active}
+                    disabled={keyBusy} onClick={() => chooseProvider(provider.type)}
+                    class={`control-button w-full rounded-md border px-3 py-2.5 text-left transition-colors ${active ? 'control-accent' : 'border-transparent hover:border-[var(--color-border)] hover:bg-[var(--color-control-hover)]'}`}>
+                    <span class="flex items-center justify-between gap-2">
+                      <span class={`text-[12.5px] font-medium ${active ? 'text-[var(--color-control-text)]' : 'text-[var(--color-text)]'}`}>{provider.label}</span>
+                      <span class={`rounded-full px-1.5 py-0.5 text-[9px] font-medium uppercase tracking-wide ${provider.tier === 'stable' ? 'bg-[color-mix(in_srgb,var(--color-status-done)_16%,transparent)] text-[var(--color-status-done)]' : 'bg-[color-mix(in_srgb,var(--color-status-running)_16%,transparent)] text-[var(--color-status-running)]'}`}>{provider.tier}</span>
+                    </span>
+                    <span class="mt-1 block text-[10.5px] leading-snug text-[var(--color-text-muted)]">{details.summary}</span>
+                  </button>
+                );
+              })}
+            </div>
+          </>
+        )}
+        {settingsView && loaded && !availableProviders.some((p) => ['acp', 'acp-codex', 'gemini', 'opencode', 'openrouter'].includes(p.type)) && (
+          <p class="mt-3 border-t border-[var(--color-border)] pt-3 text-[10.5px] leading-relaxed text-[var(--color-text-muted)]">Additional ACP providers are hidden. Set <span class="font-mono">ENABLE_ACP=true</span> in <span class="font-mono">.env</span> to make them available.</p>
+        )}
+      </section>
+
+      <div class={settingsView ? 'min-w-0 space-y-4' : 'contents'}>
+      <section class={settingsView ? 'space-y-3 rounded-lg border border-[var(--color-border)] p-4' : 'contents'}>
+        {settingsView && (
+          <div class="flex flex-wrap items-start justify-between gap-3 border-b border-[var(--color-border)] pb-3">
+            <div>
+              <h4 class="text-[13px] font-semibold text-[var(--color-text)]">{selectedProvider?.label ?? type} configuration</h4>
+              <p class="mt-0.5 text-[11px] text-[var(--color-text-muted)]">Select the model and provider-specific runtime options.</p>
+            </div>
+            <span class="rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] px-2 py-1 text-[10.5px] text-[var(--color-text-muted)]">{selectedDetails.runtime}</span>
+          </div>
+        )}
 
       {usesKeySetup && <p class="text-[12px] leading-relaxed text-[var(--color-text-muted)]">{type === 'openrouter' ? 'Chat only, without tools. Each message starts fresh; saved memory still applies.' : 'Run GLM with this agent’s permitted tools.'} One API key serves all agents using {keyProvider}.</p>}
       {usesKeySetup && (
@@ -246,7 +378,7 @@ export function ProviderConfigEditor({
           <div class="flex items-center justify-between gap-3">
             <span class="font-medium">API key</span>
             <div class="flex items-center gap-3"><span class="text-[var(--color-text-muted)]">{zai.loading ? 'Checking...' : zai.data?.configured ? 'Key saved' : 'Setup required'}</span>
-            {zai.data?.configured && zai.data.canEdit && !editingKey && <button type="button" onClick={() => setEditingKey(true)} class="rounded px-2 py-1 hover:bg-[var(--color-elevated)]">Replace API key</button>}</div>
+            {zai.data?.configured && zai.data.canEdit && !editingKey && <button type="button" onClick={() => setEditingKey(true)} class="rounded px-2 py-1 hover:bg-[var(--color-control-hover)]">Replace API key</button>}</div>
           </div>
 
           {!zai.loading && (!zai.data?.ready || !zai.data?.canEdit) && <p>{zai.data?.message}</p>}
@@ -304,6 +436,7 @@ export function ProviderConfigEditor({
             value={customModel}
             onInput={(event) => { setCustomModel((event.currentTarget as HTMLInputElement).value); markDirty(); }}
             placeholder="model-id"
+            aria-label="Custom model"
             class="mt-1.5 w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
           />
         )}
@@ -343,6 +476,7 @@ export function ProviderConfigEditor({
               value={command}
               onInput={(event) => { setCommand((event.currentTarget as HTMLInputElement).value); markDirty(); }}
               placeholder="my-acp-agent"
+              aria-label="Command"
               class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
             />
           </EditorField>
@@ -352,24 +486,29 @@ export function ProviderConfigEditor({
               value={args}
               onInput={(event) => { setArgs((event.currentTarget as HTMLInputElement).value); markDirty(); }}
               placeholder="--acp"
+              aria-label="Arguments"
               class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded px-2.5 py-1.5 text-[12.5px] font-mono text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
             />
           </EditorField>
         </>
       )}
+      </section>
 
       {onSave && (
-        <div class="flex justify-end pt-1">
+        <div class={`flex flex-wrap items-center justify-end gap-2 ${settingsView ? 'rounded-lg border border-[var(--color-border)] bg-[var(--color-elevated)]/35 p-3' : 'pt-3 border-t border-[var(--color-border)]'}`}>
+          {apiKey && <p class="w-full text-[12px] text-[var(--color-text-muted)]">Save or clear the API key draft before saving the provider.</p>}
+          {onReset && <button type="button" onClick={onReset} disabled={busy || keyBusy || (!touched && !apiKey)} class="px-3 py-1.5 rounded-md text-[12px] border border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40">Reset</button>}
           <button
             type="button"
             onClick={() => onSave(providerPayload())}
-            disabled={busy || keyBusy || !loaded || models.loading || !!models.error || !models.data || !(model === '__custom__' ? customModel.trim() : model.trim()) || (usesKeySetup && (!zai.data?.ready || zai.loading || !!zai.error))}
-            class="px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-60"
+            disabled={busy || keyBusy || !!apiKey || !loaded || models.loading || !!models.error || !models.data || !(model === '__custom__' ? customModel.trim() : model.trim()) || (usesKeySetup && (!zai.data?.ready || zai.loading || !!zai.error))}
+            class="control-button px-3 py-1.5 rounded-md text-[12px] font-medium control-accent disabled:opacity-60"
           >
             {busy ? 'Saving...' : saveLabel}
           </button>
         </div>
       )}
+      </div>
     </div>
   );
 }
@@ -401,11 +540,12 @@ function SegmentedControl({
           <button
             key={option.value}
             type="button"
+            aria-pressed={active}
             onClick={() => onChange(option.value)}
             class={[
-              'px-2.5 py-1 rounded text-[12px] font-medium transition-colors',
+              'control-button px-2.5 py-1 rounded text-[12px] font-medium transition-colors',
               active
-                ? 'bg-[var(--color-accent)] text-white'
+                ? 'control-accent'
                 : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
             ].join(' ')}
           >

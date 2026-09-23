@@ -51,10 +51,8 @@ export const theme = signal<ThemeName>(loadInitial());
  *  it) via inline style on <html>. Null restores the theme default. */
 export const customAccent = signal<string | null>(loadCustomAccent());
 
-/** Global UI zoom factor. Applied via the CSS `zoom` property on the
- *  root element so layout calculations stay correct (unlike transform
- *  scale, which would clip overflows). 1.0 is the design baseline;
- *  most users will want 1.1–1.25. */
+/** Global UI zoom factor. Viewport-sized surfaces use --app-height to
+ *  compensate for zoom, keeping the sidebar and page inside the window. */
 export const uiScale = signal<number>(loadScale());
 
 /** Whether to surface per-agent / per-session cost figures. Default OFF
@@ -64,10 +62,10 @@ export const uiScale = signal<number>(loadScale());
  *  + 30-day chart, and the Chat session bar's "Cost today" cell. */
 export const showCosts = signal<boolean>(loadShowCosts());
 
-export const themeMeta: Record<ThemeName, { label: string; swatch: string }> = {
-  graphite: { label: 'Graphite', swatch: '#8b8af0' },
-  midnight: { label: 'Midnight', swatch: '#5eb6ff' },
-  crimson: { label: 'Crimson', swatch: '#ff5e6e' },
+export const themeMeta: Record<ThemeName, { label: string; swatch: string; lightSwatch: string }> = {
+  graphite: { label: 'Graphite', swatch: '#8b8af0', lightSwatch: '#5c4dc6' },
+  midnight: { label: 'Midnight', swatch: '#5eb6ff', lightSwatch: '#165ea8' },
+  crimson: { label: 'Crimson', swatch: '#ff5e6e', lightSwatch: '#b22b47' },
 };
 
 // Apply theme + scale + accent override to <html> whenever any signal
@@ -99,9 +97,9 @@ effect(() => {
 
 effect(() => {
   const s = uiScale.value;
-  // Use CSS `zoom` (not transform: scale) — keeps layout calculations
-  // correct so scrollbars and viewport math behave. Cross-browser
-  // support landed in Firefox 126 (May 2024).
+  // Viewport units are not reduced by CSS zoom. Share the factor with
+  // the shell and overlays so their physical height stays within the viewport.
+  document.documentElement.style.setProperty('--ui-scale', String(s));
   document.documentElement.style.zoom = String(s);
   try { localStorage.setItem(SCALE_KEY, String(s)); } catch {}
 });

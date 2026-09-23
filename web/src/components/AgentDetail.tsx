@@ -1,8 +1,9 @@
-import { useRef, useState } from 'preact/hooks';
-import { Camera, Trash2, ExternalLink } from 'lucide-preact';
-import { Modal } from '@/components/Modal';
+import { useEffect, useRef, useState } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
+import { Link } from 'wouter-preact';
+import { Camera, Trash2, ExternalLink, LayoutGrid, List } from 'lucide-preact';
 import { AgentAvatar } from '@/components/AgentAvatar';
-import { Pill, StatusDot } from '@/components/Pill';
+import { Pill } from '@/components/Pill';
 import { Tab } from '@/components/PageHeader';
 import { useFetch } from '@/lib/useFetch';
 import { formatRelativeTime, formatCost } from '@/lib/format';
@@ -10,8 +11,9 @@ import { chatId, dashboardToken } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
 import { showCosts } from '@/lib/theme';
 import { modelLabel } from '@/lib/modelLabels';
+import { describeCron } from '@/lib/cron';
 
-interface Agent {
+export interface AgentSummary {
   id: string;
   name: string;
   description: string;
@@ -26,42 +28,67 @@ interface ScheduledTask { id: string; prompt: string; schedule: string; next_run
 interface HiveEntry { id: number; action: string; summary: string; created_at: number; }
 interface AgentTokens { todayCost: number; todayTurns: number; allTimeCost: number; }
 
-type TabKey = 'overview' | 'conversation' | 'tasks' | 'hive';
-
-interface Props {
-  agent: Agent | null;
-  onClose: () => void;
+export function AgentOverview({ agent, onBusyChange }: { agent: AgentSummary; onBusyChange: (busy: boolean) => void }) {
+  return <div class="space-y-5"><AvatarSettings agent={agent} onBusyChange={onBusyChange} /><OverviewTab agent={agent} /></div>;
 }
 
-export function AgentDetail({ agent, onClose }: Props) {
-  const [activeTab, setActiveTab] = useState<TabKey>('overview');
-  if (!agent) return null;
+type ActivityView = 'list' | 'grid';
+const ACTIVITY_VIEW_KEY = 'claudeclaw.agentActivity.view';
+const activitySections = [
+  { id: 'chat', label: 'Chat', path: '/chat' },
+  { id: 'tasks', label: 'Scheduled', path: '/scheduled' },
+  { id: 'hive', label: 'Hive Mind', path: '/hive' },
+] as const;
 
+function loadActivityView(): ActivityView {
+  try { return localStorage.getItem(ACTIVITY_VIEW_KEY) === 'grid' ? 'grid' : 'list'; }
+  catch { return 'list'; }
+}
+
+export function AgentActivity({ agentId, agentName }: { agentId: string; agentName: string }) {
+  const [activeTab, setActiveTab] = useState<typeof activitySections[number]['id']>('chat');
+  const [view, setView] = useState<ActivityView>(loadActivityView);
+  const section = activitySections.find((item) => item.id === activeTab)!;
+  const href = `${section.path}?agent=${encodeURIComponent(agentId)}`;
+  function changeView(next: ActivityView) {
+    setView(next);
+    try { localStorage.setItem(ACTIVITY_VIEW_KEY, next); } catch {}
+  }
   return (
-    <Modal open={!!agent} onClose={onClose} title="" width={720}>
-      <Header agent={agent} />
-      <div class="flex items-center gap-1 border-b border-[var(--color-border)] mb-4 -mx-5 px-5 pb-2">
-        <Tab label="Overview" active={activeTab === 'overview'} onClick={() => setActiveTab('overview')} />
-        <Tab label="Conversation" active={activeTab === 'conversation'} onClick={() => setActiveTab('conversation')} />
-        <Tab label="Scheduled" active={activeTab === 'tasks'} onClick={() => setActiveTab('tasks')} />
-        <Tab label="Hive Mind" active={activeTab === 'hive'} onClick={() => setActiveTab('hive')} />
+    <div class="agent-activity">
+      <div class="page-toolbar flex flex-wrap items-center gap-2 border-b border-[var(--color-border)] mb-4 pb-3">
+        <div class="flex flex-wrap items-center gap-1" role="group" aria-label="Activity sections">
+          {activitySections.map((item) => <Tab key={item.id} label={item.label} active={activeTab === item.id} onClick={() => setActiveTab(item.id)} />)}
+        </div>
+        <div class="ml-auto flex flex-wrap items-center gap-2">
+          <Link href={href} class="toolbar-control control-button gap-1.5 px-3 rounded-md text-[var(--color-control-text)] hover:bg-[var(--color-control-hover)]"
+            aria-label={`Open ${section.label} for ${agentName}`} title={`Open ${section.label} with ${agentName} selected`}>
+            Open {section.label}<ExternalLink size={13} />
+          </Link>
+          <div class="toolbar-segmented" role="group" aria-label="Activity layout">
+            <button type="button" aria-label="Grid view" title="Grid view" aria-pressed={view === 'grid'} onClick={() => changeView('grid')}
+              class={`toolbar-control toolbar-icon control-button ${view === 'grid' ? 'control-accent' : 'text-[var(--color-text-muted)] hover:bg-[var(--color-control-hover)]'}`}><LayoutGrid size={14} /></button>
+            <button type="button" aria-label="List view" title="List view" aria-pressed={view === 'list'} onClick={() => changeView('list')}
+              class={`toolbar-control toolbar-icon control-button ${view === 'list' ? 'control-accent' : 'text-[var(--color-text-muted)] hover:bg-[var(--color-control-hover)]'}`}><List size={14} /></button>
+          </div>
+        </div>
       </div>
 
-      {activeTab === 'overview' && <OverviewTab agent={agent} />}
-      {activeTab === 'conversation' && <ConversationTab agentId={agent.id} />}
-      {activeTab === 'tasks' && <TasksTab agentId={agent.id} />}
-      {activeTab === 'hive' && <HiveTab agentId={agent.id} />}
-    </Modal>
+      {activeTab === 'chat' && <ConversationTab agentId={agentId} view={view} />}
+      {activeTab === 'tasks' && <TasksTab agentId={agentId} view={view} />}
+      {activeTab === 'hive' && <HiveTab agentId={agentId} view={view} />}
+    </div>
   );
 }
 
-function Header({ agent }: { agent: Agent }) {
+function AvatarSettings({ agent, onBusyChange }: { agent: AgentSummary; onBusyChange: (busy: boolean) => void }) {
   // Cache-bust the avatar by bumping a counter every time we upload or
   // delete — the AgentAvatar component reads `?token=...` only and
   // would otherwise serve the stale cached image.
   const [avatarVersion, setAvatarVersion] = useState(0);
   const fileRef = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
+  useEffect(() => { onBusyChange(busy); }, [busy, onBusyChange]);
 
   async function pickAndUpload(e: Event) {
     const input = e.target as HTMLInputElement;
@@ -125,7 +152,7 @@ function Header({ agent }: { agent: Agent }) {
   }
 
   return (
-    <div class="flex items-start gap-3 mb-4 -mt-2">
+    <div class="flex items-start gap-4 rounded-lg border border-[var(--color-border)] p-4">
       <div class="relative shrink-0 group">
         <button
           type="button"
@@ -143,7 +170,7 @@ function Header({ agent }: { agent: Agent }) {
             agentId={agent.id}
             name={agent.name}
             running={agent.running}
-            size={44}
+            size={56}
             cacheBust={avatarVersion}
           />
           <span class="absolute inset-0 rounded-full flex items-center justify-center bg-black/60 text-white opacity-0 group-hover:opacity-100 transition-opacity">
@@ -159,20 +186,14 @@ function Header({ agent }: { agent: Agent }) {
         />
       </div>
       <div class="flex-1 min-w-0">
-        <div class="flex items-center gap-2">
-          <StatusDot tone={agent.running ? 'done' : 'cancelled'} />
-          <h2 class="text-[15px] font-semibold text-[var(--color-text)] truncate">{agent.name || agent.id}</h2>
-          <code class="text-[10px] text-[var(--color-text-faint)] font-mono">{agent.id}</code>
-        </div>
-        {agent.description && (
-          <div class="text-[12px] text-[var(--color-text-muted)] mt-0.5 leading-snug">{agent.description}</div>
-        )}
-        <div class="flex items-center gap-2 mt-2">
+        <h3 class="text-[13px] font-medium text-[var(--color-text)]">Profile image</h3>
+        <p class="text-[12px] text-[var(--color-text-muted)] mt-1">Personalize how this agent appears in your workspace.</p>
+        <div class="flex flex-wrap items-center gap-2 mt-3">
           <button
             type="button"
             onClick={() => fileRef.current?.click()}
             disabled={busy}
-            class="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
+            class="inline-flex items-center gap-1 px-2 py-1 rounded text-[11px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
           >
             <Camera size={11} /> {busy ? 'Working…' : 'Change avatar'}
           </button>
@@ -188,7 +209,7 @@ function Header({ agent }: { agent: Agent }) {
           <button
             type="button"
             onClick={openBotFather}
-            class="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+            class="ml-auto inline-flex items-center gap-1 px-2 py-1 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
             title="Telegram bot avatars can only be set via @BotFather → /setuserpic"
           >
             Set on Telegram <ExternalLink size={10} />
@@ -199,61 +220,48 @@ function Header({ agent }: { agent: Agent }) {
   );
 }
 
-function OverviewTab({ agent }: { agent: Agent }) {
+function OverviewTab({ agent }: { agent: AgentSummary }) {
   const tokens = useFetch<AgentTokens>(`/api/agents/${agent.id}/tokens`);
   const costsOn = showCosts.value;
   return (
     <div class="space-y-3">
-      <div class={(costsOn ? 'grid-cols-3' : 'grid-cols-1') + ' grid gap-2'}>
+      <div class={(costsOn ? 'sm:grid-cols-3' : 'grid-cols-1') + ' grid gap-2'}>
         <Kpi label="Today turns" value={String(agent.todayTurns)} />
         {costsOn && <Kpi label="Today cost" value={formatCost(agent.todayCost)} />}
         {costsOn && <Kpi label="Lifetime cost" value={formatCost(tokens.data?.allTimeCost || 0)} />}
       </div>
       <Section label="Configuration">
         <Row label="Model"><Pill tone="neutral">{modelLabel(agent.model)}</Pill></Row>
-        <Row label="Status">{agent.running
-          ? <Pill tone="done">running</Pill>
-          : <Pill tone="cancelled">offline</Pill>}</Row>
       </Section>
     </div>
   );
 }
 
-function ConversationTab({ agentId }: { agentId: string }) {
+interface ActivityPanelProps { agentId: string; view: ActivityView; }
+
+function ConversationTab({ agentId, view }: ActivityPanelProps) {
   const { data, loading, error } = useFetch<{ turns: ConvoTurn[] }>(
-    `/api/agents/${agentId}/conversation?chatId=${encodeURIComponent(chatId)}&limit=10`,
+    `/api/agents/${encodeURIComponent(agentId)}/conversation?chatId=${encodeURIComponent(chatId)}&limit=10`,
   );
   const turns = data?.turns ?? [];
 
   if (loading) return <Loading />;
   if (error) return <ErrorBlock error={error} />;
-  if (turns.length === 0) return <Empty text="No conversation history yet." />;
+  if (turns.length === 0) return <Empty text="No chat history yet. Open Chat to start a conversation." />;
 
   return (
-    <div class="space-y-2">
+    <ActivityList view={view} columns={['When', 'From', 'Message']} count={turns.length} noun="recent messages">
       {turns.map((t, i) => (
-        <div
-          key={i}
-          class={[
-            'rounded-lg px-3 py-2 text-[12px] leading-relaxed whitespace-pre-wrap',
-            t.role === 'user'
-              ? 'bg-[var(--color-accent-soft)] text-[var(--color-text)] border border-[var(--color-accent-soft)]'
-              : 'bg-[var(--color-elevated)] border border-[var(--color-border)] text-[var(--color-text-muted)]',
-          ].join(' ')}
-        >
-          <div class="text-[10px] text-[var(--color-text-faint)] uppercase tracking-wider mb-1">
-            {t.role}
-            {t.created_at && <span class="ml-2 normal-case tracking-normal">{formatRelativeTime(t.created_at)}</span>}
-          </div>
-          <div class="line-clamp-6">{t.content}</div>
-        </div>
+        <ActivityItem key={i} when={t.created_at ? formatRelativeTime(t.created_at) : 'Recent'}
+          label={<Pill tone={t.role === 'user' ? 'accent' : 'neutral'}>{t.role === 'user' ? 'You' : 'Agent'}</Pill>}
+          summary={t.content} />
       ))}
-    </div>
+    </ActivityList>
   );
 }
 
-function TasksTab({ agentId }: { agentId: string }) {
-  const { data, loading, error } = useFetch<{ tasks: ScheduledTask[] }>(`/api/agents/${agentId}/tasks`);
+function TasksTab({ agentId, view }: ActivityPanelProps) {
+  const { data, loading, error } = useFetch<{ tasks: ScheduledTask[] }>(`/api/agents/${encodeURIComponent(agentId)}/tasks`);
   const tasks = data?.tasks ?? [];
 
   if (loading) return <Loading />;
@@ -261,27 +269,22 @@ function TasksTab({ agentId }: { agentId: string }) {
   if (tasks.length === 0) return <Empty text={`No scheduled tasks for ${agentId}.`} />;
 
   return (
-    <div class="space-y-1.5">
+    <ActivityList view={view} columns={['Status', 'Schedule', 'Prompt']} count={tasks.length} noun="scheduled tasks">
       {tasks.map((t) => (
-        <div key={t.id} class="bg-[var(--color-elevated)] border border-[var(--color-border)] rounded p-2.5">
-          <div class="text-[12px] text-[var(--color-text)] line-clamp-2 mb-1">{t.prompt}</div>
-          <div class="flex items-center gap-2 text-[10.5px] text-[var(--color-text-faint)]">
-            <span class="font-mono">{t.schedule}</span>
-            <span>·</span>
-            <span class="tabular-nums">next: {formatRelativeTime(t.next_run)}</span>
-            <Pill tone={t.status === 'paused' ? 'cancelled' : 'done'}>{t.status}</Pill>
-            {t.last_status && (
-              <Pill tone={t.last_status === 'success' ? 'done' : 'failed'}>last: {t.last_status}</Pill>
-            )}
-          </div>
-        </div>
+        <ActivityItem key={t.id}
+          when={<Pill tone={t.status === 'paused' ? 'cancelled' : t.status === 'running' ? 'running' : 'done'}>{t.status}</Pill>}
+          label={describeCron(t.schedule).text} summary={t.prompt}
+          detail={<>
+            <span>{t.status === 'paused' ? 'Paused' : t.status === 'running' ? 'Running now' : t.next_run ? `Next: ${new Date(t.next_run * 1000).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}` : 'Next run not set'}</span>
+            {t.last_status && <Pill tone={t.last_status === 'success' ? 'done' : 'failed'}>Last: {t.last_status}</Pill>}
+          </>} />
       ))}
-    </div>
+    </ActivityList>
   );
 }
 
-function HiveTab({ agentId }: { agentId: string }) {
-  const { data, loading, error } = useFetch<{ entries: HiveEntry[] }>(`/api/hive-mind?agent=${agentId}&limit=30`);
+function HiveTab({ agentId, view }: ActivityPanelProps) {
+  const { data, loading, error } = useFetch<{ entries: HiveEntry[] }>(`/api/hive-mind?agent=${encodeURIComponent(agentId)}&limit=30`);
   const entries = data?.entries ?? [];
 
   if (loading) return <Loading />;
@@ -289,20 +292,37 @@ function HiveTab({ agentId }: { agentId: string }) {
   if (entries.length === 0) return <Empty text={`No hive mind activity for ${agentId} yet.`} />;
 
   return (
-    <div class="space-y-1">
+    <ActivityList view={view} columns={['When', 'Activity', 'Summary']} count={entries.length} noun="recent entries">
       {entries.map((e) => (
-        <div key={e.id} class="flex items-start gap-3 px-3 py-2 bg-[var(--color-elevated)] border border-[var(--color-border)] rounded text-[11.5px]">
-          <span class="text-[var(--color-text-faint)] tabular-nums whitespace-nowrap shrink-0">
-            {formatRelativeTime(e.created_at)}
-          </span>
-          <span class="font-mono text-[10.5px] text-[var(--color-text-muted)] whitespace-nowrap shrink-0">
-            {e.action}
-          </span>
-          <span class="text-[var(--color-text)] line-clamp-2">{e.summary}</span>
-        </div>
+        <ActivityItem key={e.id} when={formatRelativeTime(e.created_at)} label={e.action.replace(/[_-]+/g, ' ')} summary={e.summary} />
       ))}
-    </div>
+    </ActivityList>
   );
+}
+
+function ActivityList({ view, columns, count, noun, children }: {
+  view: ActivityView; columns: [string, string, string]; count: number; noun: string; children: ComponentChildren;
+}) {
+  return <div class={`activity-results is-${view}`}>
+    <p class="mb-2 text-[11px] text-[var(--color-text-muted)]">{count} {noun}</p>
+    {view === 'list' && <div class="activity-list-head" aria-hidden="true">{columns.map((label) => <span key={label}>{label}</span>)}</div>}
+    <ul class="activity-items" aria-label={noun}>{children}</ul>
+  </div>;
+}
+
+function ActivityItem({ when, label, summary, detail }: {
+  when: ComponentChildren; label: ComponentChildren; summary: string; detail?: ComponentChildren;
+}) {
+  return <li class="min-w-0">
+    <div class="activity-item">
+      <span class="activity-when">{when}</span>
+      <span class="activity-label">{label}</span>
+      <span class="activity-content">
+        <span class="activity-summary">{summary}</span>
+        {detail && <span class="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-[var(--color-text-muted)]">{detail}</span>}
+      </span>
+    </div>
+  </li>;
 }
 
 // ── Tiny helpers ───────────────────────────────────────────────────

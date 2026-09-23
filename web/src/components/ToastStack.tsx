@@ -51,7 +51,7 @@ function ToastCard({ toast }: { toast: Toast }) {
             type="button"
             onClick={runAction}
             disabled={running}
-            class="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white transition-colors disabled:opacity-50"
+            class="control-button mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-medium control-accent transition-colors disabled:opacity-50"
           >
             {running ? '…' : toast.action.label}
           </button>

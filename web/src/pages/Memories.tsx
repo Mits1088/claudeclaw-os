@@ -99,14 +99,14 @@ export function Memories() {
             <button
               type="button"
               onClick={() => setPinnedOpen(true)}
-              class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+              class="control-button inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
             >
               <Pin size={13} /> Pinned
             </button>
             <button
               type="button"
               onClick={() => setInsightsOpen(true)}
-              class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+              class="control-button inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
             >
               <Sparkles size={13} /> Insights
             </button>
@@ -122,12 +122,13 @@ export function Memories() {
                 value={query}
                 onInput={(e) => setQuery((e.target as HTMLInputElement).value)}
                 placeholder="Filter loaded memories…"
-                class="w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded pl-7 pr-7 py-1 text-[12px] outline-none focus:border-[var(--color-accent)]"
+                class="toolbar-control w-full bg-[var(--color-elevated)] border border-[var(--color-border)] rounded pl-7 pr-7 outline-none focus:border-[var(--color-accent)]"
               />
               {query && (
                 <button
                   type="button"
                   onClick={() => setQuery('')}
+                  aria-label="Clear memory search"
                   class="absolute right-1.5 top-1/2 -translate-y-1/2 p-0.5 rounded hover:bg-[var(--color-card)] text-[var(--color-text-faint)]"
                 >
                   <X size={10} />
@@ -164,7 +165,7 @@ export function Memories() {
               type="button"
               onClick={() => loadPage(offset, false)}
               disabled={loading}
-              class="w-full px-6 py-3 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border-t border-[var(--color-border)] transition-colors disabled:opacity-40"
+              class="w-full px-6 py-3 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border-t border-[var(--color-border)] transition-colors disabled:opacity-40"
             >
               {loading ? 'Loading…' : `Load more (${total - offset} remaining)`}
             </button>
@@ -255,7 +256,7 @@ function MemoryRow({ memory, expanded, onToggle }: { memory: Memory; expanded: b
   return (
     <div
       class={[
-        'border-b border-[var(--color-border)] px-6 py-3 cursor-pointer hover:bg-[var(--color-elevated)] transition-colors',
+        'border-b border-[var(--color-border)] px-6 py-3 cursor-pointer hover:bg-[var(--color-control-hover)] transition-colors',
         expanded ? 'bg-[var(--color-elevated)]' : '',
       ].join(' ')}
       onClick={onToggle}

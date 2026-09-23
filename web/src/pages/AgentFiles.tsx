@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'preact/hooks';
+import type { ComponentChildren } from 'preact';
 import { lazy, Suspense } from 'preact/compat';
 import { useLocation, useRoute } from 'wouter-preact';
 import { Save, RotateCcw, ArrowLeft, AlertTriangle, RefreshCw, Power, History as HistoryIcon, Eye, Undo2 } from 'lucide-preact';
@@ -7,7 +8,7 @@ import { PageState } from '@/components/PageState';
 import { Drawer } from '@/components/Modal';
 import { apiGet, apiPost, apiPut } from '@/lib/api';
 import { pushToast } from '@/lib/toasts';
-import { theme } from '@/lib/theme';
+import { resolvedAppearance } from '@/lib/appearance';
 import { formatRelativeTime } from '@/lib/format';
 
 // Monaco is ~400KB gzipped — lazy-load it so the dashboard's main bundle
@@ -30,8 +31,34 @@ type TabKey = 'persona' | 'config';
 
 export function AgentFiles() {
   const [, params] = useRoute<{ id: string }>('/agents/:id/files');
-  const [, navigate] = useLocation();
   const agentId = params?.id || '';
+  return <AgentFilesEditor agentId={agentId} />;
+}
+
+export interface AgentFilesEditorState {
+  dirty: boolean;
+  busy: boolean;
+}
+
+export interface AgentFilesEditorProps {
+  agentId: string;
+  embedded?: boolean;
+  onStateChange?: (state: AgentFilesEditorState) => void;
+  onSaved?: () => void;
+}
+
+/**
+ * Reusable persona/config editor. The route page uses the full header and a
+ * drawer for history; agent settings embeds the same editor and keeps history
+ * in-panel so it remains above the parent modal backdrop.
+ */
+export function AgentFilesEditor({
+  agentId,
+  embedded = false,
+  onStateChange,
+  onSaved,
+}: AgentFilesEditorProps) {
+  const [, navigate] = useLocation();
   const [tab, setTab] = useState<TabKey>('persona');
   const [files, setFiles] = useState<FilesResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -45,6 +72,7 @@ export function AgentFiles() {
   const [saving, setSaving] = useState<TabKey | null>(null);
   const [restarting, setRestarting] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyBusy, setHistoryBusy] = useState(false);
 
   // Load files once, then again whenever the agent id changes.
   useEffect(() => { void load(); }, [agentId]);
@@ -56,6 +84,13 @@ export function AgentFiles() {
       setTab('persona');
     }
   }, [files, tab]);
+
+  const anyDirty = personaDirty || configDirty;
+  const busy = saving !== null || restarting || historyBusy;
+
+  useEffect(() => {
+    onStateChange?.({ dirty: anyDirty, busy });
+  }, [anyDirty, busy]);
 
   async function load() {
     if (!agentId) return;
@@ -77,8 +112,9 @@ export function AgentFiles() {
     try {
       await apiPut(`/api/agents/${encodeURIComponent(agentId)}/files/claudemd`, { content: personaDraft });
       pushToast({ tone: 'success', title: 'Persona saved', description: 'Takes effect on the next message.' });
+      setFiles((current) => current ? { ...current, claude_md: personaDraft } : current);
       setPersonaDirty(false);
-      void load();
+      onSaved?.();
     } catch (err: any) {
       pushToast({ tone: 'error', title: 'Save failed', description: extractError(err), durationMs: 7000 });
     } finally { setSaving(null); }
@@ -94,8 +130,9 @@ export function AgentFiles() {
         description: 'Restart agent to apply.',
         durationMs: 8000,
       });
+      setFiles((current) => current ? { ...current, agent_yaml: configDraft } : current);
       setConfigDirty(false);
-      void load();
+      onSaved?.();
     } catch (err: any) {
       pushToast({ tone: 'error', title: 'Save failed', description: extractError(err), durationMs: 7000 });
     } finally { setSaving(null); }
@@ -131,92 +168,128 @@ export function AgentFiles() {
   const dirty = tab === 'persona' ? personaDirty : configDirty;
   const draft = tab === 'persona' ? personaDraft : configDraft;
   const language = tab === 'persona' ? 'markdown' : 'yaml';
-  const monacoTheme = monacoThemeFor(theme.value);
+  const monacoTheme = resolvedAppearance.value === 'light' ? 'vs' : 'vs-dark';
+
+  const historyDisabledReason = anyDirty
+    ? 'Save or reset your draft before opening version history.'
+    : undefined;
+
+  const editorActions = (
+    <>
+      {tab === 'config' && files?.bot_token_redacted && (
+        <span class="text-[10.5px] text-[var(--color-text-muted)] inline-flex items-center gap-1 mr-1">
+          <AlertTriangle size={11} class="text-[var(--color-status-failed)]" />
+          bot_token redacted
+        </span>
+      )}
+      <span class={'text-[11.5px] tabular-nums mr-1 ' + (dirty ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-faint)]')}>
+        {dirty ? '● modified' : 'saved'}
+      </span>
+      <button
+        type="button"
+        onClick={() => setHistoryOpen(true)}
+        disabled={anyDirty || busy}
+        class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+        title={historyDisabledReason || 'View prior versions of this file (stored in SQLite)'}
+      >
+        <HistoryIcon size={12} /> History
+      </button>
+      <button
+        type="button"
+        onClick={() => reset(tab)}
+        disabled={!dirty || busy}
+        class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <RotateCcw size={12} /> Reset
+      </button>
+      <button
+        type="button"
+        onClick={tab === 'persona' ? savePersona : saveConfig}
+        disabled={!dirty || busy}
+        class="control-button inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium control-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+      >
+        <Save size={13} /> {saving === tab ? 'Saving…' : tab === 'persona' ? 'Save persona' : 'Save config'}
+      </button>
+      {tab === 'config' && files?.config_editable !== false && (
+        <button
+          type="button"
+          onClick={restart}
+          disabled={busy}
+          class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[12px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
+          title="Restart this agent — required for agent.yaml changes to apply"
+        >
+          {restarting ? <RefreshCw size={12} class="animate-spin" /> : <Power size={12} />}
+          {restarting ? 'Restarting…' : 'Restart agent'}
+        </button>
+      )}
+    </>
+  );
+
+  const editorTabs = (
+    <fieldset disabled={busy} class="flex flex-wrap items-center gap-1 min-w-0">
+      {!embedded && (
+        <button
+          type="button"
+          onClick={() => navigate('/agents')}
+          class="text-[12px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)] mr-3 inline-flex items-center gap-1"
+        >
+          <ArrowLeft size={12} /> Back
+        </button>
+      )}
+      <Tab label={`Persona (CLAUDE.md)${personaDirty ? ' •' : ''}`} active={tab === 'persona'} onClick={() => { setTab('persona'); setHistoryOpen(false); }} />
+      {files?.config_editable !== false && (
+        <Tab label={`Config (agent.yaml)${configDirty ? ' •' : ''}`} active={tab === 'config'} onClick={() => { setTab('config'); setHistoryOpen(false); }} />
+      )}
+    </fieldset>
+  );
+
+  const history = historyOpen && (
+    <FileHistoryList
+      agentId={agentId}
+      kind={tab === 'persona' ? 'claudemd' : 'agent-yaml'}
+      inline={embedded}
+      onBusyChange={setHistoryBusy}
+      onClose={embedded ? () => { if (!historyBusy) setHistoryOpen(false); } : undefined}
+      onRestored={() => {
+        setHistoryOpen(false);
+        void load();
+        onSaved?.();
+      }}
+    />
+  );
 
   return (
-    <div class="flex flex-col h-full">
-      <PageHeader
-        title={`Agent files · ${agentId}`}
-        breadcrumb="Agents"
-        tabs={
-          <>
-            <button
-              type="button"
-              onClick={() => navigate('/agents')}
-              class="text-[12px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)] mr-3 inline-flex items-center gap-1"
-            >
-              <ArrowLeft size={12} /> Back
-            </button>
-            <Tab label="Persona (CLAUDE.md)" active={tab === 'persona'} onClick={() => setTab('persona')} />
-            {files?.config_editable !== false && (
-              <Tab label="Config (agent.yaml)" active={tab === 'config'} onClick={() => setTab('config')} />
-            )}
-          </>
-        }
-        actions={
-          <>
-            {tab === 'config' && files?.bot_token_redacted && (
-              <span class="text-[10.5px] text-[var(--color-text-muted)] inline-flex items-center gap-1 mr-1">
-                <AlertTriangle size={11} class="text-[var(--color-status-failed)]" />
-                bot_token redacted
-              </span>
-            )}
-            <span class={'text-[11.5px] tabular-nums mr-1 ' + (dirty ? 'text-[var(--color-accent)]' : 'text-[var(--color-text-faint)]')}>
-              {dirty ? '● modified' : 'saved'}
-            </span>
-            <button
-              type="button"
-              onClick={() => setHistoryOpen(true)}
-              class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors"
-              title="View prior versions of this file (stored in SQLite)"
-            >
-              <HistoryIcon size={12} /> History
-            </button>
-            <button
-              type="button"
-              onClick={() => reset(tab)}
-              disabled={!dirty || saving !== null}
-              class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <RotateCcw size={12} /> Reset
-            </button>
-            <button
-              type="button"
-              onClick={tab === 'persona' ? savePersona : saveConfig}
-              disabled={!dirty || saving !== null}
-              class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            >
-              <Save size={13} /> {saving === tab ? 'Saving…' : 'Save'}
-            </button>
-            {tab === 'config' && files?.config_editable !== false && (
-              <button
-                type="button"
-                onClick={restart}
-                disabled={restarting || saving !== null}
-                class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded text-[12px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
-                title="Restart this agent — required for agent.yaml changes to apply"
-              >
-                {restarting ? <RefreshCw size={12} class="animate-spin" /> : <Power size={12} />}
-                {restarting ? 'Restarting…' : 'Restart agent'}
-              </button>
-            )}
-          </>
-        }
-      />
+    <div class={'flex flex-col h-full min-h-0 ' + (embedded ? 'bg-[var(--color-card)]' : '')}>
+      {embedded ? (
+        <div class="shrink-0 border-b border-[var(--color-border)] px-3 py-2.5 flex flex-wrap items-center gap-x-3 gap-y-2">
+          <div class="flex items-center gap-1 min-w-0">{editorTabs}</div>
+          <div class="page-header-actions ml-auto flex flex-wrap items-center justify-end gap-1.5">{editorActions}</div>
+          {historyDisabledReason && (
+            <div class="basis-full text-right text-[10.5px] text-[var(--color-text-faint)]">{historyDisabledReason}</div>
+          )}
+        </div>
+      ) : (
+        <PageHeader
+          title={`Agent files · ${agentId}`}
+          breadcrumb="Agents"
+          tabs={editorTabs}
+          actions={editorActions}
+        />
+      )}
 
       {error && <PageState error={error} />}
       {loading && <PageState loading />}
 
-      {files && (
+      {files && (!embedded || !historyOpen) && (
         <>
-          <div class="px-6 py-2 border-b border-[var(--color-border)] text-[11.5px] text-[var(--color-text-muted)] leading-snug">
+          <div class={(embedded ? 'px-4' : 'px-6') + ' py-2 border-b border-[var(--color-border)] text-[11.5px] text-[var(--color-text-muted)] leading-snug'}>
             {tab === 'persona' ? (
               <>
-                <strong class="text-[var(--color-text)]">CLAUDE.md</strong> is the agent's persona/instructions. The Agent SDK re-reads it from disk on every turn, so saves take effect on the next message — no restart needed.
+                <strong class="text-[var(--color-text)]">Persona</strong> defines this agent’s instructions and working style. Changes apply on the next message.
               </>
             ) : (
               <>
-                <strong class="text-[var(--color-text)]">agent.yaml</strong> is editable. Edit any field, hit Save, then Restart agent for changes to apply. Only the <code class="font-mono text-[var(--color-text-faint)]">bot_token</code> line is masked as <code class="font-mono text-[var(--color-text-faint)]">***REDACTED***</code> for safety; if you don't touch that line, your real token is preserved on save.
+                <strong class="text-[var(--color-text)]">Configuration</strong> controls this agent’s setup. Save, then restart to apply. Leave the masked <code class="font-mono">bot_token</code> value unchanged to preserve its token.
               </>
             )}
           </div>
@@ -234,7 +307,7 @@ export function AgentFiles() {
                   // builds shipped a regression where the YAML tab loaded
                   // text but the keystrokes did nothing — pinning the flag
                   // here is the cheapest fix.
-                  readOnly: false,
+                  readOnly: busy,
                   minimap: { enabled: false },
                   fontSize: 13.5,
                   fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, monospace',
@@ -244,9 +317,9 @@ export function AgentFiles() {
                   tabSize: 2,
                   padding: { top: 12, bottom: 12 },
                   automaticLayout: true,
-                  domReadOnly: false,
+                  domReadOnly: busy,
                 }}
-                onChange={(v) => {
+                onChange={(v: string | undefined) => {
                   const next = v ?? '';
                   if (tab === 'persona') {
                     setPersonaDraft(next);
@@ -262,17 +335,13 @@ export function AgentFiles() {
         </>
       )}
 
-      <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title={`History · ${agentId} · ${tab === 'persona' ? 'CLAUDE.md' : 'agent.yaml'}`}>
+      {embedded && history}
+
+      {!embedded && <Drawer open={historyOpen} onClose={() => setHistoryOpen(false)} title={`History · ${agentId} · ${tab === 'persona' ? 'CLAUDE.md' : 'agent.yaml'}`}>
         {/* Remount on each open so the version list is fresh — and so a
             previous error doesn't leave the drawer stuck on stale data. */}
-        {historyOpen && (
-          <FileHistoryList
-            agentId={agentId}
-            kind={tab === 'persona' ? 'claudemd' : 'agent-yaml'}
-            onRestored={() => { setHistoryOpen(false); void load(); }}
-          />
-        )}
-      </Drawer>
+        {history}
+      </Drawer>}
     </div>
   );
 }
@@ -288,10 +357,13 @@ interface VersionRow {
 }
 
 function FileHistoryList({
-  agentId, kind, onRestored,
+  agentId, kind, inline = false, onClose, onBusyChange, onRestored,
 }: {
   agentId: string;
   kind: 'claudemd' | 'agent-yaml';
+  inline?: boolean;
+  onClose?: () => void;
+  onBusyChange?: (busy: boolean) => void;
   onRestored: () => void;
 }) {
   const [versions, setVersions] = useState<VersionRow[]>([]);
@@ -303,6 +375,10 @@ function FileHistoryList({
   const [restoringId, setRestoringId] = useState<number | null>(null);
 
   useEffect(() => { void load(); }, [agentId, kind]);
+  useEffect(() => {
+    onBusyChange?.(restoringId !== null);
+    return () => onBusyChange?.(false);
+  }, [restoringId, onBusyChange]);
 
   async function load() {
     setLoading(true); setError(null);
@@ -349,27 +425,32 @@ function FileHistoryList({
 
   if (error) {
     return (
-      <div class="px-6 py-4">
+      <HistoryFrame inline={inline} onClose={onClose}>
+      <div class="px-4 sm:px-6 py-4">
         <div class="bg-[var(--color-card)] border border-[var(--color-status-failed)] rounded p-3">
           <div class="text-[12px] text-[var(--color-status-failed)] font-medium mb-1">Failed to load history</div>
           <div class="text-[11.5px] text-[var(--color-text-muted)] font-mono break-all">{error}</div>
           <button type="button" onClick={() => load()} class="mt-2 text-[11.5px] text-[var(--color-accent)] hover:underline">Try again</button>
         </div>
       </div>
+      </HistoryFrame>
     );
   }
-  if (loading) return <div class="px-6 py-8 text-[12px] text-[var(--color-text-faint)]">Loading…</div>;
+  if (loading) return <HistoryFrame inline={inline} onClose={onClose}><div class="px-4 sm:px-6 py-8 text-[12px] text-[var(--color-text-faint)]">Loading…</div></HistoryFrame>;
   if (versions.length === 0) {
     return (
-      <div class="px-6 py-12 text-center">
+      <HistoryFrame inline={inline} onClose={onClose}>
+      <div class="px-4 sm:px-6 py-12 text-center">
         <div class="text-[13px] text-[var(--color-text-muted)] mb-1">No prior versions yet</div>
         <div class="text-[11.5px] text-[var(--color-text-faint)]">Versions are saved automatically every time you Save the file.</div>
       </div>
+      </HistoryFrame>
     );
   }
   return (
-    <div class="flex h-full">
-      <div class="w-[360px] shrink-0 overflow-y-auto border-r border-[var(--color-border)]">
+    <HistoryFrame inline={inline} onClose={onClose}>
+    <div class="flex flex-1 min-h-0 flex-col sm:flex-row">
+      <div class="w-full sm:w-[300px] lg:w-[340px] max-h-[42%] sm:max-h-none shrink-0 overflow-y-auto border-b sm:border-b-0 sm:border-r border-[var(--color-border)]">
         <div class="px-4 py-2.5 text-[11px] uppercase tracking-wider text-[var(--color-text-faint)] border-b border-[var(--color-border)]">
           {versions.length} version{versions.length === 1 ? '' : 's'}
         </div>
@@ -381,8 +462,8 @@ function FileHistoryList({
               type="button"
               onClick={() => void preview(v.id)}
               class={[
-                'w-full text-left px-4 py-3 border-b border-[var(--color-border)] transition-colors',
-                active ? 'bg-[var(--color-accent-soft)]' : 'hover:bg-[var(--color-elevated)]',
+                'control-button w-full text-left px-4 py-3 border-b border-[var(--color-border)] transition-colors',
+                active ? 'control-accent' : 'hover:bg-[var(--color-control-hover)]',
               ].join(' ')}
             >
               <div class="flex items-center gap-2 mb-1">
@@ -413,7 +494,7 @@ function FileHistoryList({
                 type="button"
                 onClick={() => void restore(previewId)}
                 disabled={restoringId !== null}
-                class="ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
+                class="control-button ml-auto inline-flex items-center gap-1 px-2.5 py-1 rounded text-[12px] font-medium control-accent disabled:opacity-40 transition-colors"
               >
                 <Undo2 size={12} /> {restoringId === previewId ? 'Restoring…' : 'Restore this version'}
               </button>
@@ -429,16 +510,34 @@ function FileHistoryList({
         )}
       </div>
     </div>
+    </HistoryFrame>
   );
 }
 
-// Map our three workspace themes to Monaco's bundled palette. We could
-// register a custom Monaco theme to match exactly, but vs-dark is close
-// enough and avoids a per-theme JSON definition file.
-function monacoThemeFor(name: string): string {
-  switch (name) {
-    case 'midnight': return 'vs-dark';
-    case 'crimson': return 'vs-dark';
-    default: return 'vs-dark';
-  }
+function HistoryFrame({
+  inline,
+  onClose,
+  children,
+}: {
+  inline: boolean;
+  onClose?: () => void;
+  children: ComponentChildren;
+}) {
+  return (
+    <div class="flex flex-col flex-1 min-h-0">
+      {inline && (
+        <div class="shrink-0 px-3 sm:px-4 py-2.5 border-b border-[var(--color-border)] flex items-center gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            class="inline-flex items-center gap-1 px-2 py-1 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
+          >
+            <ArrowLeft size={12} /> Back to editor
+          </button>
+          <span class="text-[12.5px] font-medium text-[var(--color-text)]">Version history</span>
+        </div>
+      )}
+      {children}
+    </div>
+  );
 }

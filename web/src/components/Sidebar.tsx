@@ -2,7 +2,7 @@ import { Link, useLocation } from 'wouter-preact';
 import { Search, ChevronDown, X, Cpu } from 'lucide-preact';
 import { useState, useEffect, useRef } from 'preact/hooks';
 import { ROUTES, SECTION_LABEL, type RouteSection } from '@/lib/routes';
-import { WorkspaceSwitcher } from './WorkspaceSwitcher';
+import { WorkspaceHeader } from './WorkspaceHeader';
 import { commandPaletteOpen } from '@/lib/command-palette';
 import { chatUnread } from '@/lib/chat-stream';
 import { useFetch } from '@/lib/useFetch';
@@ -13,7 +13,6 @@ import {
   toggleSectionCollapsed,
   runtimeDetailsCollapsed,
   toggleRuntimeDetailsCollapsed,
-  workspaceName,
   modKeyLabel,
 } from '@/lib/personalization';
 
@@ -29,7 +28,7 @@ export function Sidebar() {
   // always-visible inline column. Tailwind's `md:` prefix flips between
   // the two without extra JS.
   const asideClass = [
-    'flex flex-col h-screen w-[280px] bg-[var(--color-sidebar)] border-r border-[var(--color-border)]',
+    'app-sidebar flex flex-col min-h-0 w-[280px] bg-[var(--color-sidebar)] border-r border-[var(--color-border)]',
     'fixed inset-y-0 left-0 z-50 transform transition-transform duration-200',
     open ? 'translate-x-0' : '-translate-x-full',
     'md:static md:translate-x-0 md:w-[260px] md:shrink-0',
@@ -37,14 +36,14 @@ export function Sidebar() {
 
   return (
     <aside class={asideClass}>
-      <WorkspaceSwitcher />
+      <WorkspaceHeader />
 
       {/* Mobile-only close button. Inline-flex with absolute position so
        *  it doesn't disturb the existing header layout. */}
       <button
         type="button"
         onClick={closeSidebar}
-        class="md:hidden absolute top-3 right-3 p-1.5 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+        class="md:hidden absolute top-3 right-3 p-1.5 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
         aria-label="Close menu"
       >
         <X size={16} />
@@ -53,7 +52,7 @@ export function Sidebar() {
       <button
         type="button"
         onClick={() => { commandPaletteOpen.value = true; closeSidebar(); }}
-        class="mx-3 mt-1 mb-2 flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors text-[13px]"
+        class="mx-3 mt-1 mb-2 flex items-center gap-2 px-3 py-2 rounded-md text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors text-[13px]"
       >
         <Search size={15} />
         <span>Search</span>
@@ -92,8 +91,8 @@ export function Sidebar() {
                     class={[
                       'flex items-center gap-2.5 px-3 py-2 rounded-md text-[14px] transition-colors',
                       active
-                        ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]'
-                        : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
+                        ? 'control-accent'
+                        : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)]',
                     ].join(' ')}
                   >
                     <Icon size={16} />
@@ -150,7 +149,6 @@ function SidebarFooter() {
   const switches = health.data?.killSwitches || {};
   const off = Object.entries(switches).filter(([, on]) => !on);
   const anyOff = off.length > 0;
-  const name = workspaceName.value;
   const providerName = provider.data?.label ?? 'Claude';
   const modelName = modelLabel(provider.data?.model ?? 'claude-opus-4-8');
   const reasoning = provider.data?.reasoning?.trim();
@@ -188,12 +186,12 @@ function SidebarFooter() {
       <div class="relative">
         <Link
           href="/settings"
-          aria-label="Active runtime"
+          aria-label="System status"
           title="Provider and model are configured under Agents or Settings"
-          class="block px-3 py-3 hover:bg-[var(--color-elevated)] transition-colors"
+          class="block px-3 py-3 hover:bg-[var(--color-control-hover)] transition-colors"
         >
-          {/* Identity header: the Cpu icon replaces the old status dot and
-           *  carries the kill-switch signal via its tint. Right padding leaves
+          {/* System status: the Cpu icon carries the kill-switch signal
+           *  via its tint. Right padding leaves
            *  room for the collapse chevron. */}
           <div class="flex items-center gap-2.5 pr-6">
             <div
@@ -208,7 +206,7 @@ function SidebarFooter() {
               <Cpu size={14} />
             </div>
             <div class="flex-1 min-w-0">
-              <div class="text-[12.5px] font-medium text-[var(--color-text)] truncate">{name}</div>
+              <div class="text-[12.5px] font-medium text-[var(--color-text)] truncate">System status</div>
               <div class="truncate text-[11px] text-[var(--color-text-faint)]">
                 {anyOff
                   ? off.length + ' kill switch' + (off.length === 1 ? '' : 'es') + ' off'
@@ -244,7 +242,7 @@ function SidebarFooter() {
         <button
           type="button"
           onClick={toggleRuntimeDetailsCollapsed}
-          class="absolute top-3 right-2 p-1 rounded-md text-[var(--color-text-faint)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
+          class="absolute top-3 right-2 p-1 rounded-md text-[var(--color-text-faint)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors"
           aria-label={collapsed ? 'Show runtime details' : 'Hide runtime details'}
           aria-expanded={!collapsed}
         >

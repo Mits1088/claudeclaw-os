@@ -92,13 +92,13 @@ export function VoicesPane({ embedded }: VoicesPaneProps) {
   return (
     <>
       {!embedded && (
-        <div class="flex items-center gap-2 px-6 py-2 border-b border-[var(--color-border)] justify-end">
+        <div class="page-toolbar flex items-center gap-2 px-6 py-2 border-b border-[var(--color-border)] justify-end">
           {status && <span class="text-[12px] text-[var(--color-text-muted)]">{status}</span>}
           <SaveButtons dirtyCount={dirty.size} saving={saving} applying={applying} onSave={() => save(false)} onSaveApply={() => save(true)} />
         </div>
       )}
       {embedded && (
-        <div class="flex items-center gap-2 px-6 py-2 border-b border-[var(--color-border)] justify-end bg-[var(--color-bg)]">
+        <div class="page-toolbar flex items-center gap-2 px-6 py-2 border-b border-[var(--color-border)] justify-end bg-[var(--color-bg)]">
           {status && <span class="text-[12px] text-[var(--color-text-muted)]">{status}</span>}
           <SaveButtons dirtyCount={dirty.size} saving={saving} applying={applying} onSave={() => save(false)} onSaveApply={() => save(true)} />
         </div>
@@ -171,7 +171,7 @@ function SaveButtons({ dirtyCount, saving, applying, onSave, onSaveApply }: Save
         type="button"
         onClick={onSave}
         disabled={dirtyCount === 0 || saving || applying}
-        class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12.5px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        class="toolbar-control control-button inline-flex items-center gap-1 px-2.5 rounded bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
         <Save size={13} /> {saving ? 'Saving…' : `Save${dirtyCount > 0 ? ` (${dirtyCount})` : ''}`}
       </button>
@@ -179,7 +179,7 @@ function SaveButtons({ dirtyCount, saving, applying, onSave, onSaveApply }: Save
         type="button"
         onClick={onSaveApply}
         disabled={dirtyCount === 0 || saving || applying}
-        class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12.5px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+        class="toolbar-control control-button inline-flex items-center gap-1 px-2.5 rounded font-medium control-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
       >
         <Zap size={13} /> Save & Apply
       </button>

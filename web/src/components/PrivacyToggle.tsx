@@ -10,10 +10,10 @@ export function PrivacyToggle({ section }: { section: PrivacySection }) {
       onClick={() => togglePrivacyBlur(section)}
       title={on ? 'Reveal content' : 'Blur content (screenshot-safe)'}
       class={[
-        'inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] border transition-colors',
+        'control-button inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] border transition-colors',
         on
-          ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)]'
-          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border-[var(--color-border)]',
+          ? 'control-accent'
+          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border-[var(--color-border)]',
       ].join(' ')}
     >
       {on ? <EyeOff size={13} /> : <Eye size={13} />}

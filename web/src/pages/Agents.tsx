@@ -1,13 +1,12 @@
-import { useState, useEffect } from 'preact/hooks';
-import { Plus, Power, RotateCcw, Trash2, Copy, Check, FileText, Lightbulb, RefreshCw, SlidersHorizontal, Info } from 'lucide-preact';
-import { Link } from 'wouter-preact';
+import { useState, useEffect, useRef } from 'preact/hooks';
+import { Plus, Power, RotateCcw, Trash2, Copy, Check, Lightbulb, RefreshCw, Settings2 } from 'lucide-preact';
 import { PageHeader } from '@/components/PageHeader';
-import { Pill, StatusDot } from '@/components/Pill';
+import { AgentStatusBadge } from '@/components/Pill';
 import { PageState } from '@/components/PageState';
 import { Modal } from '@/components/Modal';
 import { ProviderConfigEditor, type ProviderConfig, type ProviderOption } from '@/components/ProviderConfigEditor';
 import { AgentAvatar } from '@/components/AgentAvatar';
-import { AgentDetail } from '@/components/AgentDetail';
+import { AgentSettings, type AgentSettingsSection } from '@/components/AgentSettings';
 import { AgentSuggestionBadge, AgentSuggestionModal, useAgentSuggestions, type AgentSuggestion } from '@/components/AgentSuggestions';
 import { useFetch } from '@/lib/useFetch';
 import { useDebouncedValue } from '@/lib/useDebounce';
@@ -19,18 +18,6 @@ import { modelLabel } from '@/lib/modelLabels';
 
 interface RuntimeOption { id: string; label: string; }
 
-// Per-model option lists from staticRuntimeOptionsFor() on the server. Which
-// lists are non-empty depends on the model: Opus 5 exposes effort only (its
-// thinking is adaptive), Opus 4.8 exposes both, Sonnet 4.5 thinking only,
-// native OpenAI a single reasoning-effort list. null for providers that own
-// this in their own CLI config.
-interface AgentRuntimeOptions {
-  modeLabel?: string;
-  thinkingLabel?: string;
-  modeOptions: RuntimeOption[];
-  thinkingOptions: RuntimeOption[];
-}
-
 interface Agent {
   id: string;
   name: string;
@@ -40,9 +27,14 @@ interface Agent {
   running: boolean;
   todayTurns: number;
   todayCost: number;
-  runtimeOptions?: AgentRuntimeOptions | null;
   runtimeMode?: string;
   thinkingMode?: string;
+  runtimeOptions?: {
+    modeLabel?: string;
+    thinkingLabel?: string;
+    modeOptions: Array<{ id: string; label: string }>;
+    thinkingOptions: Array<{ id: string; label: string }>;
+  } | null;
 }
 
 interface Template { id: string; name: string; description: string; }
@@ -50,8 +42,8 @@ interface Template { id: string; name: string; description: string; }
 export function Agents() {
   const { data, loading, error, refresh } = useFetch<{ agents: Agent[]; claudeModels?: RuntimeOption[]; openaiModels?: RuntimeOption[] }>('/api/agents', 30_000);
   const [wizardOpen, setWizardOpen] = useState(false);
-  const [detailAgent, setDetailAgent] = useState<Agent | null>(null);
-  const [providerAgent, setProviderAgent] = useState<Agent | null>(null);
+  const [settings, setSettings] = useState<Agent | null>(null);
+  const [settingsSection, setSettingsSection] = useState<AgentSettingsSection>('overview');
   const [openedSuggestion, setOpenedSuggestion] = useState<AgentSuggestion | null>(null);
   const [suggestionPrefill, setSuggestionPrefill] = useState<AgentSuggestion | null>(null);
   const [refreshingSuggestions, setRefreshingSuggestions] = useState(false);
@@ -93,7 +85,7 @@ export function Agents() {
         actions={
           <>
             <span class="text-[11px] text-[var(--color-text-muted)] tabular-nums mr-2">
-              {agents.filter((a) => a.running).length} live · {agents.length} total
+              {agents.filter((a) => a.running).length} online · {agents.length} total
             </span>
             {suggestions.length > 0 ? (
               // Cached on mount via useAgentSuggestions — clicking is
@@ -105,7 +97,7 @@ export function Agents() {
                   type="button"
                   onClick={() => setOpenedSuggestion(suggestions[0])}
                   title={`View ${suggestions.length} active suggestion${suggestions.length === 1 ? '' : 's'}`}
-                  class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-l text-[12px] border border-r-0 transition-colors bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white"
+                  class="control-button inline-flex items-center gap-1 px-2.5 py-1.5 rounded-l text-[12px] border border-r-0 transition-colors control-accent"
                 >
                   <Lightbulb size={13} />
                   {suggestions.length} suggestion{suggestions.length === 1 ? '' : 's'}
@@ -115,7 +107,7 @@ export function Agents() {
                   onClick={refreshSuggestions}
                   disabled={refreshingSuggestions}
                   title="Re-scan hive_mind for new suggestions (~30–90s)"
-                  class="inline-flex items-center justify-center px-2 py-1.5 rounded-r text-[12px] border bg-[var(--color-accent-soft)] text-[var(--color-accent)] border-[var(--color-accent-soft)] hover:bg-[var(--color-accent)] hover:text-white disabled:opacity-40 transition-colors"
+                  class="control-button inline-flex items-center justify-center px-2 py-1.5 rounded-r text-[12px] border control-accent disabled:opacity-40 transition-colors"
                 >
                   <RefreshCw size={12} class={refreshingSuggestions ? 'animate-spin' : ''} />
                 </button>
@@ -127,7 +119,7 @@ export function Agents() {
                 onClick={refreshSuggestions}
                 disabled={refreshingSuggestions}
                 title="Scan hive_mind for agents that should be split (~30–90s)"
-                class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
+                class="inline-flex items-center gap-1 px-2.5 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border border-[var(--color-border)] transition-colors disabled:opacity-40"
               >
                 <Lightbulb size={13} />
                 {refreshingSuggestions ? 'Scanning…' : 'Scan for suggestions'}
@@ -136,7 +128,7 @@ export function Agents() {
             <button
               type="button"
               onClick={() => setWizardOpen(true)}
-              class="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
+              class="control-button inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md text-[12px] font-medium control-accent transition-colors"
             >
               <Plus size={14} /> New Agent
             </button>
@@ -160,10 +152,9 @@ export function Agents() {
               <AgentCard
                 key={a.id}
                 agent={a}
-                catalog={a.provider?.type === 'openai' ? (data?.openaiModels ?? []) : (data?.claudeModels ?? [])}
+                catalog={(a.provider?.type === 'openai' ? data?.openaiModels : a.provider?.type === 'claude' ? data?.claudeModels : []) ?? []}
                 onChange={refresh}
-                onOpen={() => setDetailAgent(a)}
-                onConfigureProvider={() => setProviderAgent(a)}
+                onOpen={(section = 'overview') => { setSettingsSection(section); setSettings(a); }}
                 suggestions={suggestions}
                 onOpenSuggestion={(s) => setOpenedSuggestion(s)}
               />
@@ -182,8 +173,8 @@ export function Agents() {
           description: suggestionPrefill.suggested_description,
         } : undefined}
       />
-      <AgentDetail agent={detailAgent} onClose={() => setDetailAgent(null)} />
-      <AgentProviderModal agent={providerAgent} onClose={() => setProviderAgent(null)} onChange={refresh} />
+      {settings && <AgentSettings key={settings.id} agent={agents.find((a) => a.id === settings.id) ?? settings}
+        initialSection={settingsSection} onClose={() => setSettings(null)} onChange={refresh} />}
       <AgentSuggestionModal
         suggestion={openedSuggestion}
         onClose={() => setOpenedSuggestion(null)}
@@ -194,12 +185,11 @@ export function Agents() {
   );
 }
 
-function AgentCard({ agent, catalog, onChange, onOpen, onConfigureProvider, suggestions, onOpenSuggestion }: {
+function AgentCard({ agent, catalog, onChange, onOpen, suggestions, onOpenSuggestion }: {
   agent: Agent;
   catalog: RuntimeOption[];
   onChange: () => void;
-  onOpen: () => void;
-  onConfigureProvider: () => void;
+  onOpen: (section?: AgentSettingsSection) => void;
   suggestions: AgentSuggestion[];
   onOpenSuggestion: (s: AgentSuggestion) => void;
 }) {
@@ -224,298 +214,134 @@ function AgentCard({ agent, catalog, onChange, onOpen, onConfigureProvider, sugg
   const isMain = agent.id === 'main';
 
   return (
-    <div
-      class="bg-[var(--color-card)] border border-[var(--color-border)] rounded-lg p-4 hover:border-[var(--color-border-strong)] transition-colors h-full min-w-0 flex flex-col"
+    <article
+      role="group"
+      aria-label={`${agent.name || agent.id} agent`}
+      class="agent-card bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl overflow-hidden hover:border-[var(--color-border-strong)] transition-colors h-full min-w-0 flex flex-col"
     >
-      <div class="flex items-start gap-3 mb-3">
-        <AgentAvatar agentId={agent.id} name={agent.name} running={agent.running} size={36} />
-        <div class="flex-1 min-w-0">
-          <div class="flex items-center gap-1.5 mb-0.5">
-            <StatusDot tone={agent.running ? 'done' : 'cancelled'} />
-            <span class="text-[13px] font-medium text-[var(--color-text)] truncate">
-              {agent.name || agent.id}
-            </span>
-            <AgentSuggestionBadge agentId={agent.id} suggestions={suggestions} onOpen={onOpenSuggestion} />
-            <button
-              type="button"
-              onClick={onConfigureProvider}
-              class="ml-auto h-7 w-7 shrink-0 inline-flex items-center justify-center rounded text-[11px] text-[var(--color-text-faint)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] transition-colors"
-              title={`Provider setup · ${providerLabel(agent.provider)}`}
-              aria-label={`Configure provider for ${agent.name || agent.id}`}
-            >
-              <SlidersHorizontal size={13} />
-            </button>
-          </div>
-          <div class="text-[10px] text-[var(--color-text-faint)] uppercase tracking-wider">
-            {agent.id}
-          </div>
-        </div>
-      </div>
-
-      {agent.description && (
-        <div class="text-[12px] text-[var(--color-text-muted)] leading-snug mb-3 line-clamp-2 min-h-[2.4em]">
-          {agent.description}
-        </div>
-      )}
-
-      <div
-        class="grid gap-2 mb-3 min-w-0"
-        style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(min(100%, 120px), 1fr))' }}
-      >
-        <ControlField label="Model">
-          <ModelDropdown
-            agent={agent}
-            catalog={catalog}
-            onChange={onChange}
-            onConfigureProvider={onConfigureProvider}
-          />
-        </ControlField>
-        <RuntimeDropdowns agent={agent} onChange={onChange} />
-      </div>
-
-      <div
-        class="flex items-end gap-3 border-t border-[var(--color-border)] pt-2.5 mb-3 mt-auto"
-        aria-label="Agent activity summary"
-      >
-        <div class={(showCosts.value ? 'grid grid-cols-2' : 'grid grid-cols-1') + ' flex-1 gap-3'}>
-          <div>
-            <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today turns</div>
-            <div class="text-[var(--color-text)] tabular-nums text-[12px]">{agent.todayTurns ?? 0}</div>
-          </div>
-          {showCosts.value && (
-            <div class="text-right">
-              <div class="text-[var(--color-text-faint)] text-[10px] uppercase tracking-wider mb-0.5">Today cost</div>
-              <div class="text-[var(--color-text)] tabular-nums text-[12px]">{formatCost(agent.todayCost ?? 0)}</div>
+      <div class="agent-info-banner px-5 py-4 min-w-0 bg-[var(--color-agent-banner)]">
+        <div class="flex items-center gap-3.5">
+          <AgentAvatar agentId={agent.id} name={agent.name} size={52} />
+          <div class="flex-1 min-w-0">
+            <div class="flex items-center gap-2">
+              <h2 title={agent.name || agent.id} class="text-[16px] font-semibold tracking-tight text-[var(--color-text)] truncate">{agent.name || agent.id}</h2>
+              {isMain && <span class="shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium bg-[var(--color-accent-soft)] text-[var(--color-accent)]">Main</span>}
+              <AgentSuggestionBadge agentId={agent.id} suggestions={suggestions} onOpen={onOpenSuggestion} />
             </div>
-          )}
+            <div class="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[var(--color-text-muted)]">
+              <AgentStatusBadge running={agent.running} />
+              <span aria-hidden="true" class="h-3 border-l border-[var(--color-border-strong)]" />
+              <span aria-label="Agent activity summary" class="inline-flex items-center gap-1 text-[var(--color-text-faint)]">Turns today <span class="font-medium tabular-nums text-[var(--color-text-muted)]">{agent.todayTurns ?? 0}</span></span>
+              {showCosts.value && <span class="text-[var(--color-text-faint)] tabular-nums">· {formatCost(agent.todayCost ?? 0)}</span>}
+            </div>
+          </div>
+          <button type="button" onClick={() => onOpen()} title="Agent settings" aria-label={`Open settings for ${agent.name || agent.id}`}
+            class="shrink-0 h-8 w-8 inline-flex items-center justify-center rounded-lg text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors focus-visible:outline-2 focus-visible:outline-[var(--color-accent)]">
+            <Settings2 size={17} />
+          </button>
         </div>
-        <span class="shrink-0 pb-0.5">
-          {agent.running ? <Pill tone="done">running</Pill> : <Pill tone="cancelled">offline</Pill>}
-        </span>
       </div>
-
-      <div class="flex items-center gap-1">
-        {agent.running ? (
-          <button
-            type="button"
-            onClick={() => run('stop')}
-            disabled={busy !== null || isMain}
-            class="h-8 flex-1 inline-flex items-center justify-center gap-1 px-2.5 rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-card)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-            title={isMain ? 'Main agent cannot be stopped from the dashboard' : 'Stop this agent'}
-          >
-            <Power size={12} /> {busy === 'stop' ? 'Stopping…' : 'Stop'}
-          </button>
+      <div class="px-5 py-3 flex-1 min-w-0 border-b border-[var(--color-border-strong)]">
+        <p title={agent.description} class="text-[12px] text-[var(--color-text-muted)] leading-[1.65] line-clamp-2 min-h-[3.3em]">{agent.description || 'No description yet.'}</p>
+      </div>
+      <div class="px-5 py-4 min-w-0">
+        <AgentCardControls agent={agent} catalog={catalog} onChange={onChange} onConfigureProvider={() => onOpen('provider')} />
+      </div>
+      <div class="flex items-center gap-2 border-t border-[var(--color-border)] px-5 py-3 bg-[var(--color-bg)]/30 min-h-[58px]">
+        {isMain ? (
+          <span class="text-[11px] text-[var(--color-text-faint)]">Start and stop from the host</span>
         ) : (
-          <button
-            type="button"
-            onClick={() => run('start')}
-            disabled={busy !== null || isMain}
-            class="h-8 flex-1 inline-flex items-center justify-center gap-1 px-2.5 rounded text-[11px] bg-[var(--color-accent-soft)] text-[var(--color-accent)] hover:bg-[var(--color-accent)] hover:text-white border border-[var(--color-accent-soft)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            <Power size={12} /> {busy === 'start' ? 'Starting…' : 'Start'}
-          </button>
+          <>
+            <button type="button" onClick={() => run(agent.running ? 'stop' : 'start')} disabled={busy !== null}
+              class={`control-button h-8 flex-1 inline-flex items-center justify-center gap-1.5 px-3 rounded-md text-[11px] border transition-colors disabled:opacity-40 ${agent.running ? 'border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)]' : 'control-accent'}`}>
+              <Power size={13} />{busy === 'stop' ? 'Stopping…' : busy === 'start' ? 'Starting…' : agent.running ? 'Stop' : 'Start'}
+            </button>
+            <button type="button" onClick={() => run('restart')} disabled={busy !== null}
+              class="h-8 flex-1 inline-flex items-center justify-center gap-1.5 px-3 rounded-md text-[11px] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] transition-colors disabled:opacity-40">
+              <RotateCcw size={13} class={busy === 'restart' ? 'animate-spin' : ''} />{busy === 'restart' ? 'Restarting…' : 'Restart'}
+            </button>
+            <button type="button" onClick={() => run('delete')} disabled={busy !== null} title="Delete agent" aria-label={`Delete ${agent.name || agent.id}`}
+              class="ml-1 h-8 w-8 shrink-0 inline-flex items-center justify-center rounded-md text-[var(--color-text-faint)] hover:text-[var(--color-status-failed)] hover:bg-[var(--color-control-hover)] transition-colors disabled:opacity-40">
+              <Trash2 size={14} />
+            </button>
+          </>
         )}
-        <button
-          type="button"
-          onClick={onOpen}
-          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] hover:border-[var(--color-border-strong)] transition-colors"
-          title="Agent details"
-          aria-label={`Open details for ${agent.name || agent.id}`}
-        >
-          <Info size={13} />
-        </button>
-        <Link
-          href={`/agents/${agent.id}/files`}
-          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors"
-          title="Edit persona + config"
-        >
-          <FileText size={13} />
-        </Link>
-        <button
-          type="button"
-          onClick={() => run('restart')}
-          disabled={busy !== null || isMain}
-          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Restart"
-        >
-          <RotateCcw size={13} class={busy === 'restart' ? 'animate-spin' : ''} />
-        </button>
-        <button
-          type="button"
-          onClick={() => run('delete')}
-          disabled={busy !== null || isMain}
-          class="h-8 w-8 inline-flex items-center justify-center rounded text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] hover:text-[var(--color-status-failed)] border border-[var(--color-border)] hover:border-[var(--color-status-failed)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          title="Delete"
-        >
-          <Trash2 size={14} />
-        </button>
       </div>
-    </div>
+    </article>
   );
 }
 
-// Model selection inline on the card, since it's the most-changed setting.
-// Only providers with a real selectable model get a dropdown — opencode,
-// gemini and acp keep their model in their own CLI config, so for those this
-// stays a button into the provider modal rather than a dropdown that lies.
-function ModelDropdown({ agent, catalog, onChange, onConfigureProvider }: {
+function AgentCardControls({ agent, catalog, onChange, onConfigureProvider }: {
   agent: Agent;
   catalog: RuntimeOption[];
   onChange: () => void;
   onConfigureProvider: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const selectable = agent.provider?.type === 'claude' || agent.provider?.type === 'openai';
-  const cls = 'h-8 w-full min-w-0 rounded font-medium border px-2 text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] border-[var(--color-border)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors disabled:opacity-40';
+  const saving = useRef(false);
+  const options = agent.runtimeOptions;
+  const fields = [
+    { field: 'runtimeMode', label: options?.modeLabel || 'Effort', choices: options?.modeOptions, value: agent.runtimeMode ?? agent.provider?.runtimeMode ?? '' },
+    { field: 'thinkingMode', label: options?.thinkingLabel || 'Thinking', choices: options?.thinkingOptions, value: agent.thinkingMode ?? agent.provider?.thinkingMode ?? '' },
+  ].filter((field) => field.choices?.length);
 
-  if (!selectable || !catalog.length) {
-    return (
-      <button
-        type="button"
-        onClick={onConfigureProvider}
-        class={cls + ' inline-flex items-center justify-center gap-1'}
-        title={`Configure provider and model · provider: ${providerLabel(agent.provider)}`}
-      >
-        {modelLabel(agent.model)}
-      </button>
-    );
-  }
-
-  // A model set outside the curated list (custom id) still needs to display and
-  // stay selected, so it gets its own leading entry.
-  const known = catalog.some((o) => o.id === agent.model);
-
-  async function save(value: string) {
+  async function save(field: 'model' | 'runtimeMode' | 'thinkingMode', value: string) {
     if (value === '__custom__') { onConfigureProvider(); return; }
-    if (value === agent.model) return;
+    const current = field === 'model' ? agent.model : fields.find((item) => item.field === field)?.value;
+    if (saving.current || value === current) return;
+    saving.current = true;
     setBusy(true);
     try {
-      const res = await apiPatch<{ restartRequired: boolean; cleared?: Array<{ label: string; value: string }> }>(
-        `/api/agents/${agent.id}/model`,
-        { model: value },
+      const result = await apiPatch<{ restartRequired?: boolean; cleared?: Array<{ label: string; value: string }> }>(
+        `/api/agents/${agent.id}/${field === 'model' ? 'model' : 'runtime'}`, { [field]: value },
       );
-      // The server drops effort/thinking values the new model can't honour.
-      // Say so, otherwise the neighbouring dropdown appears to reset itself.
-      if (res?.cleared?.length) {
-        pushToast({
-          tone: 'info',
-          title: `Switched to ${modelLabel(value)}`,
-          description: res.cleared.map((c) => `${c.label} reset (${c.value} not supported)`).join('; '),
-        });
-      } else if (res?.restartRequired) {
-        pushToast({ tone: 'info', title: 'Model saved', description: `Restart ${agent.id} to apply.` });
-      }
-      onChange();
+      const notices = result.cleared?.map((item) => `${item.label} reset (${item.value} not supported)`) ?? [];
+      if (result.restartRequired) notices.push(`Restart ${agent.name || agent.id} to apply.`);
+      pushToast({ tone: 'success', title: field === 'model' ? 'Model saved' : 'Runtime setting saved', description: notices.join('; ') || 'Applies to the next message.' });
     } catch (err: any) {
-      pushToast({ tone: 'error', title: 'Model change failed', description: err?.message || String(err) });
-      onChange();
+      pushToast({ tone: 'error', title: 'Change failed', description: err?.message || String(err) });
     } finally {
+      onChange();
+      saving.current = false;
       setBusy(false);
     }
   }
 
-  return (
-    <select
-      value={agent.model}
-      disabled={busy}
-      title={`Model · provider: ${providerLabel(agent.provider)}`}
-      onChange={(e) => save((e.target as HTMLSelectElement).value)}
-      class={cls}
-    >
-      {!known && agent.model && <option value={agent.model}>{modelLabel(agent.model)}</option>}
-      {catalog.map((o) => (
-        <option key={o.id} value={o.id}>{o.label}</option>
-      ))}
-      <option value="__custom__">Custom…</option>
-    </select>
-  );
-}
+  const controlClass = 'min-w-0 rounded-md border border-[var(--color-border)] bg-[var(--color-elevated)] text-[var(--color-text)] hover:border-[var(--color-border-strong)] focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] transition-colors disabled:opacity-40';
+  const selectable = (agent.provider?.type === 'claude' || agent.provider?.type === 'openai') && catalog.length > 0;
 
-// Inline effort / thinking pills beside the model pill, so the common tweak
-// doesn't require opening the provider modal. One <select> per option list the
-// model actually advertises — a model with no lists renders nothing.
-function RuntimeDropdowns({ agent, onChange }: { agent: Agent; onChange: () => void }) {
-  const [busy, setBusy] = useState<string | null>(null);
-  const opts = agent.runtimeOptions;
-  if (!opts) return null;
+  const labelClass = 'block mb-1.5 text-[9px] uppercase tracking-wider text-[var(--color-text-faint)] truncate';
 
-  const fields: Array<{ field: 'runtimeMode' | 'thinkingMode'; label: string; options: RuntimeOption[]; current: string }> = [];
-  if (opts.modeOptions?.length) {
-    fields.push({
-      field: 'runtimeMode',
-      label: opts.modeLabel || 'Effort',
-      options: opts.modeOptions,
-      current: agent.runtimeMode || '',
-    });
-  }
-  if (opts.thinkingOptions?.length) {
-    fields.push({
-      field: 'thinkingMode',
-      label: opts.thinkingLabel || 'Thinking',
-      options: opts.thinkingOptions,
-      current: agent.thinkingMode || '',
-    });
-  }
-  if (!fields.length) return null;
-
-  async function save(field: 'runtimeMode' | 'thinkingMode', value: string) {
-    setBusy(field);
-    try {
-      const res = await apiPatch<{ changed?: boolean; newChatRequired?: boolean; sessionReset?: boolean; restartRequired: boolean }>(
-        `/api/agents/${agent.id}/runtime`,
-        { [field]: value },
-      );
-      if (res?.changed) {
-        pushToast({
-          tone: 'info',
-          title: 'Runtime setting applied',
-          description: 'Conversation continuity was preserved. The next Telegram footer will note the runtime change.',
-        });
-      }
-      onChange();
-    } catch (err: any) {
-      // The server rejects values the model doesn't support (e.g. xhigh on
-      // Sonnet 4.6) — surface that instead of leaving the select looking applied.
-      pushToast({ tone: 'error', title: 'Update failed', description: err?.message || String(err) });
-      onChange();
-    } finally {
-      setBusy(null);
-    }
-  }
-
-  return (
-    <>
-      {fields.map((f) => {
-        return (
-          <ControlField key={f.field} label={f.label}>
-            <select
-              value={f.options.some((o) => o.id === f.current) ? f.current : ''}
-              disabled={busy !== null}
-              title={`${f.label}: ${f.options.find((o) => o.id === f.current)?.label ?? 'Default'}`}
-              aria-label={f.label}
-              onChange={(e) => save(f.field, (e.target as HTMLSelectElement).value)}
-              class="h-8 w-full min-w-0 rounded font-medium border px-2 text-[11px] bg-[var(--color-elevated)] text-[var(--color-text-muted)] border-[var(--color-border)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)] transition-colors disabled:opacity-40"
-            >
-              {f.options.map((o) => (
-                <option key={o.id} value={o.id}>{o.label}</option>
-              ))}
-            </select>
-          </ControlField>
-        );
-      })}
-    </>
-  );
-}
-
-function ControlField({ label, children }: { label: string; children: any }) {
-  return (
-    <label class="block min-w-0">
-      <span class="block mb-1 text-[9px] uppercase tracking-wider text-[var(--color-text-faint)] truncate" title={label}>
-        {label}
-      </span>
-      {children}
-    </label>
-  );
+  return <div class="grid min-w-0 gap-2" style={{ gridTemplateColumns: fields.length === 2 ? 'minmax(0, 1fr) minmax(0, 1.3fr) minmax(0, 1fr)' : `repeat(${fields.length + 1}, minmax(0, 1fr))` }} aria-busy={busy}>
+    <div class="min-w-0">
+      <button type="button" disabled={busy} onClick={onConfigureProvider}
+        aria-label={`Configure provider for ${agent.name || agent.id}`} title="Change provider"
+        class="block w-full min-w-0 rounded text-left hover:underline focus-visible:outline-2 focus-visible:outline-[var(--color-accent)] disabled:opacity-40">
+        <span class={labelClass}>Model: {providerLabel(agent.provider)}</span>
+      </button>
+      {selectable ? <select aria-label="Model" title={`Model: ${modelLabel(agent.model)}`} value={agent.model} disabled={busy}
+        onChange={(event) => save('model', event.currentTarget.value)} class={`${controlClass} w-full h-8 px-2 text-[11px] font-medium truncate`}>
+        {!catalog.some((option) => option.id === agent.model) && <option value={agent.model}>{modelLabel(agent.model) || 'Provider default'}</option>}
+        {catalog.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+        <option value="__custom__">Custom…</option>
+      </select> : <button type="button" disabled={busy} onClick={onConfigureProvider} aria-label={`Configure model for ${agent.name || agent.id}`}
+        title={agent.model || 'Configure model'} class={`${controlClass} w-full h-8 px-2 text-left text-[11px] font-medium truncate`}>
+        {modelLabel(agent.model) || 'Provider default'}
+      </button>}
+    </div>
+    {fields.length > 0 && <div class="contents" aria-label="Agent runtime levels">
+      {fields.map((field) => <label key={field.field} class="block min-w-0">
+        <span class={labelClass}>{field.label === 'Reasoning effort' ? 'Effort' : field.label}</span>
+        <select value={field.value} disabled={busy} aria-label={field.label}
+          title={`${field.label}: ${field.choices?.find((choice) => choice.id === field.value)?.label ?? (field.value || 'Default')}`}
+          onChange={(event) => save(field.field as 'runtimeMode' | 'thinkingMode', event.currentTarget.value)}
+          class={`${controlClass} w-full h-8 px-2 text-[11px] font-medium truncate`}>
+          {!field.choices?.some((choice) => choice.id === field.value) && <option value={field.value}>{field.value || 'Default'}</option>}
+          {field.choices?.map((choice) => <option key={choice.id} value={choice.id}>{choice.label}</option>)}
+        </select>
+      </label>)}
+    </div>}
+  </div>;
 }
 
 function providerLabel(provider?: ProviderConfig): string {
@@ -528,72 +354,6 @@ function providerLabel(provider?: ProviderConfig): string {
   if (provider.type === 'openrouter') return 'OpenRouter';
   if (provider.type === 'anthropic-compatible') return 'Z.ai (GLM)';
   return 'ACP';
-}
-
-function AgentProviderModal({ agent, onClose, onChange }: { agent: Agent | null; onClose: () => void; onChange: () => void }) {
-  const [busy, setBusy] = useState(false);
-  const providerStatus = useFetch<{ providers?: ProviderOption[] }>('/api/provider/status', 30_000);
-  if (!agent) return null;
-  const currentAgent = agent;
-
-  async function save(provider: ProviderConfig) {
-    if (provider.type === 'acp' && !provider.command?.trim()) {
-      pushToast({ tone: 'error', title: 'Command required', description: 'Custom ACP needs a command.' });
-      return;
-    }
-    setBusy(true);
-    try {
-      const res = await apiPatch<{
-        changed?: boolean;
-        sessionReset?: boolean;
-        restartRequired: boolean;
-      }>(`/api/agents/${currentAgent.id}/provider`, { provider });
-      onChange();
-      if (res.changed === false) {
-        // Closing an unchanged dialog is a no-op, not a restart-worthy event.
-      } else if (res.restartRequired) {
-        pushToast({
-          tone: 'warn',
-          title: currentAgent.id + ' needs a restart',
-          description: 'Provider config saved. Restart this agent before it uses the new provider.',
-          durationMs: 0,
-          action: {
-            label: 'Restart now',
-            run: async () => {
-              await apiPost(`/api/agents/${currentAgent.id}/restart`);
-              pushToast({ tone: 'success', title: currentAgent.id + ' restarting', description: 'Should be live again in a few seconds.' });
-              setTimeout(onChange, 2500);
-            },
-          },
-        });
-      } else {
-        pushToast({
-          tone: 'success',
-          title: 'Provider saved',
-          description: res.sessionReset
-            ? 'The next message starts a new conversation with this provider.'
-            : 'Takes effect on the next message.',
-        });
-      }
-      onClose();
-    } catch (err: any) {
-      pushToast({ tone: 'error', title: 'Provider save failed', description: err?.message || String(err), durationMs: 7000 });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Modal open={!!currentAgent} onClose={onClose} title={`${currentAgent.name || currentAgent.id} Provider Setup`} width={520}>
-      <ProviderConfigEditor
-        value={currentAgent.provider}
-        fallbackModel={currentAgent.model}
-        providers={providerStatus.data?.providers}
-        onSave={save}
-        busy={busy}
-      />
-    </Modal>
-  );
 }
 
 // ── Wizard ───────────────────────────────────────────────────────────
@@ -723,7 +483,7 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
                 type="button"
                 onClick={() => { if (idValid && name && description) setStep(2); }}
                 disabled={!idValid || !name || !description}
-                class="ml-auto px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                class="control-button ml-auto px-3 py-1.5 rounded text-[12px] font-medium control-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 Next: Bot token →
               </button>
@@ -736,7 +496,7 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
                 type="button"
                 onClick={create}
                 disabled={!tokenValid || creating}
-                class="ml-auto px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                class="control-button ml-auto px-3 py-1.5 rounded text-[12px] font-medium control-accent transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {creating ? 'Creating…' : 'Create Agent'}
               </button>
@@ -744,12 +504,12 @@ function CreateAgentWizard({ open, onClose, onCreated, prefill }: CreateAgentWiz
           )}
           {step === 3 && (
             <>
-              <button type="button" onClick={close} class="px-3 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors">Done</button>
+              <button type="button" onClick={close} class="control-button px-3 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] transition-colors">Close</button>
               <button
                 type="button"
                 onClick={activate}
                 disabled={activating}
-                class="ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors disabled:opacity-40"
+                class="control-button ml-auto inline-flex items-center gap-1 px-3 py-1.5 rounded text-[12px] font-medium control-accent transition-colors disabled:opacity-40"
               >
                 <Power size={12} /> {activating ? 'Activating…' : 'Activate (start service)'}
               </button>

@@ -167,8 +167,8 @@ function CacheTokensPanel() {
               <button
                 key={w.days}
                 onClick={() => setDays(w.days)}
-                class={'px-2 py-0.5 text-[10px] tabular-nums ' + (days === w.days
-                  ? 'bg-[var(--color-accent)] text-white'
+                class={'control-button px-2 py-0.5 text-[10px] tabular-nums ' + (days === w.days
+                  ? 'control-accent'
                   : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]')}
               >
                 {w.label}

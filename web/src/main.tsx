@@ -2,6 +2,8 @@ import { render } from 'preact';
 import { App } from './App';
 import './styles/main.css';
 import './lib/theme';       // initializes the theme effect on import
+import './lib/appearance';  // applies the selected light/dark/system mode
+import './lib/typography';  // applies the saved text weight
 import './lib/api';         // initializes the dashboard token cache from URL
 import { startChatStream } from './lib/chat-stream';
 

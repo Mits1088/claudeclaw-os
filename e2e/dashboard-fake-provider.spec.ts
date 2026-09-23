@@ -1,6 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 
-type ProviderType = 'opencode' | 'gemini' | 'acp-codex' | 'claude' | 'acp';
+type ProviderType = 'opencode' | 'gemini' | 'acp-codex' | 'claude' | 'acp' | 'openai' | 'openrouter' | 'anthropic-compatible';
 
 // Mirrors src/provider-registry.ts with the experimental tier enabled. The
 // Settings provider section renders only when /api/health advertises more than
@@ -93,10 +93,22 @@ async function installFakeDashboard(page: Page) {
     }
     if (path === '/api/security/status') return json({});
     if (path === '/api/agents') {
+      const model = provider.model || (provider.type === 'claude' ? 'claude-opus-4-6' : provider.type === 'openai' ? 'gpt-5.5' : 'fake-model');
+      const nativeRuntime = provider.type === 'claude' || provider.type === 'openai';
       return json({
         agents: [
-          { id: 'main', name: 'Main', description: '', model: 'fake-model', running: true, todayTurns: 2, todayCost: 0, provider },
+          {
+            id: 'main', name: 'Main', description: '', model, running: true, todayTurns: 2, todayCost: 0, provider,
+            runtimeMode: provider.runtimeMode || '', thinkingMode: provider.thinkingMode || '',
+            runtimeOptions: nativeRuntime ? {
+              modeLabel: 'Effort', thinkingLabel: 'Thinking',
+              modeOptions: [{ id: '', label: 'Default' }, { id: 'low', label: 'Low' }, { id: 'high', label: 'High' }],
+              thinkingOptions: [{ id: '', label: 'Default' }, { id: 'on', label: 'On' }, { id: 'off', label: 'Off' }],
+            } : null,
+          },
         ],
+        claudeModels: [{ id: 'claude-opus-4-6', label: 'Opus 4.6' }, { id: 'claude-sonnet-4-6', label: 'Sonnet 4.6' }],
+        openaiModels: [{ id: 'gpt-5.5', label: 'GPT-5.5' }, { id: 'gpt-5.4-mini', label: 'GPT-5.4 mini' }],
       });
     }
     if (path === '/api/chat/history') return json({ turns: [] });
@@ -113,7 +125,7 @@ async function installFakeDashboard(page: Page) {
           : selected === 'claude'
             ? [{ id: 'claude-opus-4-6', label: 'Opus 4.6' }]
             : [{ id: selected + '-default', label: selected + ' default' }],
-        defaultModel: selected === 'acp-codex' ? 'gpt-5.5' : selected + '-default',
+        defaultModel: selected === 'acp-codex' ? 'gpt-5.5' : selected === 'claude' ? 'claude-opus-4-6' : selected === 'openai' ? 'gpt-5.5' : selected + '-default',
         selectable: true,
         allowCustom: true,
       });
@@ -136,6 +148,16 @@ async function installFakeDashboard(page: Page) {
       const body = JSON.parse(req.postData() || '{}');
       provider = body.provider;
       return json({ ok: true, agent: 'main', provider, restartRequired: false });
+    }
+    if (path === '/api/agents/main/model' && req.method() === 'PATCH') {
+      const body = JSON.parse(req.postData() || '{}');
+      provider = { ...provider, model: body.model };
+      return json({ ok: true, agent: 'main', model: body.model, changed: true, sessionReset: true, restartRequired: false, cleared: [] });
+    }
+    if (path === '/api/agents/main/runtime' && req.method() === 'PATCH') {
+      const body = JSON.parse(req.postData() || '{}');
+      provider = { ...provider, ...body };
+      return json({ ok: true, agent: 'main', changed: true, sessionReset: false, restartRequired: false, ...body });
     }
     if (path === '/api/chat/send' && req.method() === 'POST') {
       processing = true;
@@ -161,7 +183,7 @@ test.beforeEach(async ({ page }) => {
 test('sidebar runtime is a read-only provider and model summary', async ({ page }) => {
   await page.goto('/agents?token=test&chatId=e2e');
 
-  const runtime = page.getByLabel('Active runtime');
+  const runtime = page.getByLabel('System status');
   await expect(runtime).toBeVisible();
   await expect(runtime.getByText('Runtime', { exact: true })).toBeVisible();
   await expect(runtime.getByText('OpenCode', { exact: true })).toBeVisible();
@@ -169,47 +191,101 @@ test('sidebar runtime is a read-only provider and model summary', async ({ page 
   await expect(page.getByLabel('Switch main provider')).toHaveCount(0);
 });
 
-test('agent card uses explicit detail and provider-setup buttons', async ({ page }) => {
+test('agent cards keep a general settings entry and add direct provider controls', async ({ page }) => {
   await page.goto('/agents?token=test&chatId=e2e');
+  const card = page.getByRole('group', { name: 'Main agent', exact: true });
+  const settingsButton = card.getByRole('button', { name: 'Open settings for Main' });
+  const providerButton = card.getByRole('button', { name: 'Configure provider for Main' });
+  await expect(settingsButton).toBeVisible();
+  await expect(providerButton).toHaveText('Model: OpenCode');
+  await expect(card.getByRole('button', { name: 'Configure model for Main' })).toBeVisible();
+  await expect(card.getByRole('combobox')).toHaveCount(0);
+  await expect(card.getByLabel('Agent status')).toHaveText('Online');
 
-  const agentDetails = page.getByRole('button', { name: 'Open details for Main' });
-  const providerSetup = page.getByRole('button', { name: 'Configure provider for Main' });
-  await expect(agentDetails).toBeVisible();
-  await expect(providerSetup).toBeVisible();
-  await expect(
-    page.getByLabel('Agent activity summary').getByText('running', { exact: true }),
-  ).toBeVisible();
+  // Reading the activity summary remains inert.
+  await card.getByLabel('Agent activity summary').click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 
-  // Neutral card content is no longer a hidden modal trigger.
-  await page.getByText('Today turns', { exact: true }).click();
-  await expect(page.getByText('Set on Telegram')).toHaveCount(0);
+  // The provider name is a direct shortcut into the Provider section.
+  await providerButton.click();
+  let settings = page.getByRole('dialog', { name: 'Main · Agent settings' });
+  await expect(settings.getByRole('button', { name: 'Provider', exact: true })).toHaveAttribute('aria-current', 'page');
+  await expect(settings.getByRole('group', { name: 'Provider choices' })).toBeVisible();
+  await settings.getByRole('button', { name: 'Close', exact: true }).click();
 
-  await agentDetails.click();
-  const agentModalContent = page.getByText('Set on Telegram');
-  await expect(agentModalContent).toBeVisible();
-  await agentModalContent
-    .locator('xpath=ancestor::div[contains(@class, "fixed inset-0")][1]')
-    .getByRole('button')
-    .first()
-    .click();
-  await expect(agentModalContent).toHaveCount(0);
-
-  await providerSetup.click();
-  const providerModalTitle = page.getByText('Main Provider Setup');
-  await expect(providerModalTitle).toBeVisible();
-  await providerModalTitle
-    .locator('xpath=ancestor::div[contains(@class, "fixed inset-0")][1]')
-    .getByRole('button')
-    .first()
-    .click();
-  await expect(providerModalTitle).toHaveCount(0);
-
-  const agentDetailsBox = await agentDetails.boundingBox();
-  const fileBox = await page.getByTitle('Edit persona + config').boundingBox();
-  expect(agentDetailsBox).not.toBeNull();
-  expect(fileBox).not.toBeNull();
-  expect(Math.abs(agentDetailsBox!.height - fileBox!.height)).toBeLessThanOrEqual(1);
+  // The gear still opens the profile overview for less-frequent settings.
+  await settingsButton.click();
+  settings = page.getByRole('dialog', { name: 'Main · Agent settings' });
+  await expect(settings.getByText('Set on Telegram')).toBeVisible();
+  await settings.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(settings).toHaveCount(0);
 });
+
+test('Escape dismisses a themed model picker before closing agent settings', async ({ page }) => {
+  await page.goto('/agents?token=test&chatId=e2e');
+  test.skip(!await page.evaluate(() => CSS.supports('appearance', 'base-select')), 'Requires a customizable native select');
+  await openProviderSettings(page);
+  await selectProvider(page, 'claude');
+  const settings = page.getByRole('dialog', { name: 'Main · Agent settings' });
+  const picker = settings.getByRole('combobox', { name: 'Model', exact: true });
+  await expect(picker).toBeEnabled();
+  await picker.click();
+  await expect(settings.locator('select:open')).toHaveCount(1);
+
+  await page.keyboard.press('Escape');
+  await expect(settings.locator('select:open')).toHaveCount(0);
+  await expect(settings).toBeVisible();
+  await expect(settings.getByText('Discard unsaved changes?', { exact: true })).toHaveCount(0);
+
+  await page.keyboard.press('Escape');
+  await expect(settings.getByText('Discard unsaved changes?', { exact: true })).toBeVisible();
+});
+
+test('native provider cards save model and runtime changes inline', async ({ page }) => {
+  await page.goto('/agents?token=test&chatId=e2e');
+  const card = page.getByRole('group', { name: 'Main agent', exact: true });
+
+  await card.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await selectProvider(page, 'claude');
+  await saveProvider(page);
+
+  const model = card.getByRole('combobox', { name: 'Model', exact: true });
+  await expect(model).toHaveValue('claude-opus-4-6');
+  const modelRequest = page.waitForRequest((request) => request.url().includes('/api/agents/main/model') && request.method() === 'PATCH');
+  await model.selectOption('claude-sonnet-4-6');
+  expect((await modelRequest).postDataJSON()).toEqual({ model: 'claude-sonnet-4-6' });
+  await expect(model).toHaveValue('claude-sonnet-4-6');
+
+  const effort = card.getByRole('combobox', { name: 'Effort', exact: true });
+  const runtimeRequest = page.waitForRequest((request) => request.url().includes('/api/agents/main/runtime') && request.method() === 'PATCH');
+  await effort.selectOption('high');
+  expect((await runtimeRequest).postDataJSON()).toEqual({ runtimeMode: 'high' });
+  await expect(effort).toHaveValue('high');
+});
+
+test('provider settings use a compact picker on narrow screens', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 760 });
+  await page.goto('/agents?token=test&chatId=e2e');
+  await openProviderSettings(page);
+
+  const picker = page.getByRole('combobox', { name: 'Provider', exact: true });
+  await expect(picker).toBeVisible();
+  await expect(page.getByRole('group', { name: 'Provider choices' })).toBeHidden();
+  await picker.selectOption('openai');
+  await expect(picker).toHaveValue('openai');
+  await expect(page.getByText('OpenAI configuration')).toBeVisible();
+});
+
+async function openProviderSettings(page: Page) {
+  await page.getByRole('button', { name: 'Open settings for Main' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Provider', exact: true }).click();
+}
+
+async function selectProvider(page: Page, type: ProviderType) {
+  const choice = page.getByRole('dialog').locator(`[data-provider="${type}"]`);
+  await expect(choice).toBeVisible();
+  await choice.click();
+}
 
 /**
  * Clicks "Save provider" and resolves only when THIS save's PATCH has come
@@ -233,18 +309,20 @@ async function saveProvider(page: Page) {
   await page.getByRole('button', { name: /save provider/i }).click();
   const response = await saveResponse;
   expect(response.ok()).toBe(true);
+  // Settings stay open after saving so another section can be edited.
+  await expect(page.getByRole('button', { name: 'Reset', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Close', exact: true }).click();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
 }
 
 test('provider picker switches built-in and custom providers', async ({ page }) => {
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await openProviderSettings(page);
 
-  await expect(page.getByText('Main Provider Setup')).toBeVisible();
-  const picker = page.getByLabel('Provider', { exact: true });
-
+  await expect(page.getByText('Main · Agent settings')).toBeVisible();
   for (const provider of ['claude', 'opencode', 'gemini', 'acp-codex'] as ProviderType[]) {
-    if (provider !== 'claude') await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-    await picker.selectOption(provider);
+    if (provider !== 'claude') await openProviderSettings(page);
+    await selectProvider(page, provider);
     if (provider === 'acp-codex') {
       // The model list is fetched per provider, so wait for THIS provider's
       // options to land rather than selecting into the previous provider's
@@ -264,14 +342,11 @@ test('provider picker switches built-in and custom providers', async ({ page }) 
   await expect(page.getByRole('main').getByText('gpt-5.5')).toBeVisible();
 
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-  const customPicker = page.getByLabel('Provider', { exact: true });
-  await customPicker.selectOption('acp');
+  await openProviderSettings(page);
+  await selectProvider(page, 'acp');
   await page.getByPlaceholder('my-acp-agent').fill('fake-acp');
   await page.getByPlaceholder('--acp').fill('--stdio --verbose');
   await saveProvider(page);
-  // Fresh page load, so no stale toast — the message is a real signal here.
-  await expect(page.getByText('Provider saved').first()).toBeVisible();
 });
 
 // Legacy boundary: `codex` was the pre-rename id for the Codex-over-ACP
@@ -280,12 +355,11 @@ test('provider picker switches built-in and custom providers', async ({ page }) 
 // a provider id that no longer exists in the registry.
 test('the provider picker offers acp-codex and never the legacy codex id', async ({ page }) => {
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await openProviderSettings(page);
 
-  const picker = page.getByLabel('Provider', { exact: true });
-  await expect(picker.locator('option[value="acp-codex"]')).toHaveCount(1);
-  const values = await picker.locator('option').evaluateAll(
-    (options) => options.map((option) => (option as HTMLOptionElement).value),
+  const choices = page.getByRole('dialog').locator('[data-provider]');
+  const values = await choices.evaluateAll(
+    (options) => options.map((option) => option.getAttribute('data-provider')),
   );
 
   expect(values).toContain('acp-codex');
@@ -301,15 +375,15 @@ test('dashboard status shows active provider and model in chat', async ({ page }
   await expect(page.getByRole('main').getByText('opencode')).toBeVisible();
 
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-  await page.getByLabel('Provider', { exact: true }).selectOption('acp-codex');
+  await openProviderSettings(page);
+  await selectProvider(page, 'acp-codex');
   const modelPicker = page.getByRole('combobox', { name: 'Model', exact: true });
   await expect(modelPicker.locator('option[value="gpt-5.5"]')).toHaveCount(1);
   await modelPicker.selectOption('gpt-5.5');
   await saveProvider(page);
 
   await page.goto('/chat?token=test&chatId=e2e');
-  await expect(page.getByLabel('Active runtime').getByText('Codex (ACP)', { exact: true })).toBeVisible();
+  await expect(page.getByLabel('System status').getByText('Codex (ACP)', { exact: true })).toBeVisible();
   await expect(page.getByRole('main').getByText('gpt-5.5')).toBeVisible();
 });
 
@@ -409,9 +483,8 @@ test('Z.ai setup shows models, saves a masked key, and clears it on provider swi
     return route.fulfill({ json: { configured, enabled: true, ready: configured, canEdit: true, legacyKey: false, message: configured ? 'API key configured.' : 'Add your Z.ai API key to finish setup.' } });
   });
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-  const picker = page.getByRole('combobox').first();
-  await picker.selectOption('anthropic-compatible');
+  await openProviderSettings(page);
+  await selectProvider(page, 'anthropic-compatible');
   await expect(page.getByRole('combobox', { name: 'Model', exact: true })).toHaveValue('anthropic-compatible-default');
   await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeDisabled();
   const password = page.locator('input[aria-label="Z.ai API key"]');
@@ -424,8 +497,8 @@ test('Z.ai setup shows models, saves a masked key, and clears it on provider swi
   await expect(page.getByText('Key saved. Restart other running agents', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Replace API key' }).click();
   await password.fill('unsaved-secret');
-  await picker.selectOption('claude');
-  await picker.selectOption('anthropic-compatible');
+  await selectProvider(page, 'claude');
+  await selectProvider(page, 'anthropic-compatible');
   await page.getByRole('button', { name: 'Replace API key' }).click();
   await expect(password).toHaveValue('');
 });
@@ -438,8 +511,8 @@ test('Z.ai model failures remain visible and retry restores selection', async ({
   });
   await page.route('**/api/providers/zai/setup*', (route) => route.fulfill({ json: { configured: true, enabled: true, ready: true, canEdit: true, legacyKey: false, message: 'API key configured.' } }));
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-  await page.getByRole('combobox').first().selectOption('anthropic-compatible');
+  await openProviderSettings(page);
+  await selectProvider(page, 'anthropic-compatible');
   await expect(page.getByText('Could not load models.', { exact: false })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeDisabled();
   fail = false;
@@ -456,7 +529,7 @@ test('Z.ai preserves an existing custom endpoint when saving its model', async (
     return route.fulfill({ json: { configured: true, enabled: true, ready: true, canEdit: false, legacyKey: true, message: 'A custom endpoint is configured. Manage its credential in the server configuration.' } });
   });
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
+  await openProviderSettings(page);
   await expect(page.getByText('A custom endpoint is configured.', { exact: false })).toBeVisible();
   await expect(page.locator('input[aria-label="Z.ai API key"]')).toHaveCount(0);
   const request = page.waitForRequest((req) => req.url().includes('/api/agents/main/provider') && req.method() === 'PATCH');
@@ -471,8 +544,8 @@ test('Settings directs provider changes to the agent setup dialog', async ({ pag
   await expect(page.getByLabel('Provider', { exact: true })).toHaveCount(0);
   await page.getByRole('link', { name: 'Manage agent providers' }).click();
   await expect(page).toHaveURL(/\/agents/);
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-  await expect(page.getByText('Main Provider Setup')).toBeVisible();
+  await openProviderSettings(page);
+  await expect(page.getByText('Main · Agent settings')).toBeVisible();
 });
 
 test('OpenRouter setup shows models, saves a masked key, and clears it on provider switch', async ({ page }) => {
@@ -487,9 +560,8 @@ test('OpenRouter setup shows models, saves a masked key, and clears it on provid
     return route.fulfill({ json: { configured, enabled: true, ready: configured, canEdit: true, legacyKey: false, message: configured ? 'API key configured.' : 'Add your OpenRouter API key to finish setup.' } });
   });
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-  const picker = page.getByRole('combobox').first();
-  await picker.selectOption('openrouter');
+  await openProviderSettings(page);
+  await selectProvider(page, 'openrouter');
   await expect(page.getByRole('combobox', { name: 'Model', exact: true })).toHaveValue('openrouter-default');
   await expect(page.getByRole('button', { name: 'Save provider', exact: true })).toBeDisabled();
   const password = page.locator('input[aria-label="OpenRouter API key"]');
@@ -502,8 +574,8 @@ test('OpenRouter setup shows models, saves a masked key, and clears it on provid
   await expect(page.getByText('Key saved. OpenRouter will use it on the next turn.', { exact: false })).toBeVisible();
   await page.getByRole('button', { name: 'Replace API key' }).click();
   await password.fill('unsaved-secret');
-  await picker.selectOption('claude');
-  await picker.selectOption('openrouter');
+  await selectProvider(page, 'claude');
+  await selectProvider(page, 'openrouter');
   await page.getByRole('button', { name: 'Replace API key' }).click();
   await expect(password).toHaveValue('');
 });
@@ -521,8 +593,8 @@ test('OpenRouter search, free filter and server sort preserve the selected model
   });
   await page.route('**/api/providers/openrouter/setup*', (route) => route.fulfill({ json: { configured: true, enabled: true, ready: true, canEdit: true } }));
   await page.goto('/agents?token=test&chatId=e2e');
-  await page.getByRole('button', { name: 'Configure provider for Main' }).click();
-  await page.getByRole('combobox', { name: 'Provider', exact: true }).selectOption('openrouter');
+  await openProviderSettings(page);
+  await selectProvider(page, 'openrouter');
   const model = page.getByRole('combobox', { name: 'Model', exact: true });
   await expect(model).toHaveValue('paid/model');
   const searchBounds = await page.getByRole('searchbox', { name: 'Search models' }).boundingBox();

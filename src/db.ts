@@ -593,6 +593,9 @@ function runMigrations(database: Database.Database): void {
   addColumnIfMissing(database, 'scheduled_tasks', 'started_at', 'INTEGER');
   addColumnIfMissing(database, 'scheduled_tasks', 'last_status', 'TEXT');
   addColumnIfMissing(database, 'scheduled_tasks', 'acceptance_check', 'TEXT');
+  // Keep recurring activation separate from an in-flight execution. NULL on
+  // legacy running rows preserves their existing active-on-recovery behavior.
+  addColumnIfMissing(database, 'scheduled_tasks', 'resume_status', `TEXT CHECK (resume_status IN ('active', 'paused'))`);
 
   // ── Memory V2 migration ──────────────────────────────────────────────
   // Detect old schema (has 'sector' column but no 'importance') and migrate.
@@ -888,11 +891,12 @@ function runMigrations(database: Database.Database): void {
   `);
 }
 
-/** @internal - for tests only. Creates a fresh in-memory database. */
-export function _initTestDatabase(): void {
+/** @internal - for tests only. Defaults to memory; a test file can model restart recovery. */
+export function _initTestDatabase(databasePath = ':memory:'): void {
   // Use a test encryption key for field-level encryption
   encryptionKey = crypto.randomBytes(32);
-  db = new Database(':memory:');
+  if (db?.open) db.close();
+  db = new Database(databasePath);
   db.pragma('journal_mode = WAL');
   createSchema(db);
   runMigrations(db);
@@ -1423,6 +1427,8 @@ export interface ScheduledTask {
   started_at: number | null;
   last_status: 'success' | 'failed' | 'timeout' | null;
   acceptance_check: string | null;
+  /** Recurring activation to restore after execution or restart recovery. */
+  resume_status: 'active' | 'paused' | null;
 }
 
 export function createScheduledTask(
@@ -1465,16 +1471,20 @@ export function getAllScheduledTasks(agentId?: string): ScheduledTask[] {
  * scheduled occurrence. Advancing next_run immediately prevents the scheduler
  * from re-firing the same task on subsequent ticks while it is still executing
  * (double-fire bug), and survives process restarts since the value is persisted.
+ * Snapshot activation in the same write so a paused manual run remains paused
+ * even if its queued callback is lost. Repeated marks retain the saved state.
  */
 export function markTaskRunning(id: string, tentativeNextRun?: number): void {
   const now = Math.floor(Date.now() / 1000);
   if (tentativeNextRun !== undefined) {
     db.prepare(
-      `UPDATE scheduled_tasks SET status = 'running', started_at = ?, next_run = ? WHERE id = ?`,
+      `UPDATE scheduled_tasks SET resume_status = CASE WHEN status = 'running' THEN resume_status ELSE status END,
+       status = 'running', started_at = ?, next_run = ? WHERE id = ?`,
     ).run(now, tentativeNextRun, id);
   } else {
     db.prepare(
-      `UPDATE scheduled_tasks SET status = 'running', started_at = ? WHERE id = ?`,
+      `UPDATE scheduled_tasks SET resume_status = CASE WHEN status = 'running' THEN resume_status ELSE status END,
+       status = 'running', started_at = ? WHERE id = ?`,
     ).run(now, id);
   }
 }
@@ -1492,14 +1502,17 @@ export function updateTaskAfterRun(
   // completeMissionTask, issue #155).
   withBusyRetry(() =>
     db.prepare(
-      `UPDATE scheduled_tasks SET status = 'active', last_run = ?, next_run = ?, last_result = ?, last_status = ?, started_at = NULL WHERE id = ?`,
+      `UPDATE scheduled_tasks SET
+       status = CASE WHEN status = 'running' THEN COALESCE(resume_status, 'active') ELSE status END,
+       resume_status = NULL, last_run = ?, next_run = ?, last_result = ?, last_status = ?, started_at = NULL WHERE id = ?`,
     ).run(now, nextRun, safeResult.slice(0, 4000), lastStatus, id),
   );
 }
 
 export function resetStuckTasks(agentId: string): number {
   const result = db.prepare(
-    `UPDATE scheduled_tasks SET status = 'active', started_at = NULL WHERE status = 'running' AND agent_id = ?`,
+    `UPDATE scheduled_tasks SET status = COALESCE(resume_status, 'active'), resume_status = NULL,
+     started_at = NULL WHERE status = 'running' AND agent_id = ?`,
   ).run(agentId);
   return result.changes;
 }
@@ -1529,11 +1542,16 @@ export function updateScheduledTask(
 }
 
 export function pauseScheduledTask(id: string): void {
-  db.prepare(`UPDATE scheduled_tasks SET status = 'paused' WHERE id = ?`).run(id);
+  // Changing recurring activation must not release an in-flight execution lock.
+  db.prepare(`UPDATE scheduled_tasks SET
+    resume_status = CASE WHEN status = 'running' THEN 'paused' ELSE NULL END,
+    status = CASE WHEN status = 'running' THEN status ELSE 'paused' END WHERE id = ?`).run(id);
 }
 
 export function resumeScheduledTask(id: string): void {
-  db.prepare(`UPDATE scheduled_tasks SET status = 'active' WHERE id = ?`).run(id);
+  db.prepare(`UPDATE scheduled_tasks SET
+    resume_status = CASE WHEN status = 'running' THEN 'active' ELSE NULL END,
+    status = CASE WHEN status = 'running' THEN status ELSE 'active' END WHERE id = ?`).run(id);
 }
 
 /**

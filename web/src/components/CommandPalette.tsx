@@ -78,11 +78,13 @@ export function CommandPalette() {
 
   return (
     <div
-      class="fixed inset-0 z-[100] flex items-start justify-center pt-[12vh] bg-black/50"
+      class="viewport-overlay fixed inset-0 z-[100] flex items-start justify-center p-4 bg-black/50"
+      style={{ paddingTop: 'calc(var(--app-height) * 0.12)' }}
       onClick={() => { commandPaletteOpen.value = false; }}
     >
       <div
-        class="flex flex-col w-[560px] max-w-[92vw] max-h-[80vh] bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl shadow-2xl overflow-hidden"
+        class="flex flex-col w-[560px] max-w-full bg-[var(--color-card)] border border-[var(--color-border)] rounded-xl shadow-2xl overflow-hidden"
+        style={{ maxHeight: 'calc(var(--app-height) * 0.80)' }}
         onClick={(e) => e.stopPropagation()}
       >
         <div class="flex items-center gap-2 px-4 py-3 border-b border-[var(--color-border)] shrink-0">
@@ -118,8 +120,8 @@ export function CommandPalette() {
                     class={[
                       'w-full flex items-center gap-2 px-4 py-2 text-[13px] transition-colors',
                       active
-                        ? 'bg-[var(--color-accent-soft)] text-[var(--color-text)]'
-                        : 'text-[var(--color-text-muted)] hover:bg-[var(--color-elevated)]',
+                        ? 'control-accent'
+                        : 'text-[var(--color-text-muted)] hover:bg-[var(--color-control-hover)]',
                     ].join(' ')}
                   >
                     <span class="flex-1 text-left truncate">{a.label}</span>

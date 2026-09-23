@@ -9,8 +9,8 @@ export interface PageHeaderProps {
 
 export function PageHeader({ title, breadcrumb, actions, tabs }: PageHeaderProps) {
   return (
-    <div class="border-b border-[var(--color-border)]">
-      <div class="flex items-center gap-3 px-6 py-3">
+    <div class="shrink-0 min-w-0 border-b border-[var(--color-border)]">
+      <div class="flex flex-wrap items-center gap-x-3 gap-y-2 px-6 py-3">
         {breadcrumb && (
           <div class="flex items-center gap-2 text-[12px] text-[var(--color-text-muted)]">
             <span>{breadcrumb}</span>
@@ -18,10 +18,10 @@ export function PageHeader({ title, breadcrumb, actions, tabs }: PageHeaderProps
           </div>
         )}
         <h1 class="text-[14px] font-semibold text-[var(--color-text)]">{title}</h1>
-        <div class="ml-auto flex items-center gap-2">{actions}</div>
+        {actions && <div class="page-header-actions ml-auto flex flex-wrap items-center justify-end gap-2">{actions}</div>}
       </div>
       {tabs && (
-        <div class="flex items-center gap-1 px-6 pb-2">{tabs}</div>
+        <div class="page-toolbar flex items-center gap-1 px-6 pb-2 overflow-x-auto">{tabs}</div>
       )}
     </div>
   );
@@ -39,11 +39,12 @@ export function Tab({ label, active, count, onClick }: TabProps) {
     <button
       type="button"
       onClick={onClick}
+      aria-pressed={active === true}
       class={[
-        'px-3 py-1 rounded-md text-[12px] transition-colors flex items-center gap-1.5',
+        'toolbar-control control-button shrink-0 whitespace-nowrap px-3 rounded-md transition-colors flex items-center gap-1.5',
         active
-          ? 'bg-[var(--color-elevated)] text-[var(--color-text)]'
-          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
+          ? 'control-accent'
+          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)]',
       ].join(' ')}
     >
       {label}

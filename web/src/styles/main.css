@@ -1,12 +1,21 @@
 @import "tailwindcss";
 
+/* Bundled variable font keeps small weight adjustments consistent across hosts. */
+@font-face {
+  font-family: "Inter";
+  font-style: normal;
+  font-weight: 100 900;
+  font-display: swap;
+  src: url('/fonts/InterVariable.woff2') format('woff2');
+}
+
 /* ── Theme tokens ────────────────────────────────────────────────────
-   Three dark themes: graphite (default), midnight (blue), crimson.
-   Status colors stay constant across all themes for universal recognition.
-   Switch by setting data-theme on <html>. */
+   Three color themes, each with light and dark palettes.
+   data-theme selects the hue; data-appearance selects the resolved mode. */
 
 :root,
 [data-theme="graphite"] {
+  color-scheme: dark;
   --color-bg: #0e0e10;
   --color-sidebar: #141416;
   --color-card: #1a1a1c;
@@ -51,8 +60,17 @@
   --color-accent-soft: rgba(255, 94, 110, 0.12);
 }
 
-/* Status colors are theme-agnostic. */
+/* Status hues are shared across color themes, with mode-specific contrast. */
 :root {
+  --ui-scale: 1;
+  --toolbar-control-height: 32px;
+  --toolbar-font-size: 13px;
+  --text-weight-shift: 50;
+  --font-weight-normal: calc(400 + var(--text-weight-shift));
+  --font-weight-medium: calc(500 + var(--text-weight-shift) / 2);
+  --font-weight-semibold: calc(600 + var(--text-weight-shift) / 2);
+  --font-weight-bold: calc(700 + var(--text-weight-shift) / 2);
+  --app-height: calc(100vh / var(--ui-scale));
   --color-status-queued: #9a9a98;
   --color-status-running: #d97706;
   --color-status-done: #16a34a;
@@ -60,6 +78,69 @@
   --color-priority-high: #ea580c;
   --color-priority-medium: #ca8a04;
   --color-priority-low: #737373;
+  /* Opaque sidebar-based surfaces keep controls equally subdued on every panel. */
+  --color-control-bg: color-mix(in srgb, var(--color-accent) 18%, var(--color-sidebar));
+  --color-control-hover: color-mix(in srgb, var(--color-accent) 28%, var(--color-sidebar));
+  --color-control-border: color-mix(in srgb, var(--color-accent) 45%, var(--color-border));
+  --color-control-text: color-mix(in srgb, var(--color-accent) 65%, white);
+  --color-agent-banner: color-mix(in srgb, var(--color-accent) 12%, var(--color-elevated));
+}
+
+/* Light palettes retain the same hierarchy and accent family as dark mode. */
+[data-appearance="light"] {
+  color-scheme: light;
+  --color-bg: #f5f5f7;
+  --color-sidebar: #efeff3;
+  --color-card: #ffffff;
+  --color-elevated: #f1f1f5;
+  --color-border: #d6d6df;
+  --color-border-strong: #a8a8b8;
+  --color-text: #20202b;
+  --color-text-muted: #555565;
+  --color-text-faint: #6b6b7b;
+  --color-accent: #5c4dc6;
+  --color-accent-hover: #483aa7;
+  --color-accent-soft: rgba(92, 77, 198, 0.10);
+  --color-status-queued: #616171;
+  --color-status-running: #995408;
+  --color-status-done: #16753b;
+  --color-status-failed: #bb2433;
+  --color-priority-high: #aa4610;
+  --color-priority-medium: #85620a;
+  --color-priority-low: #62626b;
+  --color-control-bg: color-mix(in srgb, var(--color-accent) 12%, var(--color-sidebar));
+  --color-control-hover: color-mix(in srgb, var(--color-accent) 20%, var(--color-sidebar));
+  --color-control-border: color-mix(in srgb, var(--color-accent) 50%, var(--color-border));
+  --color-control-text: color-mix(in srgb, var(--color-accent) 55%, #171726);
+  --color-agent-banner: color-mix(in srgb, var(--color-accent) 18%, var(--color-sidebar));
+}
+
+[data-appearance="light"][data-theme="midnight"] {
+  --color-bg: #f2f6fb;
+  --color-sidebar: #e9f0f9;
+  --color-elevated: #edf3fb;
+  --color-border: #cdd9e8;
+  --color-border-strong: #9bafc8;
+  --color-text: #17243a;
+  --color-text-muted: #4f627b;
+  --color-text-faint: #63748a;
+  --color-accent: #165ea8;
+  --color-accent-hover: #124e8e;
+  --color-accent-soft: rgba(22, 94, 168, 0.10);
+}
+
+[data-appearance="light"][data-theme="crimson"] {
+  --color-bg: #fbf4f5;
+  --color-sidebar: #f5e9ec;
+  --color-elevated: #f9edf0;
+  --color-border: #e6ccd2;
+  --color-border-strong: #c59aa5;
+  --color-text: #34232a;
+  --color-text-muted: #71515d;
+  --color-text-faint: #80606b;
+  --color-accent: #b22b47;
+  --color-accent-hover: #92223b;
+  --color-accent-soft: rgba(178, 43, 71, 0.10);
 }
 
 /* Tailwind v4 theme — exposes our CSS vars as utility classes. */
@@ -96,11 +177,11 @@
 /* ── Base resets ─────────────────────────────────────────────────────── */
 
 html, body {
-  height: 100%;
   background-color: var(--color-bg);
   color: var(--color-text);
   font-family: var(--font-sans);
   font-size: 13px;
+  font-weight: var(--font-weight-normal);
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
@@ -111,6 +192,60 @@ body {
   user-select: none;
 }
 
+@supports (height: 100dvh) {
+  :root { --app-height: calc(100dvh / var(--ui-scale)); }
+}
+
+.app-shell, .app-sidebar {
+  height: var(--app-height);
+}
+.app-sidebar { max-width: calc(100vw / var(--ui-scale)); }
+
+/* Fixed overlays share the shell's zoom-adjusted viewport. */
+.viewport-overlay {
+  height: var(--app-height);
+  bottom: auto;
+}
+
+.settings-content { container-type: inline-size; }
+.settings-row { display: flex; flex-direction: column; align-items: flex-start; gap: 0.75rem; }
+.settings-control > div { max-width: 100%; }
+.settings-control input { max-width: 100%; min-width: 0; }
+.text-weight-slider {
+  appearance: none;
+  display: block;
+  width: 100%;
+  height: 6px;
+  margin: 6px 0;
+  border: 1px solid var(--color-control-border);
+  border-radius: 999px;
+  background: linear-gradient(to right, var(--color-accent) var(--range-progress), var(--color-elevated) var(--range-progress));
+  cursor: pointer;
+}
+.text-weight-slider::-webkit-slider-thumb {
+  appearance: none;
+  width: 15px;
+  height: 15px;
+  border: 1px solid var(--color-control-text);
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+.text-weight-slider::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border: 1px solid var(--color-control-text);
+  border-radius: 50%;
+  background: var(--color-accent);
+}
+.text-weight-slider:focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 5px;
+}
+@container (min-width: 660px) {
+  .settings-row { flex-direction: row; align-items: center; gap: 2rem; }
+  .settings-control { flex-shrink: 0; max-width: 52%; }
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
 }
@@ -118,7 +253,11 @@ body {
 button {
   cursor: pointer;
   font: inherit;
-  color: inherit;
+}
+
+/* Keep the inherited fallback below explicit button text utilities. */
+@layer base {
+  button { color: inherit; }
 }
 
 input, textarea, select {
@@ -129,12 +268,173 @@ input, textarea, select {
 
 /* ── Reusable helpers ────────────────────────────────────────────────── */
 
+/* Reserve the same border in every state; local utilities retain joined edges. */
+@layer components {
+  .control-button {
+    border: 1px solid var(--color-border);
+  }
+  .control-button:not(:disabled):is(:hover, :focus-visible) {
+    border-color: var(--color-control-border);
+  }
+}
+
+/* Shared by action buttons, selected tabs, menu choices and the sidebar. */
+.control-accent {
+  color: var(--color-control-text);
+  background-color: var(--color-control-bg);
+  border-color: var(--color-control-border);
+}
+.control-accent:hover:not(:disabled):not([aria-disabled="true"]) {
+  color: var(--color-control-text);
+  background-color: var(--color-control-hover);
+}
+.control-menu-item:not(:disabled):is(:hover, :focus-visible) {
+  color: var(--color-control-text);
+  background-color: var(--color-control-hover);
+}
+[data-appearance="light"] :is(.control-accent, .control-menu-item:hover, .control-menu-item:focus-visible) {
+  --color-text-muted: var(--color-control-text);
+  --color-text-faint: var(--color-control-text);
+}
+[data-appearance="light"] :is(.agent-column-banner, .agent-info-banner) {
+  --color-text-muted: color-mix(in srgb, var(--color-text) 85%, var(--color-accent));
+  --color-text-faint: var(--color-text-muted);
+}
+.agent-availability {
+  --availability-ink: var(--color-text);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 6px;
+  border: 1px solid color-mix(in srgb, var(--availability-ink) 35%, var(--color-border));
+  border-radius: 5px;
+  background-color: color-mix(in srgb, var(--availability-ink) 10%, var(--color-card));
+  color: var(--availability-ink);
+  font-size: 10px;
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.agent-availability.is-online { --availability-ink: #6cdda1; }
+[data-appearance="light"] .agent-availability.is-online { --availability-ink: #126638; }
+.agent-availability-dot {
+  width: 10px;
+  height: 10px;
+  border: 2px solid #98a2b3;
+  background-color: transparent;
+}
+.agent-availability.is-online .agent-availability-dot {
+  border-color: #4ade80;
+  background-color: #4ade80;
+}
+[data-appearance="light"] .agent-availability-dot { border-color: #737c8a; }
+[data-appearance="light"] .agent-availability.is-online .agent-availability-dot {
+  border-color: #12843c;
+  background-color: #16a34a;
+}
+:where(button, a, select):focus-visible {
+  outline: 2px solid var(--color-accent);
+  outline-offset: 2px;
+}
+
 .section-label {
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--color-text-faint);
-  font-weight: 500;
+  font-weight: var(--font-weight-medium);
+}
+
+.layout-menu {
+  --menu-separator: color-mix(in srgb, var(--color-border) 55%, var(--color-card));
+}
+.layout-menu-section {
+  background-color: var(--color-control-bg);
+  color: var(--color-control-text);
+  font-weight: var(--font-weight-semibold);
+}
+.layout-menu-item, .layout-menu-note {
+  border: 0;
+  border-bottom: 1px solid var(--menu-separator);
+}
+.layout-menu-item:last-child { border-bottom: 0; }
+.layout-menu-item:focus-visible { outline-offset: -2px; }
+
+/* Page-level filters and actions share dimensions, independent of card controls. */
+.page-toolbar { font-size: var(--toolbar-font-size); }
+.toolbar-control,
+.page-header-actions > :is(button, a, select),
+.page-header-actions > div > button {
+  height: var(--toolbar-control-height);
+  min-height: var(--toolbar-control-height);
+  font-size: var(--toolbar-font-size);
+  line-height: 1.5;
+  padding-block: 0;
+}
+:is(button, a).toolbar-control,
+.page-header-actions > :is(button, a),
+.page-header-actions > div > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.toolbar-icon { width: var(--toolbar-control-height); }
+.toolbar-segmented {
+  display: inline-flex;
+  align-items: stretch;
+  height: var(--toolbar-control-height);
+}
+.toolbar-segmented > button { border-radius: 0; }
+.toolbar-segmented > button:first-child { border-radius: 5px 0 0 5px; }
+.toolbar-segmented > button:last-child { border-radius: 0 5px 5px 0; }
+.toolbar-segmented > button + button { margin-left: -1px; }
+.toolbar-segmented > button[aria-pressed="true"] { position: relative; z-index: 1; }
+.toolbar-segmented > button:focus-visible { position: relative; z-index: 2; outline-offset: -3px; }
+
+/* Agent activity keeps metadata aligned without squeezing the readable summary. */
+.agent-activity { container-type: inline-size; }
+.activity-items { display: grid; gap: 7px; list-style: none; margin: 0; padding: 0; }
+.activity-list-head, .activity-item {
+  display: grid;
+  grid-template-columns: 76px minmax(110px, 155px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+  padding: 12px;
+}
+.activity-list-head {
+  margin-bottom: 7px;
+  padding-block: 8px;
+  border-radius: 5px;
+  background: var(--color-sidebar);
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+}
+.activity-item {
+  height: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 7px;
+  background: var(--color-elevated);
+  color: var(--color-text);
+  user-select: text;
+}
+.activity-when { color: var(--color-text-muted); font-size: 11px; font-variant-numeric: tabular-nums; }
+.activity-label { min-width: 0; color: var(--color-text-muted); font-size: 11.5px; overflow-wrap: anywhere; }
+.activity-content { min-width: 0; }
+.activity-summary { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; line-height: 1.6; }
+.is-grid .activity-items { grid-template-columns: repeat(auto-fit, minmax(min(100%, 270px), 1fr)); gap: 12px; }
+.is-grid .activity-item { grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto 1fr; gap: 0; padding: 0; overflow: hidden; }
+.is-grid .activity-when, .is-grid .activity-label { padding: 10px 12px; background: var(--color-sidebar); border-bottom: 1px solid var(--color-border); align-self: stretch; }
+.is-grid .activity-label { grid-column: 1; grid-row: 1; }
+.is-grid .activity-when { grid-column: 2; grid-row: 1; padding-left: 0; text-align: right; }
+.is-grid .activity-content { grid-column: 1 / -1; grid-row: 2; padding: 12px; }
+.is-grid .activity-summary { -webkit-line-clamp: 5; }
+@container (max-width: 600px) {
+  .activity-list-head { display: none; }
+  .is-list .activity-item { grid-template-columns: 76px minmax(0, 1fr); gap: 8px 12px; }
+  .is-list .activity-content { grid-column: 1 / 3; grid-row: 2; }
 }
 
 /* Chat bubble markdown rendering */
@@ -186,10 +486,10 @@ input, textarea, select {
 }
 .chat-md th {
   background: var(--color-elevated);
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
 }
 .chat-md h1, .chat-md h2, .chat-md h3, .chat-md h4 {
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   margin: 0.5em 0 0.25em;
   font-size: 1em;
 }
@@ -223,6 +523,97 @@ input, textarea, select {
   cursor: default;
   user-select: text;
 }
+
+/* Native select menus must use the active palette, including their popup. */
+select, select option, select optgroup {
+  background-color: var(--color-sidebar);
+  color: var(--color-text);
+}
+select {
+  transition: background-color 150ms, border-color 150ms;
+}
+select:not(:disabled) {
+  border-color: color-mix(in srgb, var(--color-accent) 25%, var(--color-border));
+}
+select:not(:disabled):hover, select:focus {
+  background-color: var(--color-control-bg);
+  border-color: var(--color-control-border);
+}
+select option:checked {
+  background-color: var(--color-control-bg);
+  color: var(--color-control-text);
+}
+
+/* Style the popup as well as its trigger; older browsers retain native menus.
+   https://developer.chrome.com/blog/a-customizable-select */
+@supports (appearance: base-select) {
+  select:not([multiple]):not([size]),
+  select:not([multiple]):not([size])::picker(select) {
+    appearance: base-select;
+  }
+  select:not([multiple]):not([size]) {
+    align-items: center;
+    gap: 0.65em;
+  }
+  select::picker-icon {
+    color: var(--color-text-muted);
+    flex-shrink: 0;
+  }
+  select:open {
+    background-color: var(--color-control-bg);
+    border-color: var(--color-control-border);
+    color: var(--color-control-text);
+  }
+  select::picker(select) {
+    background: var(--color-card);
+    color: var(--color-text);
+    border: 1px solid var(--color-control-border);
+    border-radius: 8px;
+    padding: 4px;
+    margin-block: 4px;
+    min-inline-size: anchor-size(self-inline);
+    max-inline-size: calc(100vw / var(--ui-scale) - 24px);
+    max-block-size: min(320px, calc(var(--app-height) - 24px));
+    overflow: auto;
+    font: inherit;
+    box-shadow: 0 8px 24px rgb(0 0 0 / 35%);
+  }
+  select:not([multiple]):not([size]) option {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 30px;
+    padding: 6px 8px;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--color-text);
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+  select:not([multiple]):not([size]) option:checked {
+    background: var(--color-control-bg);
+    color: var(--color-control-text);
+    font-weight: var(--font-weight-medium);
+  }
+  select:not([multiple]):not([size]) option:not(:disabled):is(:hover, :focus) {
+    background: var(--color-control-hover);
+    color: var(--color-control-text);
+    outline: none;
+  }
+  select option::checkmark {
+    order: 1;
+    margin-inline-start: auto;
+    color: var(--color-control-text);
+  }
+  select option:disabled {
+    color: var(--color-text-faint);
+  }
+  select optgroup {
+    background: transparent;
+    color: var(--color-text-muted);
+  }
+}
+.privacy-blur-static { cursor: default; }
 
 /* ── Brain visualization ────────────────────────────────────────────
    Animations and effects for the Hive Mind brain graph. Designed to
@@ -270,7 +661,7 @@ input, textarea, select {
 
 .brain-lobe-label {
   font-size: 9px;
-  font-weight: 600;
+  font-weight: var(--font-weight-semibold);
   letter-spacing: 0.18em;
   text-transform: uppercase;
   fill: var(--color-text-faint);
@@ -305,8 +696,8 @@ input, textarea, select {
   transition: transform 180ms cubic-bezier(0.22, 1, 0.36, 1), background 160ms;
 }
 .brain-switch.is-on {
-  background: var(--color-accent-soft);
-  border-color: var(--color-accent);
+  background: var(--color-control-bg);
+  border-color: var(--color-control-border);
 }
 .brain-switch.is-on::after {
   transform: translateX(12px);
@@ -336,20 +727,33 @@ input, textarea, select {
   transform: scale(1.15);
 }
 
-/* Scrollbar polish (WebKit only — fine on macOS) */
+/* Keep scrollbars visible and easy to grab, including horizontal boards. */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 10px;
+  height: 10px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
-  border-radius: 4px;
+  background: color-mix(in srgb, var(--color-text-muted) 65%, var(--color-border));
+  border: 1px solid transparent;
+  background-clip: padding-box;
+  border-radius: 8px;
+  min-height: 36px;
+  min-width: 36px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: var(--color-border-strong);
+  background-color: var(--color-text-muted);
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+@supports not selector(::-webkit-scrollbar) {
+  * {
+    scrollbar-width: auto;
+    scrollbar-color: var(--color-text-faint) transparent;
+  }
 }
 
 /* Hive Mind tooltip entrance — soft fade + scale-up so the lobe stats

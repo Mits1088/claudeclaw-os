@@ -77,7 +77,7 @@ import {
   getWorkerRuntime,
   isWorkerLeaseCurrent,
 } from './db.js';
-import { computeNextRun } from './scheduler.js';
+import { computeNextRun, queueScheduledTaskNow } from './scheduler.js';
 import { generateContent, parseJsonResponse } from './gemini.js';
 import { getSecurityStatus } from './security.js';
 import {
@@ -1897,8 +1897,40 @@ export function buildDashboardApp(botApi?: Api<RawApi>): Hono {
 
   // Scheduled tasks
   app.get('/api/tasks', (c) => {
-    const tasks = getAllScheduledTasks();
-    return c.json({ tasks });
+    const tasks = getAllScheduledTasks().map((task) => {
+      const canRunNow = task.agent_id === AGENT_ID;
+      return {
+        ...task,
+        can_run_now: canRunNow,
+        run_now_disabled_reason: canRunNow
+          ? null
+          : `Run now must be requested from the ${task.agent_id} agent process`,
+      };
+    });
+    return c.json({
+      tasks,
+      capabilities: { runNow: true, runNowAgent: AGENT_ID },
+    });
+  });
+
+  // Queue one immediate execution while preserving the recurring schedule.
+  // The scheduler owns the lock, message queue, watchdog, and cleanup; this
+  // request returns as soon as the work has been safely enqueued.
+  app.post('/api/tasks/:id/run', (c) => {
+    const id = c.req.param('id');
+    const task = getAllScheduledTasks().find((candidate) => candidate.id === id);
+    if (!task) return c.json({ ok: false, error: 'task not found' }, 404);
+
+    try {
+      const result = queueScheduledTaskNow(task);
+      if (result.ok) return c.json(result, 202);
+      if (result.reason === 'already_running') return c.json(result, 409);
+      if (result.reason === 'unsupported_agent') return c.json(result, 400);
+      return c.json(result, 503);
+    } catch (err) {
+      logger.error({ err, taskId: id }, 'Failed to queue scheduled task for manual run');
+      return c.json({ ok: false, error: 'failed to queue task' }, 500);
+    }
   });
 
   // Delete a scheduled task

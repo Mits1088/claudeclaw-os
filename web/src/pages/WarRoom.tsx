@@ -110,7 +110,7 @@ export function WarRoom() {
             <button
               type="button"
               onClick={() => setMode('picker')}
-              class="ml-auto text-[11.5px] text-[var(--color-text-faint)] hover:text-[var(--color-text-muted)]"
+              class="toolbar-control control-button ml-auto shrink-0 whitespace-nowrap px-2.5 rounded-md text-[var(--color-text-muted)] hover:bg-[var(--color-control-hover)] hover:text-[var(--color-text)]"
             >
               ← Back to picker
             </button>
@@ -211,8 +211,8 @@ function VoicePane() {
               type="button"
               onClick={() => setPin(pin.data!.agent!, 'direct')}
               class={[
-                'px-2 py-0.5 rounded text-[10px] uppercase tracking-wider',
-                pin.data.mode === 'direct' ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]' : 'text-[var(--color-text-faint)] hover:text-[var(--color-text)]',
+                'control-button px-2 py-0.5 rounded text-[10px] uppercase tracking-wider',
+                pin.data.mode === 'direct' ? 'control-accent' : 'text-[var(--color-text-faint)] hover:text-[var(--color-text)]',
               ].join(' ')}
             >
               Direct
@@ -221,8 +221,8 @@ function VoicePane() {
               type="button"
               onClick={() => setPin(pin.data!.agent!, 'auto')}
               class={[
-                'px-2 py-0.5 rounded text-[10px] uppercase tracking-wider',
-                pin.data.mode === 'auto' ? 'bg-[var(--color-accent-soft)] text-[var(--color-accent)]' : 'text-[var(--color-text-faint)] hover:text-[var(--color-text)]',
+                'control-button px-2 py-0.5 rounded text-[10px] uppercase tracking-wider',
+                pin.data.mode === 'auto' ? 'control-accent' : 'text-[var(--color-text-faint)] hover:text-[var(--color-text)]',
               ].join(' ')}
             >
               Auto
@@ -237,7 +237,7 @@ function VoicePane() {
           href={legacyUrl(`/warroom?mode=voice&token=${encodeURIComponent(dashboardToken)}&chatId=${encodeURIComponent(chatId)}`)}
           target="_blank"
           rel="noreferrer"
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] transition-colors"
+          class="control-button inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium control-accent transition-colors"
         >
           <Mic size={13} /> Launch voice meeting
         </a>
@@ -274,9 +274,9 @@ function PinButton({ agent, label, active, onClick, disabled }: any) {
       onClick={onClick}
       disabled={disabled}
       class={[
-        'inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[12px] border transition-colors disabled:opacity-40',
+        'control-button inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md text-[12px] border transition-colors disabled:opacity-40',
         active
-          ? 'bg-[var(--color-accent-soft)] border-[var(--color-accent)] text-[var(--color-accent)]'
+          ? 'control-accent'
           : 'bg-[var(--color-card)] border-[var(--color-border)] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:border-[var(--color-border-strong)]',
       ].join(' ')}
     >
@@ -313,7 +313,7 @@ function TextPane() {
         type="button"
         onClick={newMeeting}
         disabled={creating}
-        class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 transition-colors"
+        class="control-button inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium control-accent disabled:opacity-40 transition-colors"
       >
         <MessageSquare size={13} /> {creating ? 'Creating…' : 'New text meeting'}
       </button>
@@ -504,7 +504,7 @@ function DispatchForm({ onChange }: { onChange: () => void }) {
               type="button"
               onClick={tab === 'meet' ? dispatchMeet : dispatchDaily}
               disabled={busy || !agent || (tab === 'meet' && !meetUrl)}
-              class="inline-flex items-center gap-1 px-3 py-1.5 rounded text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+              class="control-button inline-flex items-center gap-1 px-3 py-1.5 rounded text-[12px] font-medium control-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
             >
               <Video size={12} /> {busy ? 'Dispatching…' : tab === 'meet' ? 'Send agent to Meet' : 'Create Daily room'}
             </button>
@@ -521,10 +521,10 @@ function DispatchTab({ label, active, onClick }: { label: string; active: boolea
       type="button"
       onClick={onClick}
       class={[
-        'flex-1 px-4 py-2 text-[12px] transition-colors',
+        'control-button flex-1 px-4 py-2 text-[12px] transition-colors',
         active
-          ? 'bg-[var(--color-elevated)] text-[var(--color-text)]'
-          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
+          ? 'control-accent'
+          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)]',
       ].join(' ')}
     >
       {label}

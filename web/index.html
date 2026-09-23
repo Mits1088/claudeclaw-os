@@ -1,18 +1,28 @@
 <!doctype html>
-<html lang="en" data-theme="graphite">
+<html lang="en" data-theme="graphite" data-appearance="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="preload" href="/fonts/InterVariable.woff2" as="font" type="font/woff2" crossorigin />
     <meta name="referrer" content="no-referrer" />
     <title>Mission Control · ClaudeClaw</title>
     <script>
-      // Apply theme before render to avoid FOUC.
+      // Apply the saved palette and appearance before rendering.
       try {
         const saved = localStorage.getItem('claudeclaw.theme');
         if (saved === 'midnight' || saved === 'crimson' || saved === 'graphite') {
           document.documentElement.setAttribute('data-theme', saved);
         }
+        const mode = localStorage.getItem('claudeclaw.appearanceMode');
+        const appearance = mode === 'system'
+          ? (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light')
+          : mode === 'light' ? 'light' : 'dark';
+        document.documentElement.setAttribute('data-appearance', appearance);
+        const savedWeight = localStorage.getItem('claudeclaw.textWeight');
+        const weight = savedWeight?.trim() ? Number(savedWeight) : 450;
+        const textWeight = Number.isFinite(weight) ? Math.max(400, Math.min(600, Math.round(weight / 25) * 25)) : 450;
+        document.documentElement.style.setProperty('--text-weight-shift', String(textWeight - 400));
       } catch {}
     </script>
   </head>

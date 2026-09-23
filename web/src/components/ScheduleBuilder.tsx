@@ -205,9 +205,9 @@ export function ScheduleBuilder({ cron, onChange, externalError }: Props) {
                   onClick={() => toggleCustomDay(d)}
                   title={DAY_TITLES[d]}
                   class={[
-                    'w-7 h-7 rounded text-[11px] font-medium transition-colors',
+                    'control-button w-7 h-7 rounded text-[11px] font-medium transition-colors',
                     on
-                      ? 'bg-[var(--color-accent)] text-white'
+                      ? 'control-accent'
                       : 'bg-[var(--color-elevated)] text-[var(--color-text-muted)] border border-[var(--color-border)] hover:text-[var(--color-text)]',
                   ].join(' ')}
                 >
@@ -242,8 +242,8 @@ function DayKindButton({ active, label, onClick }: { active: boolean; label: str
       type="button"
       onClick={onClick}
       class={[
-        'px-2.5 py-1 rounded text-[11.5px] transition-colors',
-        active ? 'bg-[var(--color-accent)] text-white' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
+        'control-button px-2.5 py-1 rounded text-[11.5px] transition-colors',
+        active ? 'control-accent' : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)]',
       ].join(' ')}
     >
       {label}

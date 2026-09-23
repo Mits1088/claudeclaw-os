@@ -27,7 +27,8 @@ export function Toggle({ on, onChange, disabled, size = 'md', ariaLabel }: Toggl
       style={{
         width: dims.track.w + 'px',
         height: dims.track.h + 'px',
-        backgroundColor: on ? 'var(--color-accent)' : 'var(--color-border-strong)',
+        backgroundColor: on ? 'var(--color-control-bg)' : 'var(--color-elevated)',
+        boxShadow: `inset 0 0 0 1px ${on ? 'var(--color-control-border)' : 'var(--color-border-strong)'}`,
       }}
     >
       <span
@@ -35,7 +36,7 @@ export function Toggle({ on, onChange, disabled, size = 'md', ariaLabel }: Toggl
         style={{
           width: dims.knob + 'px',
           height: dims.knob + 'px',
-          backgroundColor: 'var(--color-card)',
+          backgroundColor: on ? 'var(--color-accent)' : 'var(--color-text-muted)',
           boxShadow: '0 1px 3px rgba(0,0,0,0.4)',
           transform: on ? `translateX(${dims.travel + 2}px)` : 'translateX(2px)',
         }}

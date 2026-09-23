@@ -48,3 +48,12 @@ export function StatusDot({ tone }: { tone: Tone }) {
     />
   );
 }
+
+export function AgentStatusBadge({ running }: { running: boolean }) {
+  return (
+    <span aria-label="Agent status" class={`agent-availability ${running ? 'is-online' : 'is-offline'}`}>
+      <span aria-hidden="true" class="agent-availability-dot shrink-0 rounded-full" />
+      {running ? 'Online' : 'Offline'}
+    </span>
+  );
+}

@@ -102,7 +102,7 @@ export function Audit() {
             </thead>
             <tbody>
               {items.map((e) => (
-                <tr key={e.id} class="border-b border-[var(--color-border)] hover:bg-[var(--color-elevated)] transition-colors">
+                <tr key={e.id} class="border-b border-[var(--color-border)] hover:bg-[var(--color-control-hover)] transition-colors">
                   <td class="px-6 py-2 text-[var(--color-text-faint)] tabular-nums whitespace-nowrap">
                     {formatRelativeTime(e.created_at)}
                   </td>
@@ -129,7 +129,7 @@ export function Audit() {
               type="button"
               onClick={() => load(offset, false)}
               disabled={loading}
-              class="w-full px-6 py-3 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border-t border-[var(--color-border)] transition-colors disabled:opacity-40"
+              class="w-full px-6 py-3 text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border-t border-[var(--color-border)] transition-colors disabled:opacity-40"
             >
               {loading ? 'Loading…' : `Load more (${total - offset} remaining)`}
             </button>

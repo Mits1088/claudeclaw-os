@@ -230,7 +230,7 @@ export function StandupConfigPane() {
                   type="button"
                   onClick={() => move(idx, -1)}
                   disabled={idx === 0}
-                  class="p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  class="p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   title="Move up"
                 >
                   <ArrowUp size={13} />
@@ -239,7 +239,7 @@ export function StandupConfigPane() {
                   type="button"
                   onClick={() => move(idx, 1)}
                   disabled={idx === order.length - 1}
-                  class="p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+                  class="p-1 rounded text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
                   title="Move down"
                 >
                   <ArrowDown size={13} />
@@ -295,7 +295,7 @@ export function StandupConfigPane() {
           type="button"
           onClick={save}
           disabled={!dirty || saving}
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          class="control-button inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-[12px] font-medium control-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <Save size={13} /> {saving ? 'Saving…' : 'Save roster'}
         </button>
@@ -303,7 +303,7 @@ export function StandupConfigPane() {
           type="button"
           onClick={reset}
           disabled={!dirty || saving}
-          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] hover:bg-[var(--color-elevated)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+          class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded text-[12px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] border border-[var(--color-border)] hover:bg-[var(--color-control-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
         >
           <RotateCcw size={12} /> Reset
         </button>

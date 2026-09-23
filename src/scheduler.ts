@@ -27,6 +27,7 @@ import {
   deactivateWorkerIfTaskScopeDrained,
   type MissionTask,
   type MissionClaimFence,
+  type ScheduledTask,
 } from './db.js';
 import type { AgentLifecycleMode } from './agent-config.js';
 import { logger } from './logger.js';
@@ -39,7 +40,10 @@ import { TurnWatchdog, type TurnAbortReason } from './turn-watchdog.js';
 
 type Sender = (text: string) => Promise<void>;
 
-let sender: Sender;
+let sender: Sender = async () => {
+  throw new Error('scheduler is not ready');
+};
+let schedulerInitialized = false;
 
 function formatRuntime(ms: number, attributive = false): string {
   if (ms % 60_000 !== 0) return `${ms}ms`;
@@ -107,6 +111,7 @@ export function initScheduler(
     logger.warn('ALLOWED_CHAT_ID not set — scheduler will not send results');
   }
   sender = send;
+  schedulerInitialized = true;
   schedulerAgentId = agentId;
   schedulerWorkerInstanceId = workerInstanceId;
   schedulerLifecycleMode = lifecycleMode;
@@ -170,122 +175,171 @@ async function runDueTasks(): Promise<void> {
     // Compute next occurrence BEFORE executing so we can lock the task
     // in the DB immediately, preventing re-fire on subsequent ticks.
     const nextRun = computeNextRun(task.schedule);
-    armTaskScope(task.id);
-    runningTaskIds.add(task.id);
-    markTaskRunning(task.id, nextRun);
-
-    logger.info({ taskId: task.id, prompt: task.prompt.slice(0, 60) }, 'Firing task');
-
-    // Route through the message queue so scheduled tasks wait for any
-    // in-flight user message to finish before running. This prevents
-    // two Claude processes from hitting the same session simultaneously.
-    const chatId = ALLOWED_CHAT_ID || 'scheduler';
-    messageQueue.enqueue(chatId, async () => {
-      const abortController = new AbortController();
-      const watchdog = new TurnWatchdog(
-        abortController,
-        SCHEDULER_IDLE_TIMEOUT_MS,
-        SCHEDULER_MAX_RUNTIME_MS,
-      );
-      watchdog.start();
-
-      try {
-        await sender([
-          `🕐 Scheduled job running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`,
-          `Job ID: ${task.id}`,
-        ].join('\n'));
-
-        // Run as a fresh agent call (no session — scheduled tasks are autonomous)
-        const result = await runAgent(
-          task.prompt,
-          undefined,
-          () => {},
-          undefined,
-          agentDefaultModel,
-          abortController,
-          undefined,
-          agentMcpAllowlist,
-          getSelectedProviderConfig(),
-          undefined,
-          undefined,
-          watchdog,
-        );
-
-        if (result.aborted) {
-          const description = schedulerAbortDescription(result.abortReason);
-          updateTaskAfterRun(task.id, nextRun, description, 'timeout');
-          await sender(`⏱ Task stopped: "${task.prompt.slice(0, 60)}..." — ${description}.`);
-          logger.warn({ taskId: task.id, abortReason: result.abortReason }, 'Task stopped by scheduler watchdog');
-          return;
-        }
-
-        if (isFailedTurn(result)) {
-          const reason = result.stopReason ?? 'unknown error';
-          // Codex adapter puts the error message in result.text — keep it as the
-          // error, never as the result.
-          updateTaskAfterRun(task.id, nextRun, `Agent run failed (${reason})${result.text ? `: ${result.text.slice(0, 400)}` : ''}`.slice(0, 500), 'failed');
-          logger.error({ taskId: task.id, stopReason: result.stopReason }, 'Scheduled task run failed');
-          try {
-            await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${reason}`);
-          } catch (sendErr) {
-            logger.warn({ err: sendErr, taskId: task.id }, 'Failed to send task failure notification');
-          }
-          return;
-        }
-
-        const text = result.text?.trim() || 'Task completed with no output.';
-        const acceptancePassed = evaluateAcceptance(task.acceptance_check, result.text ?? '');
-        const lastStatus: 'success' | 'failed' = acceptancePassed ? 'success' : 'failed';
-        const resultText = acceptancePassed
-          ? text
-          : `Acceptance check not met: output did not contain "${task.acceptance_check}".\n\n${text}`;
-        for (const chunk of splitMessage(formatForTelegram(text))) {
-          await sender(chunk);
-        }
-        if (!acceptancePassed) {
-          await sender(`⚠ Acceptance check not met: expected output to contain "${task.acceptance_check}".`);
-        }
-
-        // Inject task output into the active chat session so user replies have context
-        if (ALLOWED_CHAT_ID) {
-          const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Scheduled task]: ${task.prompt}`, activeSession ?? undefined, schedulerAgentId);
-          logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
-        }
-
-        // Fire-and-forget memory extraction. Synthetic chat_id when this agent has no
-        // user-facing Telegram chat (specialists usually don't). Memory is valuable
-        // even on background tasks — they produce content worth remembering, just
-        // grouped under a per-agent synthetic thread instead of a real user chat.
-        const ingestChatId = ALLOWED_CHAT_ID || `scheduled-${schedulerAgentId}`;
-        void ingestConversationTurn(ingestChatId, `[Scheduled task]: ${task.prompt}`, text, schedulerAgentId).catch((err) => {
-          logger.error({ err, taskId: task.id }, 'Memory ingestion fire-and-forget failed (scheduled task)');
-        });
-
-        updateTaskAfterRun(task.id, nextRun, resultText, lastStatus);
-
-        logger.info({ taskId: task.id, nextRun }, 'Task complete, next run scheduled');
-      } catch (err) {
-        const errMsg = err instanceof Error ? err.message : String(err);
-        updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
-
-        logger.error({ err, taskId: task.id }, 'Scheduled task failed');
-        try {
-          await sender(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
-        } catch {
-          // ignore send failure
-        }
-      } finally {
-        watchdog.dispose();
-        runningTaskIds.delete(task.id);
-        maybeDeactivateTaskScope();
-      }
-    });
+    enqueueScheduledTask(task, nextRun, false);
   }
 
   // Also check for queued mission tasks (one-shot async tasks from Mission Control)
   await runDueMissionTasks();
   maybeDeactivateTaskScope();
+}
+
+export type QueueScheduledTaskNowResult =
+  | { ok: true; queued: true }
+  | { ok: false; reason: 'unavailable' | 'unsupported_agent' | 'already_running'; error: string };
+
+/**
+ * Queue one scheduled task immediately without changing its cron or next_run.
+ * The dashboard only runs in the main process, so it must not execute another
+ * agent's task with main's provider, model, allowlist, and notification sender.
+ */
+export function queueScheduledTaskNow(task: ScheduledTask): QueueScheduledTaskNowResult {
+  if (!schedulerInitialized) {
+    return { ok: false, reason: 'unavailable', error: 'scheduler is not ready' };
+  }
+  if (task.agent_id !== schedulerAgentId) {
+    return {
+      ok: false,
+      reason: 'unsupported_agent',
+      error: `run now is only available for ${schedulerAgentId} tasks in this dashboard`,
+    };
+  }
+  if (task.status === 'running' || runningTaskIds.has(task.id)) {
+    return { ok: false, reason: 'already_running', error: 'task is already running or queued' };
+  }
+
+  enqueueScheduledTask(task, task.next_run, true);
+  return { ok: true, queued: true };
+}
+
+function enqueueScheduledTask(
+  task: ScheduledTask,
+  nextRun: number,
+  manual: boolean,
+): void {
+  const send = sender;
+
+  armTaskScope(task.id);
+  runningTaskIds.add(task.id);
+  try {
+    // Automatic fires advance next_run before enqueueing. Manual fires only
+    // take the DB lock. The same write persists activation for completion or
+    // crash recovery; no callback-only state is needed to keep a job paused.
+    markTaskRunning(task.id, manual ? undefined : nextRun);
+  } catch (err) {
+    runningTaskIds.delete(task.id);
+    throw err;
+  }
+
+  logger.info(
+    { taskId: task.id, prompt: task.prompt.slice(0, 60), manual },
+    manual ? 'Queueing scheduled task for manual run' : 'Firing task',
+  );
+
+  // Route through the message queue so scheduled tasks wait for any
+  // in-flight user message to finish before running. This prevents
+  // two Claude processes from hitting the same session simultaneously.
+  const chatId = ALLOWED_CHAT_ID || 'scheduler';
+  messageQueue.enqueue(chatId, async () => {
+    const abortController = new AbortController();
+    const watchdog = new TurnWatchdog(
+      abortController,
+      SCHEDULER_IDLE_TIMEOUT_MS,
+      SCHEDULER_MAX_RUNTIME_MS,
+    );
+    watchdog.start();
+
+    try {
+      await send([
+        `🕐 Scheduled job running: "${task.prompt.slice(0, 80)}${task.prompt.length > 80 ? '...' : ''}"`,
+        `Job ID: ${task.id}`,
+      ].join('\n'));
+
+      // Run as a fresh agent call (no session — scheduled tasks are autonomous)
+      const result = await runAgent(
+        task.prompt,
+        undefined,
+        () => {},
+        undefined,
+        agentDefaultModel,
+        abortController,
+        undefined,
+        agentMcpAllowlist,
+        getSelectedProviderConfig(),
+        undefined,
+        undefined,
+        watchdog,
+      );
+
+      if (result.aborted) {
+        const description = schedulerAbortDescription(result.abortReason);
+        updateTaskAfterRun(task.id, nextRun, description, 'timeout');
+        await send(`⏱ Task stopped: "${task.prompt.slice(0, 60)}..." — ${description}.`);
+        logger.warn({ taskId: task.id, abortReason: result.abortReason }, 'Task stopped by scheduler watchdog');
+        return;
+      }
+
+      if (isFailedTurn(result)) {
+        const reason = result.stopReason ?? 'unknown error';
+        // Codex adapter puts the error message in result.text — keep it as the
+        // error, never as the result.
+        updateTaskAfterRun(task.id, nextRun, `Agent run failed (${reason})${result.text ? `: ${result.text.slice(0, 400)}` : ''}`.slice(0, 500), 'failed');
+        logger.error({ taskId: task.id, stopReason: result.stopReason }, 'Scheduled task run failed');
+        try {
+          await send(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${reason}`);
+        } catch (sendErr) {
+          logger.warn({ err: sendErr, taskId: task.id }, 'Failed to send task failure notification');
+        }
+        return;
+      }
+
+      const text = result.text?.trim() || 'Task completed with no output.';
+      const acceptancePassed = evaluateAcceptance(task.acceptance_check, result.text ?? '');
+      const lastStatus: 'success' | 'failed' = acceptancePassed ? 'success' : 'failed';
+      const resultText = acceptancePassed
+        ? text
+        : `Acceptance check not met: output did not contain "${task.acceptance_check}".\n\n${text}`;
+      for (const chunk of splitMessage(formatForTelegram(text))) {
+        await send(chunk);
+      }
+      if (!acceptancePassed) {
+        await send(`⚠ Acceptance check not met: expected output to contain "${task.acceptance_check}".`);
+      }
+
+      // Inject task output into the active chat session so user replies have context
+      if (ALLOWED_CHAT_ID) {
+        const activeSession = getSession(ALLOWED_CHAT_ID, schedulerAgentId);
+        logConversationTurn(ALLOWED_CHAT_ID, 'user', `[Scheduled task]: ${task.prompt}`, activeSession ?? undefined, schedulerAgentId);
+        logConversationTurn(ALLOWED_CHAT_ID, 'assistant', text, activeSession ?? undefined, schedulerAgentId);
+      }
+
+      // Fire-and-forget memory extraction. Synthetic chat_id when this agent has no
+      // user-facing Telegram chat (specialists usually don't). Memory is valuable
+      // even on background tasks — they produce content worth remembering, just
+      // grouped under a per-agent synthetic thread instead of a real user chat.
+      const ingestChatId = ALLOWED_CHAT_ID || `scheduled-${schedulerAgentId}`;
+      void ingestConversationTurn(ingestChatId, `[Scheduled task]: ${task.prompt}`, text, schedulerAgentId).catch((err) => {
+        logger.error({ err, taskId: task.id }, 'Memory ingestion fire-and-forget failed (scheduled task)');
+      });
+
+      updateTaskAfterRun(task.id, nextRun, resultText, lastStatus);
+
+      logger.info({ taskId: task.id, nextRun, manual }, 'Task complete, next run scheduled');
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      updateTaskAfterRun(task.id, nextRun, errMsg.slice(0, 500), 'failed');
+
+      logger.error({ err, taskId: task.id }, 'Scheduled task failed');
+      try {
+        await send(`❌ Task failed: "${task.prompt.slice(0, 60)}..." — ${errMsg.slice(0, 200)}`);
+      } catch {
+        // ignore send failure
+      }
+    } finally {
+      watchdog.dispose();
+      runningTaskIds.delete(task.id);
+      maybeDeactivateTaskScope();
+    }
+  });
 }
 
 async function runDueMissionTasks(): Promise<void> {

@@ -110,10 +110,11 @@ export function ModelPicker({ value, onSelect, disabled, size = 'sm' }: Props) {
               key={m.id}
               type="button"
               onClick={() => { onSelect(m.id); setOpen(false); }}
-              class="w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left hover:bg-[var(--color-elevated)] transition-colors"
+              aria-pressed={m.id === value}
+              class={`control-menu-item w-full flex items-center gap-2 px-3 py-1.5 text-[12px] text-left transition-colors ${m.id === value ? 'control-accent' : ''}`}
             >
-              <span class="text-[var(--color-text)]">{m.label}</span>
-              {m.id === value && <Check size={12} class="ml-auto text-[var(--color-accent)]" />}
+              <span>{m.label}</span>
+              {m.id === value && <Check size={12} class="ml-auto" />}
             </button>
           ))}
         </div>

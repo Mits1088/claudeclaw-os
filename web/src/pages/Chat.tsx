@@ -7,8 +7,10 @@ import { useFetch } from '@/lib/useFetch';
 import { apiGet, apiPost, chatId } from '@/lib/api';
 import { renderMarkdown } from '@/lib/markdown';
 import { formatCost, formatNumber } from '@/lib/format';
+import { modelLabel } from '@/lib/modelLabels';
 import { showCosts } from '@/lib/theme';
 import { subscribeChatStream, chatStreamConnected, resetUnread } from '@/lib/chat-stream';
+import { useAgentQuery } from '@/lib/agentQuery';
 
 interface Turn { role: 'user' | 'assistant'; content: string; source?: string; created_at?: number; photoUrl?: string; photoCaption?: string; }
 interface Agent { id: string; name: string; running: boolean; }
@@ -36,7 +38,7 @@ const QUICK_ACTIONS = [
 
 export function Chat() {
   const agents = useFetch<{ agents: Agent[] }>('/api/agents', 60_000);
-  const [activeAgent, setActiveAgent] = useState<string>('all');
+  const [activeAgent, setActiveAgent] = useAgentQuery();
   const [turns, setTurns] = useState<Turn[]>([]);
   const [loading, setLoading] = useState(true);
   const [draft, setDraft] = useState('');
@@ -63,7 +65,7 @@ export function Chat() {
   // Live session info for the bar.
   const health = useFetch<Health>(`/api/health?chatId=${encodeURIComponent(chatId)}`, 30_000);
   const agentTokens = useFetch<AgentTokens>(
-    activeAgent === 'all' ? null : `/api/agents/${activeAgent}/tokens`,
+    activeAgent === 'all' ? null : `/api/agents/${encodeURIComponent(activeAgent)}/tokens`,
     30_000,
   );
 
@@ -73,7 +75,7 @@ export function Chat() {
     setLoading(true);
     const path = activeAgent === 'all'
       ? `/api/chat/history?chatId=${encodeURIComponent(chatId)}&limit=50`
-      : `/api/agents/${activeAgent}/conversation?chatId=${encodeURIComponent(chatId)}&limit=50`;
+      : `/api/agents/${encodeURIComponent(activeAgent)}/conversation?chatId=${encodeURIComponent(chatId)}&limit=50`;
     return apiGet<{ turns: Turn[] }>(path)
       // The history endpoint returns turns newest-first (ORDER BY id DESC).
       // The panel renders oldest-first (newest at the bottom) and live SSE
@@ -208,7 +210,6 @@ export function Chat() {
   }
 
   const agentList = agents.data?.agents ?? [];
-  const activeAgentObj = agentList.find((a) => a.id === activeAgent);
   const todayCost = activeAgent === 'all'
     ? agentList.reduce((sum, a: any) => sum + (a.todayCost || 0), 0)
     : agentTokens.data?.todayCost ?? 0;
@@ -226,22 +227,16 @@ export function Chat() {
             {streamConnected ? 'Stream live' : 'Reconnecting…'}
           </span>
         }
-        tabs={
-          <>
-            <TabBtn label="All" active={activeAgent === 'all'} onClick={() => setActiveAgent('all')} />
-            {agentList.map((a) => (
-              <TabBtn key={a.id} label={a.name || a.id} active={activeAgent === a.id} onClick={() => setActiveAgent(a.id)} live={a.running} />
-            ))}
-          </>
-        }
       />
 
-      <SessionBar
+      <ChatToolbar
+        agents={agentList}
+        activeAgent={activeAgent}
+        onAgentChange={setActiveAgent}
         contextPct={health.data?.contextPct}
         turnsToday={todayTurns}
         costToday={todayCost}
         model={activeAgent === 'all' ? health.data?.model : undefined}
-        agentLabel={activeAgentObj ? activeAgentObj.name || activeAgentObj.id : undefined}
       />
 
       <div class="relative flex-1 min-h-0">
@@ -258,7 +253,7 @@ export function Chat() {
           <button
             type="button"
             onClick={() => scrollToBottom(true)}
-            class="absolute bottom-3 right-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-medium bg-[var(--color-accent)] text-white shadow-lg hover:bg-[var(--color-accent-hover)] transition-colors"
+            class="control-button absolute bottom-3 right-4 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[11.5px] font-medium control-accent shadow-lg transition-colors"
             aria-label="Scroll to latest message"
           >
             <ArrowDown size={13} />
@@ -276,7 +271,7 @@ export function Chat() {
                 type="button"
                 onClick={() => quick(qa.prompt)}
                 disabled={processing || sending}
-                class="px-2 py-0.5 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                class="px-2 py-0.5 rounded text-[10.5px] text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-control-hover)] border border-[var(--color-border)] transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {qa.label}
               </button>
@@ -310,7 +305,7 @@ export function Chat() {
                 type="button"
                 onClick={() => void send()}
                 disabled={!draft.trim() || sending}
-                class="inline-flex items-center gap-1 px-3 py-2 rounded-lg text-[12px] font-medium bg-[var(--color-accent)] text-white hover:bg-[var(--color-accent-hover)] disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                class="control-button inline-flex items-center gap-1 px-3 py-2 rounded-lg text-[12px] font-medium control-accent disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >
                 <Send size={12} /> {sending ? 'Sending…' : 'Send'}
               </button>
@@ -322,45 +317,71 @@ export function Chat() {
   );
 }
 
-function SessionBar({
-  contextPct, turnsToday, costToday, model, agentLabel,
+function ChatToolbar({
+  agents, activeAgent, onAgentChange, contextPct, turnsToday, costToday, model,
 }: {
-  contextPct?: number; turnsToday: number; costToday: number; model?: string; agentLabel?: string;
+  agents: Agent[];
+  activeAgent: string;
+  onAgentChange: (agentId: string) => void;
+  contextPct?: number;
+  turnsToday: number;
+  costToday: number;
+  model?: string;
 }) {
-  return (
-    <div class="flex items-center gap-4 px-6 py-1.5 border-b border-[var(--color-border)] text-[10.5px] text-[var(--color-text-faint)] tabular-nums">
-      {agentLabel && (
-        <span><span class="uppercase tracking-wider">Agent</span> <span class="text-[var(--color-text-muted)] normal-case tracking-normal">{agentLabel}</span></span>
-      )}
-      {typeof contextPct === 'number' && (
-        <span><span class="uppercase tracking-wider">Ctx</span> <span class="text-[var(--color-text-muted)]">{contextPct}%</span></span>
-      )}
-      <span><span class="uppercase tracking-wider">Turns today</span> <span class="text-[var(--color-text-muted)]">{formatNumber(turnsToday)}</span></span>
-      {showCosts.value && (
-        <span><span class="uppercase tracking-wider">Cost today</span> <span class="text-[var(--color-text-muted)]">{formatCost(costToday)}</span></span>
-      )}
-      {model && (
-        <span class="ml-auto"><span class="uppercase tracking-wider">Model</span> <span class="text-[var(--color-text-muted)] normal-case font-mono">{model.replace('claude-', '')}</span></span>
-      )}
-    </div>
-  );
-}
+  const selected = agents.find((agent) => agent.id === activeAgent);
+  const onlineAgents = agents.filter((agent) => agent.running);
+  const offlineAgents = agents.filter((agent) => !agent.running);
+  const onlineCount = onlineAgents.length;
+  const inputClass = 'toolbar-control rounded-md border border-[var(--color-border)] bg-[var(--color-card)] text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]';
 
-function TabBtn({ label, active, onClick, live }: { label: string; active: boolean; onClick: () => void; live?: boolean }) {
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      class={[
-        'inline-flex items-center gap-1.5 px-3 py-1 rounded-md text-[12px] transition-colors',
-        active
-          ? 'bg-[var(--color-elevated)] text-[var(--color-text)]'
-          : 'text-[var(--color-text-muted)] hover:text-[var(--color-text)] hover:bg-[var(--color-elevated)]',
-      ].join(' ')}
-    >
-      {live !== undefined && <StatusDot tone={live ? 'done' : 'cancelled'} />}
-      {label}
-    </button>
+    <div class="page-toolbar shrink-0 flex flex-wrap items-center gap-x-3 gap-y-2 px-4 sm:px-6 py-2 border-b border-[var(--color-border)] bg-[var(--color-bg)]">
+      <label class="flex items-center gap-2 min-w-0">
+        <span class="text-[13px] text-[var(--color-text-muted)]">Agent</span>
+        <select
+          value={activeAgent}
+          onChange={(event) => onAgentChange(event.currentTarget.value)}
+          aria-label="Select chat agent"
+          class={`${inputClass} w-[min(260px,60vw)] min-w-[150px] px-2.5`}
+        >
+          <option value="all">All agents</option>
+          {onlineAgents.length > 0 && (
+            <optgroup label="Online">
+              {onlineAgents.map((agent) => <option value={agent.id} key={agent.id}>{agent.name || agent.id}</option>)}
+            </optgroup>
+          )}
+          {offlineAgents.length > 0 && (
+            <optgroup label="Offline">
+              {offlineAgents.map((agent) => <option value={agent.id} key={agent.id}>{agent.name || agent.id}</option>)}
+            </optgroup>
+          )}
+          {activeAgent !== 'all' && !selected && <option value={activeAgent}>{activeAgent}</option>}
+        </select>
+      </label>
+
+      <span class="inline-flex items-center gap-1.5 text-[12px] text-[var(--color-text-muted)] whitespace-nowrap">
+        <StatusDot tone={activeAgent === 'all' ? (onlineCount > 0 ? 'done' : 'cancelled') : selected?.running ? 'done' : 'cancelled'} />
+        {activeAgent === 'all'
+          ? `${onlineCount} of ${agents.length} online`
+          : selected?.running ? 'Online' : 'Offline'}
+      </span>
+
+      <div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11.5px] text-[var(--color-text-faint)] tabular-nums sm:ml-auto">
+        {typeof contextPct === 'number' && (
+          <span><span class="uppercase tracking-wider">Ctx</span> <span class="text-[var(--color-text-muted)]">{contextPct}%</span></span>
+        )}
+        <span><span class="uppercase tracking-wider">Turns today</span> <span class="text-[var(--color-text-muted)]">{formatNumber(turnsToday)}</span></span>
+        {showCosts.value && (
+          <span><span class="uppercase tracking-wider">Cost today</span> <span class="text-[var(--color-text-muted)]">{formatCost(costToday)}</span></span>
+        )}
+        {model && (
+          <span class="inline-flex min-w-0 max-w-[180px] items-center gap-1">
+            <span class="shrink-0 uppercase tracking-wider">Model</span>
+            <span class="min-w-0 truncate text-[var(--color-text-muted)] normal-case" title={model}>{modelLabel(model)}</span>
+          </span>
+        )}
+      </div>
+    </div>
   );
 }
 
