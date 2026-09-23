@@ -17,6 +17,8 @@ Baseline: main `8f11afa`, including retained sanitization after #280 and the #28
 
 ## Remaining limits and release checks
 
+- Intentional credential delivery: Telegram's built-in `/dashboard` command may deliver the configured dashboard token inside its application-built login URL to the configured owner in an unlocked private chat. A single-use, object-identity capability at the Telegram send boundary permits that exact URL in the message and open/copy buttons. Other secrets are still scanned, detector failure still withholds output, and ordinary replies, logging, and persistence have no exception. Handler tests capture actual API payload bytes for local/public links, access denial, URL encoding, copy-button limits, concurrent sends, replay, and generated-output persistence.
+
 - This is a text boundary, not full DLP or process/network containment. Attachment bytes and direct tool network traffic remain outside scope.
 - Only configured protected names and detector patterns are covered. Values of eight characters or fewer are excluded by existing policy.
 - Presentation serialization scans its explicit field inventory, not every arbitrary application property. New adapters need boundary review.

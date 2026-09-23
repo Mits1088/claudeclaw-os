@@ -2,6 +2,7 @@ import { claimSteeringReceipt, getChatSteering, registerChatSteering, revokeChat
 import { MIDTURN_STEERING_ENABLED } from './config.js';
 import { logConversationTurn } from './db.js';
 import { outboundTelegramTransformer, outboundText } from './outbound-payload.js';
+import { sendDashboardReply } from './telegram-dashboard.js';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -21,9 +22,6 @@ import {
   AGENT_ID,
   ALLOWED_CHAT_ID,
   CONTEXT_LIMIT,
-  DASHBOARD_PORT,
-  DASHBOARD_TOKEN,
-  DASHBOARD_URL,
   MAX_MESSAGE_LENGTH,
   activeBotToken,
   agentDefaultModel,
@@ -415,16 +413,6 @@ export function modelStatusLine(provider: ProviderConfig, chatId: string): strin
   return 'Model: Provider default';
 }
 
-function canUseTelegramUrlButton(rawUrl: string): boolean {
-  try {
-    const url = new URL(rawUrl);
-    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false;
-    const host = url.hostname.toLowerCase();
-    return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
-  } catch {
-    return false;
-  }
-}
 import {
   downloadTelegramFile,
   transcribeAudio,
@@ -2538,24 +2526,7 @@ export function createBot(): Bot {
   // /dashboard — send a clickable link to the web dashboard
   bot.command('dashboard', async (ctx) => {
     if (await replyIfLocked(ctx)) return;
-    if (!DASHBOARD_TOKEN) {
-      await ctx.reply('Dashboard not configured. Set DASHBOARD_TOKEN in .env and restart.');
-      return;
-    }
-    const chatIdStr = ctx.chat!.id.toString();
-    const base = DASHBOARD_URL || `http://localhost:${DASHBOARD_PORT}`;
-    const url = `${base}/?token=${DASHBOARD_TOKEN}&chatId=${chatIdStr}`;
-
-    if (canUseTelegramUrlButton(url)) {
-      const { InlineKeyboard } = await import('grammy');
-      const keyboard = new InlineKeyboard().url('Open Dashboard', url);
-      await ctx.reply('Dashboard', { reply_markup: keyboard });
-      return;
-    }
-
-    await ctx.reply(
-      `Dashboard is running locally:\n${url}\n\nTelegram cannot open localhost links as buttons. Open this on the machine running ClaudeClaw, or set DASHBOARD_URL to a public tunnel URL for phone access.`,
-    );
+    await sendDashboardReply(ctx);
   });
 
   // /stop — interrupt the current agent query

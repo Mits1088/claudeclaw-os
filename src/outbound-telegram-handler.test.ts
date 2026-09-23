@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { AgentTurnInput } from './agent-engine/types.js';
 
 const fixture = vi.hoisted(() => ({ mode: 'success', calls: 0, failEdit: false,
+  dashboardToken: 'a1'.repeat(32), dashboardUrl: '', owner: '7', locked: false, detectorFailure: false,
   secret: 'alpha\nbeta "quoted" \\ credential', bytes: [] as string[], pending: [] as Promise<void>[],
   narrated: undefined as (() => void) | undefined, resume: undefined as Promise<void> | undefined }));
 vi.mock('grammy', async original => {
@@ -27,16 +28,19 @@ vi.mock('grammy', async original => {
   } };
 });
 vi.mock('./config.js', async original => ({ ...await original<typeof import('./config.js')>(),
-  AGENT_ID: 'main', ALLOWED_CHAT_ID: '7', activeBotToken: '123:fixture', agentCwd: '/nonexistent/fixture',
+  AGENT_ID: 'main', get ALLOWED_CHAT_ID() { return fixture.owner; }, activeBotToken: '123:fixture', agentCwd: '/nonexistent/fixture',
+  get DASHBOARD_TOKEN() { return fixture.dashboardToken; }, get DASHBOARD_URL() { return fixture.dashboardUrl; }, DASHBOARD_PORT: 3141,
   agentSystemPrompt: '', agentProvider: { type: 'claude', model: 'fixture' }, agentDefaultModel: 'fixture',
   MEMORY_NOTIFY: false, SMART_ROUTING_ENABLED: false, SHOW_COST_FOOTER: false, STREAM_STRATEGY: 'edit' }));
 vi.mock('./outbound-policy.js', () => ({
-  resolveOutboundPolicy: () => ({ enabled: true, protectedValues: [fixture.secret] }),
-  outboundOptionsForSeam: () => ({ enabled: true, protectedValues: [fixture.secret] }),
+  resolveOutboundPolicy: () => ({ enabled: true, protectedValues: [fixture.secret, fixture.dashboardToken] }),
+  outboundOptionsForSeam: () => ({ enabled: true, protectedValues: fixture.detectorFailure
+    ? { [Symbol.iterator]() { throw new Error('Synthetic detector failure'); } }
+    : [fixture.secret, fixture.dashboardToken] }),
 }));
 vi.mock('./env.js', () => ({ readEnvFile: () => ({}) }));
 vi.mock('./security.js', async original => ({ ...await original<typeof import('./security.js')>(),
-  getScrubbedSdkEnv: () => ({}), isLocked: () => false, touchActivity: () => {}, audit: () => {}, checkKillPhrase: () => false }));
+  getScrubbedSdkEnv: () => ({}), isLocked: () => fixture.locked, touchActivity: () => {}, audit: () => {}, checkKillPhrase: () => false }));
 vi.mock('./kill-switches.js', () => ({ requireEnabled: () => {} }));
 vi.mock('./memory.js', async () => {
   const db = await import('./db.js');
@@ -52,6 +56,10 @@ vi.mock('./voice.js', () => ({ voiceCapabilities: () => ({ tts: false, stt: fals
 vi.mock('./agent-engine/index.js', () => ({ engineSupportsSystemPrompt: () => true, EngineFactory: { forProvider: () => ({
   async *invoke(_input: AgentTurnInput) {
     fixture.calls++;
+    if (fixture.mode === 'dashboard-leak') {
+      yield { type: 'result', text: `http://localhost:3141/?token=${fixture.dashboardToken}&chatId=7`, usage: null, stopReason: 'end_turn' };
+      return;
+    }
     if (fixture.mode === 'live-narration') {
       const prefix = 'Checking the configuration.\n';
       yield { type: 'text_delta', delta: prefix + fixture.secret.slice(0, 7), accumulatedText: prefix + fixture.secret.slice(0, 7) };
@@ -76,6 +84,7 @@ import { _initTestDatabase, getRecentConversation } from './db.js';
 import { chatEvents } from './state.js';
 
 beforeEach(() => { _initTestDatabase(); fixture.bytes = []; fixture.pending = []; fixture.calls = 0;
+  fixture.dashboardToken = 'a1'.repeat(32); fixture.dashboardUrl = ''; fixture.owner = '7'; fixture.locked = false; fixture.detectorFailure = false;
   vi.stubEnv('HOME', '/nonexistent/fixture'); vi.stubEnv('USERPROFILE', '/nonexistent/fixture'); });
 afterEach(() => { vi.unstubAllEnvs(); vi.useRealTimers(); fixture.narrated = undefined; fixture.resume = undefined; });
 
@@ -125,3 +134,139 @@ it.each(['success', 'edit-fallback', 'abort', 'error'])(
     } finally { chatEvents.off('chat', capture); }
   },
 );
+
+async function dashboardCommand(bot = createBot(), chatId = 7, group = false): Promise<void> {
+  await bot.handleUpdate({ update_id: 3, message: { message_id: 3, date: 1,
+    chat: group ? { id: chatId, type: 'group', title: 'Group' } : { id: chatId, type: 'private', first_name: 'User' },
+    from: { id: chatId, is_bot: false, first_name: 'User' }, text: '/dashboard',
+    entities: [{ type: 'bot_command', offset: 0, length: 10 }] } });
+}
+
+function dashboardMessage() {
+  return fixture.bytes.map(body => JSON.parse(body)).find(body => body.method === 'sendMessage'
+    && (body.text?.startsWith('Click the button to copy Dashboard Link')
+      || (body.text?.startsWith('Dashboard') && body.text.includes('?token='))));
+}
+
+it('delivers a complete local dashboard link and copy button only for the explicit command', async () => {
+  const bot = createBot();
+  await dashboardCommand(bot);
+  const link = `http://localhost:3141/?token=${fixture.dashboardToken}&chatId=7`;
+  const message = dashboardMessage();
+  expect(message.text).toBe('Click the button to copy Dashboard Link to the clipboard.  Paste into browser to launch.');
+  expect(message.reply_markup.inline_keyboard).toEqual([[{ text: 'Dashboard Link', copy_text: { text: link } }]]);
+  expect(message.link_preview_options).toEqual({ is_disabled: true });
+  expect(fixture.calls).toBe(0);
+  expect(JSON.stringify(getRecentConversation('7', 10))).not.toContain(fixture.dashboardToken);
+
+  // Repeating the same URL cannot opt into delivery.
+  fixture.bytes = [];
+  await bot.api.sendMessage(7, link, { reply_markup: { inline_keyboard: [[
+    { text: 'Copy', copy_text: { text: link } }, { text: 'Open', url: link },
+  ]] } });
+  expect(fixture.bytes.join('')).not.toContain(fixture.dashboardToken);
+  expect(fixture.bytes.join('')).toContain('[REDACTED]');
+});
+
+it('retains the public Open Dashboard button and also provides the copyable link', async () => {
+  fixture.dashboardUrl = 'https://dashboard.example/nested/';
+  await dashboardCommand();
+  const message = dashboardMessage();
+  const link = `https://dashboard.example/nested/?token=${fixture.dashboardToken}&chatId=7`;
+  expect(message.text).toBe('Click the button to copy Dashboard Link to the clipboard.  Paste into browser to launch.');
+  expect(message.reply_markup.inline_keyboard).toEqual([[
+    { text: 'Open Dashboard', url: link }, { text: 'Dashboard Link', copy_text: { text: link } },
+  ]]);
+});
+
+it.each(['http://localhost:3141', 'http://127.0.0.1:3141', 'http://127.0.0.2:3141', 'http://[::1]:3141', 'http://desktop.localhost:3141'])(
+  'uses a copy button without an invalid URL button for %s', async base => {
+    fixture.dashboardUrl = base;
+    await dashboardCommand();
+    const message = dashboardMessage();
+    expect(message.text).not.toContain(fixture.dashboardToken);
+    expect(message.reply_markup.inline_keyboard.flat()).toHaveLength(1);
+    expect(message.reply_markup.inline_keyboard[0][0].copy_text.text).toContain(fixture.dashboardToken);
+  },
+);
+
+it('keeps long local URLs complete without exceeding Telegram copy button limits', async () => {
+  fixture.dashboardUrl = `http://localhost:3141/${'path/'.repeat(45)}`;
+  await dashboardCommand();
+  const message = dashboardMessage();
+  expect(message.text).toContain(fixture.dashboardToken);
+  expect(message.text).toContain(fixture.dashboardUrl);
+  expect(message.reply_markup).toBeUndefined();
+});
+
+it('encodes the configured token as one query parameter', async () => {
+  fixture.dashboardToken = 'dashboard & token+#/?';
+  await dashboardCommand();
+  const url = dashboardMessage().reply_markup.inline_keyboard[0][0].copy_text.text;
+  const parsed = new URL(url);
+  expect(parsed.searchParams.get('token')).toBe(fixture.dashboardToken);
+  expect([...parsed.searchParams.keys()]).toEqual(['token', 'chatId']);
+});
+
+it.each(['unauthorized', 'locked', 'unconfigured owner', 'group'])(
+  'does not disclose dashboard credentials for %s', async scenario => {
+    fixture.locked = scenario === 'locked';
+    if (scenario === 'unconfigured owner') fixture.owner = '';
+    await dashboardCommand(createBot(), scenario === 'unauthorized' ? 8 : 7, scenario === 'group');
+    expect(dashboardMessage()).toBeUndefined();
+    expect(fixture.bytes.join('')).not.toContain(fixture.dashboardToken);
+    expect(fixture.calls).toBe(0);
+  },
+);
+
+it('keeps unrelated secrets redacted even inside an authorized dashboard reply', async () => {
+  const unrelatedSecret = 'b2'.repeat(32);
+  fixture.dashboardUrl = `https://dashboard.example/${unrelatedSecret}`;
+  await dashboardCommand();
+  expect(dashboardMessage().reply_markup.inline_keyboard[0].find((button: any) => button.copy_text).copy_text.text).toContain(fixture.dashboardToken);
+  expect(fixture.bytes.join('')).not.toContain(unrelatedSecret);
+  expect(fixture.bytes.join('')).toContain('[REDACTED]');
+});
+
+it('continues to redact dashboard links in generated output and conversation storage', async () => {
+  const bot = createBot();
+  await dashboardCommand(bot);
+  fixture.bytes = [];
+  fixture.mode = 'dashboard-leak';
+  await bot.handleUpdate({ update_id: 4, message: { message_id: 4, date: 1,
+    chat: { id: 7, type: 'private', first_name: 'User' },
+    from: { id: 7, is_bot: false, first_name: 'User' }, text: 'Synthetic request' } });
+  await Promise.all(fixture.pending);
+  expect(fixture.calls).toBe(1);
+  expect(fixture.bytes.join('')).not.toContain(fixture.dashboardToken);
+  expect(JSON.stringify(getRecentConversation('7', 10))).not.toContain(fixture.dashboardToken);
+  expect(fixture.bytes.join('')).toContain('[REDACTED]');
+});
+
+it('does not exempt concurrent ordinary messages or a replayed dashboard payload', async () => {
+  const bot = createBot();
+  let captured: Parameters<typeof bot.api.raw.sendMessage>[0] | undefined;
+  bot.api.config.use((prev, method, payload, signal) => {
+    if (method === 'sendMessage' && 'text' in payload && payload.text?.startsWith('Click the button to copy Dashboard Link')) {
+      captured = payload as NonNullable<typeof captured>;
+    }
+    return prev(method, payload, signal);
+  });
+  const link = `http://localhost:3141/?token=${fixture.dashboardToken}&chatId=7`;
+  await Promise.all([dashboardCommand(bot), bot.api.sendMessage(7, `Ordinary ${link}`)]);
+  const ordinary = fixture.bytes.map(body => JSON.parse(body)).find(body => body.text?.startsWith('Ordinary'));
+  expect(ordinary.text).not.toContain(fixture.dashboardToken);
+  expect(dashboardMessage().reply_markup.inline_keyboard[0].find((button: any) => button.copy_text).copy_text.text).toContain(fixture.dashboardToken);
+  expect(captured).toBeDefined();
+
+  fixture.bytes = [];
+  await bot.api.raw.sendMessage(captured!);
+  expect(fixture.bytes.join('')).not.toContain(fixture.dashboardToken);
+});
+
+it('withholds even an authorized dashboard token if the detector fails', async () => {
+  fixture.detectorFailure = true;
+  await dashboardCommand();
+  expect(fixture.bytes.join('')).not.toContain(fixture.dashboardToken);
+  expect(fixture.bytes.join('')).toContain('[output withheld: sanitizer error]');
+});

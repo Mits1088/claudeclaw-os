@@ -861,7 +861,7 @@ You should see a log line that says `Dashboard server running`. If you don't, do
 
 #### Step 4: Open the dashboard
 
-The easiest way: **send `/dashboard` to your bot in Telegram.** It replies with a clickable link. Tap it. Done.
+The easiest way: **send `/dashboard` to your bot in your private Telegram chat.** For a local dashboard, use **Copy Dashboard Link** and paste it into a browser on the computer running ClaudeClaw. With a public `DASHBOARD_URL`, **Open Dashboard** opens it directly. The complete login link is also included in the message; links longer than Telegram's 256-character copy-button limit can still be copied manually.
 
 Or open your browser and go to:
 ```
