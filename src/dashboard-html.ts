@@ -200,6 +200,7 @@ const WARROOM_ENABLED = warroomEnabled;
       <div class="model-picker" onclick="toggleModelPicker(this)" style="display:inline-block">
         <span class="model-current" style="color:#6b7280">Set all <span style="font-size:8px;opacity:0.5">&#9662;</span></span>
         <div class="model-menu" style="display:none;right:0;left:auto">
+          <div class="model-opt" data-model="claude-opus-5-5" onclick="pickGlobalModel(this)">All Opus 5.5</div>
           <div class="model-opt" data-model="claude-opus-5" onclick="pickGlobalModel(this)">All Opus 5</div>
           <div class="model-opt" data-model="claude-fable-5-1" onclick="pickGlobalModel(this)">All Fable 5.1</div>
           <div class="model-opt" data-model="claude-fable-5" onclick="pickGlobalModel(this)">All Fable 5</div>
@@ -1553,7 +1554,7 @@ async function loadAgents() {
         for (var i = 0; i < catalog.length; i++) { if (catalog[i].id === m) return catalog[i].label; }
         return m;
       };
-      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-4-8' : 'claude-sonnet-4-6');
+      const currentModel = a.model || (a.id === 'main' ? 'claude-opus-5-5' : 'claude-sonnet-4-6');
       // Provider-neutral: the pill shows the model only. Provider lives in the
       // agent detail panel, so "Claude · Opus 5" collapses to "Opus 5".
       const providerLabel = (providerType === 'claude' || providerType === 'openai')
@@ -1921,6 +1922,7 @@ let cawTokenDebounce = null;
 let cawNameManuallyEdited = false;
 const CAW_FALLBACK_MODELS = {
   claude: [
+    { id: 'claude-opus-5-5', label: 'Opus 5.5' },
     { id: 'claude-opus-5', label: 'Opus 5' },
     { id: 'claude-fable-5-1', label: 'Fable 5.1' },
     { id: 'claude-fable-5', label: 'Fable 5' },
@@ -1933,12 +1935,16 @@ const CAW_FALLBACK_MODELS = {
   ],
   openai: [
     { id: 'gpt-6-astra', label: 'GPT-6 Astra' },
+    { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
+    { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
     { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },
     { id: 'gpt-5.5', label: 'GPT-5.5' },
   ],
   'acp-codex': [
+    { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
+    { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
     { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },
     { id: 'gpt-5.6-luna', label: 'GPT-5.6 Luna' },

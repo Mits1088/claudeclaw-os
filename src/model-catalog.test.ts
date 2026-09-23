@@ -16,10 +16,27 @@ import {
 } from './model-catalog.js';
 
 describe('model catalog', () => {
+  it('uses medium effort and always-on thinking for Opus 5.5', () => {
+    const provider = { type: 'claude' as const, model: 'claude-opus-5-5' };
+    expect(staticRuntimeOptionsFor(provider)?.modeOptions[0].label).toBe('Default (medium)');
+    expect(staticRuntimeOptionsFor(provider)?.thinkingOptions).toEqual([]);
+    for (const mode of ['off', 'on', 'enabled']) {
+      expect(claudeThinkingForModel(provider.model, mode, 'low')).toBeUndefined();
+    }
+    expect(reconcileRuntimeOptions({ ...provider, thinkingMode: 'off' }).provider.thinkingMode).toBeUndefined();
+  });
+  it.each(['gpt-6-sol', 'gpt-6-luna'])('retains none and max reasoning for %s', (model) => {
+    for (const effort of ['none', 'max']) {
+      expect(normalizedEffortForProvider({ type: 'openai', model }, effort)).toBe(effort);
+    }
+  });
   it('surfaces the frontier models with provider-neutral labels', () => {
     expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: 'claude-opus-5', label: 'Opus 5' });
     expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: 'claude-fable-5-1', label: 'Fable 5.1' });
+    expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: 'claude-opus-5-5', label: 'Opus 5.5' });
     expect(OPENAI_MODEL_OPTIONS).toEqual(expect.arrayContaining([
+      { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
+      { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
       { id: 'gpt-6-astra', label: 'GPT-6 Astra' },
       { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
       { id: 'gpt-5.6-terra', label: 'GPT-5.6 Terra' },

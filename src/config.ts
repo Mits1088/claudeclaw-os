@@ -332,7 +332,7 @@ export const OPENAI_API_KEY =
 // configured/selected. Override via OPENAI_MODEL in .env so a new default
 // lands on restart without a code change.
 export const DEFAULT_OPENAI_MODEL =
-  process.env.OPENAI_MODEL || envConfig.OPENAI_MODEL || 'gpt-5.5';
+  process.env.OPENAI_MODEL || envConfig.OPENAI_MODEL || 'gpt-6-sol';
 
 // Streaming strategy for progressive Telegram updates. Provider-agnostic: this
 // governs streaming for every adapter (Claude, Codex, Gemini, ...), not just one.
@@ -395,7 +395,7 @@ export const SMART_ROUTING_CHEAP_MODEL =
 // up on the next restart WITHOUT a code change or a new release.
 // Example: CLAUDE_MODEL_OPUS=claude-opus-4-9
 export const CLAUDE_MODEL_OPUS =
-  process.env.CLAUDE_MODEL_OPUS || envConfig.CLAUDE_MODEL_OPUS || 'claude-opus-4-8';
+  process.env.CLAUDE_MODEL_OPUS || envConfig.CLAUDE_MODEL_OPUS || 'claude-opus-5-5';
 export const CLAUDE_MODEL_SONNET =
   process.env.CLAUDE_MODEL_SONNET || envConfig.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-6';
 export const CLAUDE_MODEL_HAIKU =

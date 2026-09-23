@@ -1695,7 +1695,7 @@ describe('the launch fingerprint', () => {
     // after an upgrade and the child would never rotate.
     const identity = executableIdentity();
     expect(identity.launcher).toMatch(/@openai[\\/]codex[\\/]bin[\\/]codex\.js$/);
-    expect(identity.codexVersion).toBe('0.153.2'); // the pin the schema check ran against
+    expect(identity.codexVersion).toBe('0.156.1'); // the pin the schema check ran against
     expect(identity.launcherBytes).toBeGreaterThan(0);
     expect(identity.node).toBe(process.execPath);
     expect(identity.error).toBeUndefined();

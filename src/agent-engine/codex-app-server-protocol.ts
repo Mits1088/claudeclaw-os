@@ -10,7 +10,8 @@
  * `scripts/check-codex-app-server-schema.ts` regenerates the real schema from the
  * PINNED binary and asserts every method and field named here still exists.
  *
- * Baseline: `@openai/codex` 0.153.2 (direct, exact-pinned dependency).
+ * Baseline: `@openai/codex` 0.156.1 (direct, exact-pinned dependency).
+ * All 155 consumed-surface checks still pass against the original 0.153.2 shapes.
  *
  * Trust rules for anything arriving from the child (see `isJsonRpcMessage`):
  *  - every inbound line is `unknown` until its envelope is checked;

@@ -278,13 +278,14 @@ describe('resolveTelegramModelSelection', () => {
   it('resolves native OpenAI shortcuts used by Telegram', () => {
     const provider = { type: 'openai' as const, model: 'gpt-5.5' };
     expect(resolveTelegramModelSelection(provider, 'ASTRA').model).toBe('gpt-6-astra');
-    expect(resolveTelegramModelSelection(provider, 'sol').model).toBe('gpt-5.6-sol');
+    expect(resolveTelegramModelSelection(provider, 'sol').model).toBe('gpt-6-sol');
     expect(resolveTelegramModelSelection(provider, 'Terra').model).toBe('gpt-5.6-terra');
-    expect(resolveTelegramModelSelection(provider, ' luna ').model).toBe('gpt-5.6-luna');
+    expect(resolveTelegramModelSelection(provider, ' luna ').model).toBe('gpt-6-luna');
   });
 
   it('accepts catalogued OpenAI ids and rejects unknown ids', () => {
     const provider = { type: 'openai' as const };
+    expect(resolveTelegramModelSelection(provider, 'gpt-6-sol').model).toBe('gpt-6-sol');
     expect(resolveTelegramModelSelection(provider, 'gpt-5.5').model).toBe('gpt-5.5');
     expect(resolveTelegramModelSelection(provider, 'gpt-made-up').error).toBe(
       'Unknown OpenAI model: gpt-made-up',

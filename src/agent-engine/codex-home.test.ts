@@ -154,7 +154,7 @@ describe('elevated Windows sandbox state', () => {
     expect(fs.readFileSync(path.join(home, '.sandbox', 'setup_marker.json'), 'utf8')).toBe('{"version":5}');
     expect(fs.readFileSync(path.join(home, '.sandbox-secrets', 'sandbox_users.json'), 'utf8')).toBe('dpapi-protected-users');
     expect(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).toBe(
-      '[windows]\nsandbox = "elevated"\nsandbox_private_desktop = true\n',
+      '[windows]\nsandbox = "elevated"\n',
     );
     expect(fs.readdirSync(home).sort()).toEqual(['.sandbox', '.sandbox-secrets', 'config.toml']);
   });

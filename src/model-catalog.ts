@@ -18,6 +18,7 @@ export interface StaticRuntimeOptions {
 }
 
 const MODEL_LABELS: Readonly<Record<string, string>> = {
+  'claude-opus-5-5': 'Opus 5.5',
   'claude-opus-5': 'Opus 5',
   'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
@@ -29,6 +30,8 @@ const MODEL_LABELS: Readonly<Record<string, string>> = {
   'claude-sonnet-4-5': 'Sonnet 4.5',
   'claude-haiku-4-5': 'Haiku 4.5',
   'gpt-6-astra': 'GPT-6 Astra',
+  'gpt-6-sol': 'GPT-6 Sol',
+  'gpt-6-luna': 'GPT-6 Luna',
   'gpt-5.6-sol': 'GPT-5.6 Sol',
   'gpt-5.6-terra': 'GPT-5.6 Terra',
   'gpt-5.6-luna': 'GPT-5.6 Luna',
@@ -49,7 +52,10 @@ function uniqueOptions(ids: string[]): ModelOption[] {
   return Array.from(new Set(ids)).map((id) => ({ id, label: modelDisplayLabel(id) }));
 }
 
+// Keep older supported models selectable; remove only against provider retirement notices.
+// Catalogs reviewed 2026-09-22.
 export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-fable-5-1',
   'claude-fable-5',
@@ -65,6 +71,8 @@ export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
 
 export const OPENAI_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
   'gpt-6-astra',
+  'gpt-6-sol',
+  'gpt-6-luna',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
   'gpt-5.6-luna',
@@ -81,7 +89,7 @@ export const VALID_CLAUDE_MODELS = CLAUDE_MODEL_OPTIONS.map((option) => option.i
 const CLAUDE_EFFORT_DEFAULT_HIGH = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const CLAUDE_EFFORT_NO_XHIGH = ['', 'low', 'medium', 'high', 'max'] as const;
 const OPENAI_ASTRA_EFFORT = ['', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
-const OPENAI_56_EFFORT = ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
+const OPENAI_SOL_LUNA_EFFORT = ['', 'none', 'low', 'medium', 'high', 'xhigh', 'max'] as const;
 const OPENAI_LEGACY_EFFORT = ['', 'low', 'medium', 'high', 'xhigh'] as const;
 
 function effortOptions(values: readonly string[], defaultEffort: 'high' | 'medium'): RuntimeOption[] {
@@ -106,7 +114,8 @@ function claudeEffortIds(model: string): readonly string[] {
 function claudeThinkingOptions(model: string): RuntimeOption[] {
   // These models use adaptive thinking as part of their model contract. The
   // model default is safer than exposing the legacy extended-thinking switch.
-  if (model === 'claude-opus-5'
+  if (model === 'claude-opus-5-5'
+    || model === 'claude-opus-5'
     || model === 'claude-fable-5-1'
     || model === 'claude-fable-5'
     || model === 'claude-sonnet-5') {
@@ -129,24 +138,24 @@ function claudeThinkingOptions(model: string): RuntimeOption[] {
 export function staticRuntimeOptionsFor(provider: ProviderConfig, requestedModel?: string): StaticRuntimeOptions | null {
   const model = requestedModel || provider.model;
   if (provider.type === 'claude') {
-    const effectiveModel = model || 'claude-opus-4-8';
+    const effectiveModel = model || 'claude-opus-5-5';
     return {
       modeLabel: 'Effort',
       thinkingLabel: 'Thinking',
-      modeOptions: effortOptions(claudeEffortIds(effectiveModel), 'high'),
+      modeOptions: effortOptions(claudeEffortIds(effectiveModel), effectiveModel === 'claude-opus-5-5' ? 'medium' : 'high'),
       thinkingOptions: claudeThinkingOptions(effectiveModel),
     };
   }
   if (provider.type === 'openai') {
-    const effectiveModel = model || 'gpt-5.5';
+    const effectiveModel = model || 'gpt-6-sol';
     return {
       thinkingLabel: 'Reasoning effort',
       modeOptions: [],
       thinkingOptions: effortOptions(
         effectiveModel === 'gpt-6-astra'
           ? OPENAI_ASTRA_EFFORT
-          : effectiveModel.startsWith('gpt-5.6-')
-            ? OPENAI_56_EFFORT
+          : (effectiveModel === 'gpt-6-sol' || effectiveModel === 'gpt-6-luna' || effectiveModel.startsWith('gpt-5.6-'))
+            ? OPENAI_SOL_LUNA_EFFORT
             : OPENAI_LEGACY_EFFORT,
         'medium',
       ),
@@ -245,7 +254,7 @@ export function claudeThinkingForModel(
   const mode = normalizedMode(requested);
   if (!mode) return undefined;
 
-  if (model === 'claude-fable-5-1' || model === 'claude-fable-5') return undefined;
+  if (model === 'claude-opus-5-5' || model === 'claude-fable-5-1' || model === 'claude-fable-5') return undefined;
   if (model === 'claude-opus-5') {
     if (mode === 'off') {
       return effort === 'xhigh' || effort === 'max' ? undefined : { type: 'disabled' };

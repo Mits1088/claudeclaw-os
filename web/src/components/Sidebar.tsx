@@ -150,7 +150,7 @@ function SidebarFooter() {
   const off = Object.entries(switches).filter(([, on]) => !on);
   const anyOff = off.length > 0;
   const providerName = provider.data?.label ?? 'Claude';
-  const modelName = modelLabel(provider.data?.model ?? 'claude-opus-4-8');
+  const modelName = modelLabel(provider.data?.model ?? 'claude-opus-5-5');
   const reasoning = provider.data?.reasoning?.trim();
   // Combine model + thinking as "Opus 4.8 (high)". Omit the clause for models
   // that expose no dial (adaptive thinking).

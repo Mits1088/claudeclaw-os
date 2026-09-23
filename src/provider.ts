@@ -98,7 +98,7 @@ export interface ProviderConfig {
 // the historical import path (./provider.js) stable for existing call sites.
 export { DEFAULT_CLAUDE_MODEL };
 export const DEFAULT_PROVIDER: ProviderConfig = { type: 'claude', model: DEFAULT_CLAUDE_MODEL };
-export const DEFAULT_CODEX_MODEL = 'gpt-5.5';
+export const DEFAULT_CODEX_MODEL = 'gpt-6-sol';
 
 export function normalizeProviderConfig(input: unknown, legacyModel?: string): ProviderConfig {
   const raw = input && typeof input === 'object' ? input as Record<string, unknown> : {};

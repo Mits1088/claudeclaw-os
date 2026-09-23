@@ -481,6 +481,7 @@ const AVAILABLE_MODELS: Record<string, string> = {
   opus: CLAUDE_MODEL_OPUS,
   sonnet: CLAUDE_MODEL_SONNET,
   haiku: CLAUDE_MODEL_HAIKU,
+  opus55: 'claude-opus-5-5',
   opus5: 'claude-opus-5',
   fable51: 'claude-fable-5-1',
   fable5: 'claude-fable-5',
@@ -489,9 +490,9 @@ const AVAILABLE_MODELS: Record<string, string> = {
 
 const OPENAI_MODEL_SHORTCUTS: Record<string, string> = {
   astra: 'gpt-6-astra',
-  sol: 'gpt-5.6-sol',
+  sol: 'gpt-6-sol',
   terra: 'gpt-5.6-terra',
-  luna: 'gpt-5.6-luna',
+  luna: 'gpt-6-luna',
 };
 
 export interface TelegramModelSelection {
@@ -509,7 +510,7 @@ export function resolveTelegramModelSelection(provider: ProviderConfig, rawArg: 
     return {
       model,
       shortcuts: AVAILABLE_MODELS,
-      example: 'claude-sonnet-4-5',
+      example: 'claude-opus-5-5',
       ...(!model ? { error: `Unknown Claude model: ${arg}` } : {}),
     };
   }

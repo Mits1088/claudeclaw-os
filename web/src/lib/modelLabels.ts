@@ -3,6 +3,7 @@
 // src/model-catalog.test.ts asserts the two stay identical, so a model added
 // to the catalog fails the suite until it is added here too.
 const MODEL_LABELS: Record<string, string> = {
+  'claude-opus-5-5': 'Opus 5.5',
   'claude-opus-5': 'Opus 5',
   'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
@@ -14,6 +15,8 @@ const MODEL_LABELS: Record<string, string> = {
   'claude-sonnet-4-5': 'Sonnet 4.5',
   'claude-haiku-4-5': 'Haiku 4.5',
   'gpt-6-astra': 'GPT-6 Astra',
+  'gpt-6-sol': 'GPT-6 Sol',
+  'gpt-6-luna': 'GPT-6 Luna',
   'gpt-5.6-sol': 'GPT-5.6 Sol',
   'gpt-5.6-terra': 'GPT-5.6 Terra',
   'gpt-5.6-luna': 'GPT-5.6 Luna',
@@ -27,6 +30,7 @@ const MODEL_LABELS: Record<string, string> = {
 
 // Selectable Claude ids in picker order. Mirrors CLAUDE_MODEL_OPTIONS.
 export const CLAUDE_MODEL_IDS = [
+  'claude-opus-5-5',
   'claude-opus-5',
   'claude-fable-5-1',
   'claude-fable-5',

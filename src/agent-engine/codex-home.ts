@@ -59,7 +59,9 @@ export class CodexWindowsSandboxPreparationError extends Error {
   }
 }
 
-const WINDOWS_SANDBOX_CONFIG = '[windows]\nsandbox = "elevated"\nsandbox_private_desktop = true\n';
+// Codex 0.156.1 requires a parent-owned private desktop for sandbox commands;
+// the former windows.sandbox_private_desktop config key is no longer accepted.
+const WINDOWS_SANDBOX_CONFIG = '[windows]\nsandbox = "elevated"\n';
 const WINDOWS_SANDBOX_MARKER = path.join('.sandbox', 'setup_marker.json');
 const WINDOWS_SANDBOX_USERS = path.join('.sandbox-secrets', 'sandbox_users.json');
 
