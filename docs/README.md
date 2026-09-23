@@ -6,6 +6,8 @@ current system and should evolve with it.
 
 ## Releases
 
+- [v1.11.0: new models, refreshed dashboard, and live steering](releases/v1.11.0.md)
+  covers shipped features and upgrade notes.
 - [v1.10.0: shared knowledge, live direction, dependable delegation](releases/v1.10.0.md)
   covers shipped features, optional setup, upgrade steps, and known limits.
 

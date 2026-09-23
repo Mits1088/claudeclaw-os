@@ -1,3 +1,17 @@
+## [1.11.0] - 2026-09-23
+
+### Features
+
+- **providers:** Add Opus 5.5 and GPT-6 Sol/Luna ([#298](https://github.com/earlyaidopters/claudeclaw-os/pull/298))
+- **dashboard:** Unify agent workspaces, settings, and appearance ([#297](https://github.com/earlyaidopters/claudeclaw-os/pull/297))
+- Add Claude steering on the shared Codex foundation ([#294](https://github.com/earlyaidopters/claudeclaw-os/pull/294))
+- **dashboard:** Guided provider setup and OpenRouter model discovery ([#293](https://github.com/earlyaidopters/claudeclaw-os/pull/293))
+
+### Bug Fixes
+
+- **telegram:** Recover queued steering and plain acceptance receipts ([#299](https://github.com/earlyaidopters/claudeclaw-os/pull/299))
+- **telegram:** Make dashboard links copyable ([#295](https://github.com/earlyaidopters/claudeclaw-os/pull/295))
+
 # Changelog
 
 All notable changes to ClaudeClaw will be documented here.
