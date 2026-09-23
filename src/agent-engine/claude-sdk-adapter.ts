@@ -1,6 +1,8 @@
 import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
+import { ClaudeSteeringInput } from './claude-steering-input.js';
+import { createSteeringHandle } from './steering.js';
 
 import { query } from '@anthropic-ai/claude-agent-sdk';
 
@@ -416,10 +418,25 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
       relayStderr(data);
     };
 
+    const steerInput = input.registerSteering && input.provider?.type === 'claude'
+      ? new ClaudeSteeringInput(input.prompt, input.sessionId) : undefined;
+    let unregisterSteering: (() => void) | undefined;
+    let steeringActive = false;
+    const closeSteering = () => {
+      steeringActive = false;
+      unregisterSteering?.();
+      unregisterSteering = undefined;
+      steerInput?.close();
+    };
+    const abortSteering = () => { closeSteering(); steerInput?.dispose(); };
+    input.abortController?.signal.addEventListener('abort', abortSteering, { once: true });
+    if (input.abortController?.signal.aborted) abortSteering();
+
     try {
       for await (const event of query({
-        prompt: singleTurn(input.prompt, input.sessionId),
+        prompt: steerInput ?? singleTurn(input.prompt, input.sessionId),
         options: {
+          ...(steerInput ? { extraArgs: { 'replay-user-messages': null } } : {}),
           cwd: input.cwd,
           resume: input.sessionId,
           settingSources: input.settingSources ?? ['project', 'user'],
@@ -451,8 +468,18 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         } as any,
       })) {
       const ev = event as Record<string, unknown>;
+      steerInput?.acknowledge(ev);
 
       if (ev.type === 'system' && ev.subtype === 'init' && typeof ev.session_id === 'string') {
+        if (steerInput && !unregisterSteering && !emittedResult && !input.abortController?.signal.aborted) {
+          steerInput.setSession(ev.session_id);
+          steeringActive = true;
+          unregisterSteering = input.registerSteering!(createSteeringHandle({
+            sessionId: ev.session_id, turnId: randomUUID(), startedAt: Date.now(),
+            isActive: () => steeringActive && !input.abortController?.signal.aborted,
+            send: (text) => steerInput.submit(text),
+          }));
+        }
         yield { type: 'session', sessionId: ev.session_id, raw: ev };
       }
 
@@ -595,10 +622,14 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
       }
 
       if (ev.type === 'result') {
+        closeSteering();
         // The resume target does not exist in this cwd's project directory.
         // Abandon the attempt without yielding usage or a result — invoke()
         // reruns the turn on a fresh session.
         if (resumeRecovery && sawSessionNotFound && ev.is_error === true) {
+          if (steerInput?.hasHandedSteer) {
+            throw new Error('Claude session recovery stopped because a steering message may already have been delivered. The turn was not replayed.');
+          }
           resumeRecovery.unresumableSession = true;
           return;
         }
@@ -671,6 +702,10 @@ export class ClaudeSdkEngineAdapter implements AgentEngine {
         return;
       }
       throw withExecutionCertainty(err, 'unknown');
+    } finally {
+      closeSteering();
+      steerInput?.dispose();
+      input.abortController?.signal.removeEventListener('abort', abortSteering);
     }
   }
 }

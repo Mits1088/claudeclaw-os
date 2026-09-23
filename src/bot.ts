@@ -2696,16 +2696,33 @@ export function createBot(): Bot {
       reason: outcome.status === 'not-delivered' ? outcome.reason : undefined }, 'steering_outcome');
     if (outcome.status === 'not-delivered') {
       messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text));
-      await ctx.reply('Could not steer. Queued as a follow-up.');
+      await ctx.reply('Could not steer. Queued as a follow-up.',
+        { reply_parameters: { message_id: ctx.message!.message_id } });
       return;
     }
     if (!claimSteeringReceipt(handle, String(ctx.message!.message_id))) return;
     try { logConversationTurn(chatIdStr, 'user', text, handle.sessionId, AGENT_ID); }
     catch (err) { logger.error({ err }, 'Could not persist steering input'); }
     emitChatEvent({ type: 'user_message', chatId: chatIdStr, content: text, source: 'telegram' });
+    if (outcome.status === 'pending') {
+      // Return to polling immediately so /stop and additional updates remain usable.
+      const submitted = ctx.reply('Steering update submitted; awaiting Claude acknowledgment at the next step. No need to resend.',
+        { reply_parameters: { message_id: ctx.message!.message_id } }).catch(() => {});
+      void outcome.completion.then(async (final) => {
+        await submitted;
+        logger.info({ agentId: AGENT_ID, chatId: chatIdStr, status: final.status }, 'steering_outcome');
+        await ctx.reply(final.status === 'accepted'
+          ? 'Your steering update was accepted by the active turn.'
+          : 'Could not confirm delivery of your steering update. It has not been queued again.',
+        { reply_parameters: { message_id: ctx.message!.message_id } });
+      }).catch((err) => { logger.warn({ err }, 'Could not send final steering acknowledgment'); });
+      await submitted;
+      return;
+    }
     await ctx.reply(outcome.status === 'accepted'
       ? 'Update accepted by the active turn.'
-      : 'Could not confirm whether the active turn received your update. It has not been queued again.');
+      : 'Could not confirm whether the active turn received your update. It has not been queued again.',
+    { reply_parameters: { message_id: ctx.message!.message_id } });
   });
 
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)

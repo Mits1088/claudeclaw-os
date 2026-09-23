@@ -50,6 +50,26 @@ async function send(bot: ReturnType<typeof createBot>, overrides: Record<string,
     text: '/steer Steering fixture update', entities: [{ type: 'bot_command', offset: 0, length: 6 }], ...overrides } } as any);
 }
 
+it.each(['accepted', 'uncertain'] as const)('returns immediately for pending steering, then reports %s once', async status => {
+  let finish!: (value: { status: 'accepted' | 'uncertain' }) => void;
+  const completion = new Promise<{ status: 'accepted' | 'uncertain' }>((resolve) => { finish = resolve; });
+  const remove = registerChatSteering('main', '7', JSON.stringify({ type: 'openai' }))({
+    sessionId: 'pending-session', turnId: 'pending-turn', submit: async () => ({ status: 'pending', completion }),
+  });
+  try {
+    const bot = createBot();
+    await send(bot);
+    expect(fixture.bytes.join('')).toContain('Steering update submitted');
+    expect(fixture.bytes.join('')).not.toContain('Could not confirm');
+    await send(bot);
+    expect(fixture.bytes.filter(b => JSON.parse(b).method === 'sendMessage')).toHaveLength(1);
+    finish({ status });
+    await vi.waitFor(() => expect(fixture.bytes.filter(b => JSON.parse(b).method === 'sendMessage')).toHaveLength(2));
+    expect(fixture.bytes.filter(b => JSON.parse(b).method === 'sendMessage')[1]).toContain(status === 'accepted' ? 'was accepted' : 'Could not confirm');
+    expect(fixture.queued).toHaveLength(0);
+  } finally { remove(); }
+});
+
 it.each(['accepted', 'uncertain', 'not-delivered'] as const)('routes %s exactly once', async status => {
   const submit = vi.fn(async () => status === 'not-delivered'
     ? { status, reason: 'closed' } as const : { status });
@@ -63,6 +83,8 @@ it.each(['accepted', 'uncertain', 'not-delivered'] as const)('routes %s exactly 
     expect(fixture.queued).toHaveLength(status === 'not-delivered' ? 1 : 0);
     expect(fixture.bytes.join('')).toContain(status === 'accepted' ? 'Update accepted'
       : status === 'uncertain' ? 'Could not confirm' : 'Queued as a follow-up');
+    const reply = fixture.bytes.map(b => JSON.parse(b)).find(b => b.method === 'sendMessage');
+    expect(reply.reply_parameters).toEqual({ message_id: 901 });
     if (status !== 'not-delivered') {
       const count = () => getRecentConversation('7', 100).filter(row => row.content === 'Steering fixture update').length;
       const before = count();

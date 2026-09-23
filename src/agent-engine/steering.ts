@@ -1,8 +1,11 @@
 /** Adapter acceptance is distinct from delivery uncertainty: never replay the latter. */
-export type SteeringResult =
+export type SteeringOutcome =
   | { status: 'accepted' }
   | { status: 'not-delivered'; reason: string }
   | { status: 'uncertain' };
+
+export type SteeringResult = SteeringOutcome
+  | { status: 'pending'; completion: Promise<{ status: 'accepted' | 'uncertain' }> };
 
 export interface SteeringHandle {
   readonly sessionId: string;

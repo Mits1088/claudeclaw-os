@@ -30,7 +30,7 @@ separately with Claude support, reusing this contract. This supersedes the origi
 ## Bounds and rollout
 
 `MIDTURN_STEERING_ENABLED=false` is the sole rollout control.
-Only App Server implements the handle. Unsupported/inactive adapters report
+Codex App Server and the Claude SDK adapter implement the handle. Unsupported/inactive adapters report
 unavailable without queuing `/steer`; send ordinary text for a follow-up. Disabled
 steering also reports disabled without queuing. A known rejection after finding
 an active handle visibly queues the stripped message; uncertain delivery never
@@ -55,3 +55,64 @@ Vitest suite pass (2395 passed, 16 skipped). No live provider turn was invoked.
 Node 22 CI and live Telegram/Codex acceptance remain follow-up verification.
 The latter should exercise an update during tool work, completion-edge fallback,
 /stop, /newchat, and SDK fallback with steering enabled. The runtime is unchanged.
+
+## Claude implementation (2026-09-21)
+
+Carry PR #167 forward on the shared contract delivered in #288, with a fresh
+replacement PR. Credit merlinfrombelgium for the original streaming-input design
+and implementation in [#167](https://github.com/earlyaidopters/claudeclaw-os/pull/167).
+Close #167 as superseded only once the replacement is available to link.
+
+- Keep explicit `/steer` and the existing Telegram routing, receipts, limits and
+  feature flag. Ordinary text remains FIFO. Other messengers are separate work.
+- Only the native Claude provider registers; Anthropic-compatible endpoints are
+  not enabled implicitly because they happen to use the same adapter.
+- Create streaming input per SDK attempt and register after session initialization.
+  Revoke at the first result, cancellation, exception or iterator teardown.
+- UUID-tag each steer. Enable the documented `--replay-user-messages` acknowledgment
+  and accept only a matching replay UUID/session. SDK consumption alone is uncertain.
+  See [CLI reference](https://code.claude.com/docs/en/cli-reference).
+- Withdraw unconsumed input on timeout/completion so existing FIFO fallback cannot
+  duplicate it. Input already handed to the SDK is never replayed automatically.
+  Close input at the first result and continue draining the SDK output normally.
+- Preserve safe missing-session recovery only when no steer was handed to the SDK.
+  Existing generic retry requires positive not-started evidence; ambiguous Claude
+  failures remain unknown and cannot replay the original prompt or a steer.
+- Validate adapter receipt handling, cancellation, finish-edge races, stale handles,
+  disabled behavior, resume recovery, and the existing Telegram routing tests.
+  Record real-provider smoke evidence separately from mocked protocol tests.
+
+Rollout remains disabled by default. Implementation and tests in a feature worktree
+do not constitute live fleet deployment or Telegram acceptance.
+
+### Claude validation evidence
+
+On Windows / Node 24.14.0, branch `feat/claude-steering-contract` based on main
+`4a1e92a`: typecheck, production build, and full Vitest suite passed (2580 passed,
+17 skipped). Build CLI artifacts before running the suite; CLI contract tests
+require `dist/`. No dependency manifest or lockfile changes.
+
+A real Claude Haiku 4.5 SDK invocation used a harmless in-process MCP pause tool
+with project/user settings disabled and filesystem/shell tools denied. During
+the pause, the shared handle submitted a direction to change the final response
+from `ORIGINAL_OK` to `STEERED_OK`. The exact replay receipt was accepted, the
+model returned `STEERED_OK`, and the handle was revoked at completion.
+This proves the adapter path for that run, not live Telegram or every Claude model.
+Cancellation, timeout withdrawal, uncertain delivery, missing-session recovery,
+compatible-provider exclusion and existing Telegram routing have automated coverage.
+
+### Delayed acknowledgment correction
+
+Naomi's live test exposed acknowledgments delayed beyond five seconds by a long
+tool call. Both messages were recorded as absorbed mid-turn, but the initial
+implementation had already reported uncertainty. Claude now returns a pending
+receipt as soon as the SDK pulls the message. Telegram promptly reports submission
+and releases its handler; a later exact acknowledgment produces a reply linked to
+the original command. Pending is not confirmed acceptance and never triggers FIFO
+replay. Teardown or the bounded fifteen-minute receipt lifetime resolves uncertainty.
+The five-second withdrawal deadline applies only before SDK consumption.
+
+Validation: 2583 tests passed, 17 skipped; typecheck and server build passed.
+Fake-clock coverage waits two minutes before acknowledging, and Telegram coverage
+proves immediate return and duplicate-safe final notification. A real Claude smoke
+test with a twelve-second pause returned pending, then accepted, and STEERED_OK.

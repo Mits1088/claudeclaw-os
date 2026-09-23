@@ -103,6 +103,16 @@ describe('claude turn is untouched', () => {
 });
 
 describe('anthropic-compatible turn reshapes the environment', () => {
+  it('does not expose native Claude steering for compatible endpoints', async () => {
+    const registerSteering = vi.fn();
+    await drain(new ClaudeSdkEngineAdapter().invoke(turnInput({ registerSteering })));
+    expect(registerSteering).not.toHaveBeenCalled();
+    expect(queryMock.mock.calls[0][0].options?.extraArgs).toBeUndefined();
+    const messages = [];
+    for await (const message of queryMock.mock.calls[0][0].prompt as AsyncIterable<unknown>) messages.push(message);
+    expect(messages).toHaveLength(1);
+  });
+
   it('authenticates against the endpoint with a bearer token', async () => {
     await drain(new ClaudeSdkEngineAdapter().invoke(turnInput({ env: { PATH: '/usr/bin' } })));
     const env = passedEnv()!;
