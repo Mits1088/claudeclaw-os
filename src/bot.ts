@@ -908,6 +908,23 @@ const pendingQuestions = new Map<string, PendingQuestion>();
 // "Other" reply to the right pending question.
 const pendingByChat = new Map<string, string>();
 
+// A normal message that arrives mid-turn stays in the FIFO queue. Its receipt
+// carries a one-shot action that can promote that exact message into the turn
+// that was active when it arrived. The queued closure observes `consumed`, so a
+// successful or uncertain steering delivery can never run again as a follow-up.
+interface QueuedSteerOffer {
+  token: string;
+  receiptId?: number;
+  chatId: string;
+  userId: number;
+  messageId: string;
+  text: string;
+  handle: import('./agent-engine/steering.js').SteeringHandle;
+  consumed: boolean;
+  submission?: Promise<import('./agent-engine/steering.js').SteeringResult>;
+}
+const queuedSteerOffers = new Map<string, QueuedSteerOffer>();
+
 const AUQ_TIMEOUT_MS = 10 * 60 * 1000; // 10 min to tap before giving up
 const OTHER_LABEL = '✏️ Other';
 
@@ -924,6 +941,49 @@ const PROCEED_DIRECTIVE =
 
 function makeToken(): string {
   return Math.random().toString(36).slice(2, 8);
+}
+
+async function offerQueuedMessageSteering(ctx: Context, chatId: string, text: string): Promise<QueuedSteerOffer | undefined> {
+  if (!MIDTURN_STEERING_ENABLED || !ctx.message || !ctx.from
+    || ctx.chat?.type !== 'private' || ctx.from.is_bot
+    || ctx.message.forward_origin || ctx.message.via_bot
+    || messageQueue.queuedFor(chatId) > 1) return;
+  const handle = getChatSteering(AGENT_ID, chatId, JSON.stringify(activeProvider()));
+  if (!handle) return;
+  const token = makeToken();
+  const offer: QueuedSteerOffer = {
+    token,
+    chatId,
+    userId: ctx.from.id,
+    messageId: String(ctx.message.message_id),
+    text,
+    handle,
+    consumed: false,
+  };
+  queuedSteerOffers.set(token, offer);
+  try {
+    const receipt = await ctx.reply('Use this message to steer the current reply.', {
+      reply_parameters: { message_id: ctx.message.message_id },
+      reply_markup: new InlineKeyboard().text('↩️ Steer this message', `qsteer:${token}`),
+    });
+    offer.receiptId = receipt.message_id;
+    return offer;
+  } catch (err) {
+    queuedSteerOffers.delete(token);
+    logger.debug({ err, chatId }, 'Could not offer queued-message steering');
+    return;
+  }
+}
+
+async function removeQueuedSteerReceipt(ctx: Context, offer: QueuedSteerOffer): Promise<void> {
+  queuedSteerOffers.delete(offer.token);
+  if (offer.receiptId !== undefined) {
+    const receiptId = offer.receiptId;
+    offer.receiptId = undefined;
+    await ctx.api.deleteMessage(offer.chatId, receiptId).catch((err) => {
+      logger.debug({ err, chatId: offer.chatId }, 'Could not remove queued steering receipt');
+    });
+  }
 }
 
 /**
@@ -1173,6 +1233,63 @@ async function maybeCaptureOtherReply(ctx: Context, chatIdStr: string, message: 
 function registerAuqCallbackHandler(bot: Bot): void {
   bot.on('callback_query:data', async (ctx) => {
     const data = ctx.callbackQuery.data;
+    if (data.startsWith('qsteer:')) {
+      const token = data.slice('qsteer:'.length);
+      const offer = queuedSteerOffers.get(token);
+      if (!offer || offer.consumed || ctx.from.id !== offer.userId
+        || String(ctx.chat?.id) !== offer.chatId) {
+        await ctx.answerCallbackQuery({ text: 'This queued message is no longer available.' }).catch(() => {});
+        return;
+      }
+      if (await replyIfLocked(ctx)) return;
+      if (!MIDTURN_STEERING_ENABLED
+        || getChatSteering(AGENT_ID, offer.chatId, JSON.stringify(activeProvider())) !== offer.handle) {
+        await removeQueuedSteerReceipt(ctx, offer);
+        await ctx.answerCallbackQuery({ text: 'Still queued as a follow-up.' }).catch(() => {});
+        return;
+      }
+      void removeQueuedSteerReceipt(ctx, offer);
+      // Publish the in-flight submission before yielding. FIFO must wait for its
+      // delivery decision if the active turn finishes during submit().
+      offer.submission = Promise.resolve().then(() => offer.handle.submit(offer.messageId, offer.text))
+        .catch((err) => {
+          logger.warn({ err }, 'Queued steering delivery could not be confirmed');
+          return { status: 'uncertain' as const };
+        });
+      const outcome = await offer.submission;
+      logger.info({ agentId: AGENT_ID, chatId: offer.chatId, status: outcome.status,
+        reason: outcome.status === 'not-delivered' ? outcome.reason : undefined }, 'queued_steering_outcome');
+      if (outcome.status === 'not-delivered') {
+        await ctx.answerCallbackQuery({ text: 'Still queued as a follow-up.' }).catch(() => {});
+        return;
+      }
+      // Uncertain delivery is deliberately treated as consumed too: replaying
+      // this message through the FIFO could duplicate an accepted steer.
+      offer.consumed = true;
+      queuedSteerOffers.delete(token);
+      if (claimSteeringReceipt(offer.handle, offer.messageId)) {
+        try { logConversationTurn(offer.chatId, 'user', offer.text, offer.handle.sessionId, AGENT_ID); }
+        catch (err) { logger.error({ err }, 'Could not persist queued steering input'); }
+        emitChatEvent({ type: 'user_message', chatId: offer.chatId, content: offer.text, source: 'telegram' });
+      }
+      if (outcome.status === 'pending') {
+        await ctx.answerCallbackQuery({ text: 'Update submitted; awaiting Claude acknowledgment.' }).catch(() => {});
+        void outcome.completion.then(async (final) => {
+          logger.info({ agentId: AGENT_ID, chatId: offer.chatId, status: final.status }, 'queued_steering_outcome');
+          await ctx.api.sendMessage(offer.chatId, final.status === 'accepted'
+            ? 'Steering update accepted.'
+            : 'Could not confirm delivery of your steering update. It has not been queued again.',
+          final.status === 'accepted' ? {} : { reply_parameters: { message_id: Number(offer.messageId) } });
+        }).catch((err) => { logger.warn({ err }, 'Could not send queued steering acknowledgment'); });
+        return;
+      }
+      await ctx.answerCallbackQuery().catch(() => {});
+      await ctx.api.sendMessage(offer.chatId, outcome.status === 'accepted'
+        ? 'Steering update accepted.'
+        : 'Could not confirm delivery of your steering update. It has not been queued again.',
+      outcome.status === 'accepted' ? {} : { reply_parameters: { message_id: Number(offer.messageId) } });
+      return;
+    }
     if (!data.startsWith('auq:')) return; // not ours
     const parts = data.split(':'); // auq:<token>:<action>[:<oIdx>]
     const token = parts[1];
@@ -2036,6 +2153,8 @@ function discoverSkillCommands(): Array<{ command: string; description: string }
 }
 
 export function createBot(): Bot {
+  // Bound duplicate Telegram redeliveries, including /steer after a turn ends.
+  const seenSteerMessages = new Set<string>();
   const token = activeBotToken;
   if (!token) {
     throw new Error('Bot token is not set. Check .env or agent config.');
@@ -2654,10 +2773,16 @@ export function createBot(): Bot {
       await ctx.reply('Steering is disabled. Send a normal message to queue a follow-up.');
       return;
     }
+    const messageKey = `${chatIdStr}:${ctx.message!.message_id}`;
+    if (seenSteerMessages.has(messageKey)) return;
+    seenSteerMessages.add(messageKey);
+    if (seenSteerMessages.size > 1000) seenSteerMessages.delete(seenSteerMessages.values().next().value!);
     const handle = getChatSteering(AGENT_ID, chatIdStr, JSON.stringify(activeProvider()));
     if (!handle) {
       logger.info({ agentId: AGENT_ID, chatId: chatIdStr, status: 'unavailable' }, 'steering_outcome');
-      await ctx.reply('Steering is not available for the active provider or turn. Send a normal message to queue a follow-up.');
+      messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text));
+      await ctx.reply('Queued as a follow-up.',
+        { reply_parameters: { message_id: ctx.message!.message_id } });
       return;
     }
     const outcome = messageQueue.queuedFor(chatIdStr) > 1
@@ -2683,17 +2808,17 @@ export function createBot(): Bot {
         await submitted;
         logger.info({ agentId: AGENT_ID, chatId: chatIdStr, status: final.status }, 'steering_outcome');
         await ctx.reply(final.status === 'accepted'
-          ? 'Your steering update was accepted by the active turn.'
+          ? 'Steering update accepted.'
           : 'Could not confirm delivery of your steering update. It has not been queued again.',
-        { reply_parameters: { message_id: ctx.message!.message_id } });
+        final.status === 'accepted' ? {} : { reply_parameters: { message_id: ctx.message!.message_id } });
       }).catch((err) => { logger.warn({ err }, 'Could not send final steering acknowledgment'); });
       await submitted;
       return;
     }
     await ctx.reply(outcome.status === 'accepted'
-      ? 'Update accepted by the active turn.'
+      ? 'Steering update accepted.'
       : 'Could not confirm whether the active turn received your update. It has not been queued again.',
-    { reply_parameters: { message_id: ctx.message!.message_id } });
+    outcome.status === 'accepted' ? {} : { reply_parameters: { message_id: ctx.message!.message_id } });
   });
 
   // Text messages — and any slash commands not owned by this bot (skills, e.g. /todo /gmail)
@@ -2887,7 +3012,16 @@ export function createBot(): Bot {
     // Clear WA/Slack state and pass through to Claude
     if (state) waState.delete(chatIdStr);
     if (slkState) slackState.delete(chatIdStr);
-    messageQueue.enqueue(chatIdStr, () => handleMessage(ctx, text));
+    const steerOffer = await offerQueuedMessageSteering(ctx, chatIdStr, text);
+    messageQueue.enqueue(chatIdStr, async () => {
+      if (steerOffer) await removeQueuedSteerReceipt(ctx, steerOffer);
+      if (steerOffer?.submission) {
+        const outcome = await steerOffer.submission;
+        if (outcome.status !== 'not-delivered') return;
+      }
+      if (steerOffer?.consumed) return;
+      await handleMessage(ctx, text);
+    });
   });
 
   // Voice messages — real transcription via Groq Whisper

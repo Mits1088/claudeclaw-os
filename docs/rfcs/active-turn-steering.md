@@ -31,7 +31,7 @@ separately with Claude support, reusing this contract. This supersedes the origi
 
 `MIDTURN_STEERING_ENABLED=false` is the sole rollout control.
 Codex App Server and the Claude SDK adapter implement the handle. Unsupported/inactive adapters report
-unavailable without queuing `/steer`; send ordinary text for a follow-up. Disabled
+unavailable and queue the stripped `/steer` text as a normal follow-up. Disabled
 steering also reports disabled without queuing. A known rejection after finding
 an active handle visibly queues the stripped message; uncertain delivery never
 automatically requeues. Initial fixed
@@ -107,8 +107,8 @@ Naomi's live test exposed acknowledgments delayed beyond five seconds by a long
 tool call. Both messages were recorded as absorbed mid-turn, but the initial
 implementation had already reported uncertainty. Claude now returns a pending
 receipt as soon as the SDK pulls the message. Telegram promptly reports submission
-and releases its handler; a later exact acknowledgment produces a reply linked to
-the original command. Pending is not confirmed acceptance and never triggers FIFO
+and releases its handler; a later exact acknowledgment produces the plain
+`Steering update accepted.` receipt without repeating or quoting the command. Pending is not confirmed acceptance and never triggers FIFO
 replay. Teardown or the bounded fifteen-minute receipt lifetime resolves uncertainty.
 The five-second withdrawal deadline applies only before SDK consumption.
 
@@ -116,3 +116,17 @@ Validation: 2583 tests passed, 17 skipped; typecheck and server build passed.
 Fake-clock coverage waits two minutes before acknowledging, and Telegram coverage
 proves immediate return and duplicate-safe final notification. A real Claude smoke
 test with a twelve-second pause returned pending, then accepted, and STEERED_OK.
+
+### Queued-message steering and receipt follow-up
+
+While opt-in steering is enabled, the first ordinary follow-up behind an active
+turn offers a reply-linked `Steer this message` button. It remains FIFO unless the
+owner taps the button. The callback is bound to the original provider/turn and
+rechecks the lock and rollout flag; a stale handle leaves the message queued.
+Later queued messages cannot jump ahead of earlier follow-ups.
+
+FIFO waits for an in-flight button submission's delivery decision. Accepted,
+pending, and uncertain submissions cannot replay as follow-ups; known
+non-delivery retains normal execution. Duplicate taps are ignored, and direct
+`/steer` message redeliveries are bounded by a process-local 1,000-message cache.
+Successful receipts contain only `Steering update accepted.` for both providers.
