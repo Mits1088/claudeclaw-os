@@ -16,6 +16,24 @@ import {
 } from './model-catalog.js';
 
 describe('model catalog', () => {
+  it('supports Sonnet 5.5 without emitting rejected legacy thinking settings', () => {
+    const provider = { type: 'claude' as const, model: 'claude-sonnet-5-5' };
+    expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: provider.model, label: 'Sonnet 5.5' });
+    expect(staticRuntimeOptionsFor(provider)?.modeOptions[0].label).toBe('Default (high)');
+    for (const mode of ['off', 'on', 'enabled']) {
+      expect(claudeThinkingForModel(provider.model, mode, 'high')).toBeUndefined();
+      expect(reconcileRuntimeOptions({ ...provider, thinkingMode: mode }).provider.thinkingMode).toBeUndefined();
+    }
+  });
+  it('clears old Sol none reasoning when switching to Sol 6.1 while retaining max', () => {
+    const provider = { type: 'openai' as const, model: 'gpt-6.1-sol' };
+    expect(OPENAI_MODEL_OPTIONS).toContainEqual({ id: provider.model, label: 'GPT-6.1 Sol' });
+    expect(staticRuntimeOptionsFor(provider)?.thinkingOptions.map(o => o.id))
+      .toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+    expect(validateProviderModelOptions({ ...provider, thinkingMode: 'none' })).toMatch(/unsupported reasoning/i);
+    expect(reconcileRuntimeOptions({ ...provider, thinkingMode: 'none' }).provider.thinkingMode).toBeUndefined();
+    expect(reconcileRuntimeOptions({ ...provider, thinkingMode: 'max' }).provider.thinkingMode).toBe('max');
+  });
   it('uses medium effort and always-on thinking for Opus 5.5', () => {
     const provider = { type: 'claude' as const, model: 'claude-opus-5-5' };
     expect(staticRuntimeOptionsFor(provider)?.modeOptions[0].label).toBe('Default (medium)');

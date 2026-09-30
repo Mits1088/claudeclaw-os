@@ -22,6 +22,7 @@ const MODEL_LABELS: Readonly<Record<string, string>> = {
   'claude-opus-5': 'Opus 5',
   'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
+  'claude-sonnet-5-5': 'Sonnet 5.5',
   'claude-sonnet-5': 'Sonnet 5',
   'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-7': 'Opus 4.7',
@@ -30,6 +31,7 @@ const MODEL_LABELS: Readonly<Record<string, string>> = {
   'claude-sonnet-4-5': 'Sonnet 4.5',
   'claude-haiku-4-5': 'Haiku 4.5',
   'gpt-6-astra': 'GPT-6 Astra',
+  'gpt-6.1-sol': 'GPT-6.1 Sol',
   'gpt-6-sol': 'GPT-6 Sol',
   'gpt-6-luna': 'GPT-6 Luna',
   'gpt-5.6-sol': 'GPT-5.6 Sol',
@@ -53,12 +55,13 @@ function uniqueOptions(ids: string[]): ModelOption[] {
 }
 
 // Keep older supported models selectable; remove only against provider retirement notices.
-// Catalogs reviewed 2026-09-22.
+// Catalogs reviewed 2026-09-29.
 export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
   'claude-opus-5-5',
   'claude-opus-5',
   'claude-fable-5-1',
   'claude-fable-5',
+  'claude-sonnet-5-5',
   'claude-sonnet-5',
   'claude-opus-4-8',
   'claude-sonnet-4-6',
@@ -71,6 +74,7 @@ export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
 
 export const OPENAI_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
   'gpt-6-astra',
+  'gpt-6.1-sol',
   'gpt-6-sol',
   'gpt-6-luna',
   'gpt-5.6-sol',
@@ -118,6 +122,7 @@ function claudeThinkingOptions(model: string): RuntimeOption[] {
     || model === 'claude-opus-5'
     || model === 'claude-fable-5-1'
     || model === 'claude-fable-5'
+    || model === 'claude-sonnet-5-5'
     || model === 'claude-sonnet-5') {
     return [];
   }
@@ -152,7 +157,7 @@ export function staticRuntimeOptionsFor(provider: ProviderConfig, requestedModel
       thinkingLabel: 'Reasoning effort',
       modeOptions: [],
       thinkingOptions: effortOptions(
-        effectiveModel === 'gpt-6-astra'
+        (effectiveModel === 'gpt-6-astra' || effectiveModel === 'gpt-6.1-sol')
           ? OPENAI_ASTRA_EFFORT
           : (effectiveModel === 'gpt-6-sol' || effectiveModel === 'gpt-6-luna' || effectiveModel.startsWith('gpt-5.6-'))
             ? OPENAI_SOL_LUNA_EFFORT
@@ -254,7 +259,7 @@ export function claudeThinkingForModel(
   const mode = normalizedMode(requested);
   if (!mode) return undefined;
 
-  if (model === 'claude-opus-5-5' || model === 'claude-fable-5-1' || model === 'claude-fable-5') return undefined;
+  if (model === 'claude-sonnet-5-5' || model === 'claude-opus-5-5' || model === 'claude-fable-5-1' || model === 'claude-fable-5') return undefined;
   if (model === 'claude-opus-5') {
     if (mode === 'off') {
       return effort === 'xhigh' || effort === 'max' ? undefined : { type: 'disabled' };

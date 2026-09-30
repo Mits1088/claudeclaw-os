@@ -43,6 +43,8 @@ const TIER_NANO: OpenAiModelRates = { inputPerM: 0.25, cachedInputPerM: 0.025, o
 // Override any of these via OPENAI_PRICING_JSON.
 const MODEL_RATES: Record<string, OpenAiModelRates> = {
   // Standard API rates verified 2026-09-22: https://developers.openai.com/api/docs/pricing
+  // GPT-6.1 Sol rates verified 2026-09-29 against its official model page.
+  'gpt-6.1-sol': { inputPerM: 2, cachedInputPerM: 0.1, outputPerM: 10 },
   'gpt-6-sol': { inputPerM: 2, cachedInputPerM: 0.2, outputPerM: 10 },
   'gpt-6-luna': { inputPerM: 0.1, cachedInputPerM: 0.01, outputPerM: 0.5 },
   'gpt-6-astra': { inputPerM: 10, cachedInputPerM: 1, outputPerM: 50 },
@@ -146,6 +148,7 @@ const DEFAULT_OPENAI_CONTEXT_WINDOW = 272_000;
 
 const MODEL_CONTEXT_WINDOWS: Readonly<Record<string, number>> = {
   'gpt-6-astra': 1_050_000,
+  'gpt-6.1-sol': 1_050_000,
   'gpt-6-sol': 1_050_000,
   'gpt-6-luna': 1_050_000,
 };

@@ -485,11 +485,13 @@ const AVAILABLE_MODELS: Record<string, string> = {
   opus5: 'claude-opus-5',
   fable51: 'claude-fable-5-1',
   fable5: 'claude-fable-5',
+  sonnet55: 'claude-sonnet-5-5',
   sonnet5: 'claude-sonnet-5',
 };
 
 const OPENAI_MODEL_SHORTCUTS: Record<string, string> = {
   astra: 'gpt-6-astra',
+  sol61: 'gpt-6.1-sol',
   sol: 'gpt-6-sol',
   terra: 'gpt-5.6-terra',
   luna: 'gpt-6-luna',

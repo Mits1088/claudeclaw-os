@@ -5,6 +5,7 @@ import { contextWindowForOpenAiModel, ratesForOpenAiModel } from './openai-prici
 describe('OpenAI model pricing', () => {
   it.each([
     ['gpt-6-astra', 10, 1, 50],
+    ['gpt-6.1-sol', 2, 0.1, 10],
     ['gpt-6-sol', 2, 0.2, 10],
     ['gpt-6-luna', 0.1, 0.01, 0.5],
     ['gpt-5.6-sol', 5, 0.5, 30],
@@ -15,7 +16,7 @@ describe('OpenAI model pricing', () => {
   });
 
   it('reports Astra\'s published context window', () => {
-    for (const model of ['gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
+    for (const model of ['gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna']) {
       expect(contextWindowForOpenAiModel(model)).toBe(1_050_000);
     }
   });

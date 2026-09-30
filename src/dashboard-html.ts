@@ -204,6 +204,7 @@ const WARROOM_ENABLED = warroomEnabled;
           <div class="model-opt" data-model="claude-opus-5" onclick="pickGlobalModel(this)">All Opus 5</div>
           <div class="model-opt" data-model="claude-fable-5-1" onclick="pickGlobalModel(this)">All Fable 5.1</div>
           <div class="model-opt" data-model="claude-fable-5" onclick="pickGlobalModel(this)">All Fable 5</div>
+          <div class="model-opt" data-model="claude-sonnet-5-5" onclick="pickGlobalModel(this)">All Sonnet 5.5</div>
           <div class="model-opt" data-model="claude-sonnet-5" onclick="pickGlobalModel(this)">All Sonnet 5</div>
           <div class="model-opt" data-model="claude-opus-4-8" onclick="pickGlobalModel(this)">All Opus 4.8</div>
           <div class="model-opt" data-model="claude-opus-4-6" onclick="pickGlobalModel(this)">All Opus 4.6</div>
@@ -1926,6 +1927,7 @@ const CAW_FALLBACK_MODELS = {
     { id: 'claude-opus-5', label: 'Opus 5' },
     { id: 'claude-fable-5-1', label: 'Fable 5.1' },
     { id: 'claude-fable-5', label: 'Fable 5' },
+    { id: 'claude-sonnet-5-5', label: 'Sonnet 5.5' },
     { id: 'claude-sonnet-5', label: 'Sonnet 5' },
     { id: 'claude-opus-4-8', label: 'Opus 4.8' },
     { id: 'claude-opus-4-6', label: 'Opus 4.6' },
@@ -1935,6 +1937,7 @@ const CAW_FALLBACK_MODELS = {
   ],
   openai: [
     { id: 'gpt-6-astra', label: 'GPT-6 Astra' },
+    { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' },
     { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
     { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
@@ -1943,6 +1946,7 @@ const CAW_FALLBACK_MODELS = {
     { id: 'gpt-5.5', label: 'GPT-5.5' },
   ],
   'acp-codex': [
+    { id: 'gpt-6.1-sol', label: 'GPT-6.1 Sol' },
     { id: 'gpt-6-sol', label: 'GPT-6 Sol' },
     { id: 'gpt-6-luna', label: 'GPT-6 Luna' },
     { id: 'gpt-5.6-sol', label: 'GPT-5.6 Sol' },
