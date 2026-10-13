@@ -55,7 +55,7 @@ describe('session summary transcript', () => {
 
 describe('session summary provider policy', () => {
   it.each([
-    [{ type: 'claude' as const, model: 'claude-opus-4-8' }, 'claude-haiku-4-5'],
+    [{ type: 'claude' as const, model: 'claude-opus-4-8' }, 'claude-haiku-5-5'],
     [{ type: 'openai' as const, model: 'gpt-6-astra' }, 'gpt-5.4-mini'],
     [{ type: 'gemini' as const, model: 'gemini-2.5-pro' }, 'gemini-2.5-flash'],
     [{ type: 'openrouter' as const, model: 'vendor/flagship' }, 'z-ai/glm-4.5-air:free'],

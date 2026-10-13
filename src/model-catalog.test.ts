@@ -269,3 +269,20 @@ describe('resetProviderModelSelection', () => {
     })).toEqual({ type: 'openai', dangerouslySkipPermissions: true });
   });
 });
+
+ describe('Haiku 5.5', () => {
+  it('offers five efforts with medium default and model-managed thinking', () => {
+    const provider = { type: 'claude' as const, model: 'claude-haiku-5-5' };
+    expect(CLAUDE_MODEL_OPTIONS).toContainEqual({ id: provider.model, label: 'Haiku 5.5' });
+    const options = staticRuntimeOptionsFor(provider);
+    expect(options?.modeOptions.map(o => o.id)).toEqual(['', 'low', 'medium', 'high', 'xhigh', 'max']);
+    expect(options?.modeOptions[0].label).toBe('Default (medium)');
+    expect(options?.thinkingOptions).toEqual([]);
+    for (const effort of ['low', 'medium', 'high', 'xhigh', 'max']) {
+      expect(normalizedEffortForProvider(provider, effort)).toBe(effort);
+      expect(validateProviderModelOptions({ ...provider, runtimeMode: effort })).toBeNull();
+      expect(claudeThinkingForModel(provider.model, 'off', effort)).toBeUndefined();
+    }
+    expect(validateProviderModelOptions({ ...provider, runtimeMode: 'none' })).toMatch(/unsupported effort/i);
+  });
+});

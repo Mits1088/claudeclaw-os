@@ -376,7 +376,7 @@ export const EMERGENCY_KILL_PHRASE =
 
 // Model fallback chain: comma-separated model IDs. When the primary model
 // fails with an overloaded/billing error, try the next model in the chain.
-// Example: "claude-sonnet-4-6,claude-haiku-4-5"
+// Example: "claude-sonnet-5-5,claude-haiku-5-5"
 export const MODEL_FALLBACK_CHAIN = (
   process.env.MODEL_FALLBACK_CHAIN || envConfig.MODEL_FALLBACK_CHAIN || ''
 ).split(',').map((s) => s.trim()).filter(Boolean);
@@ -386,20 +386,20 @@ export const MODEL_FALLBACK_CHAIN = (
 export const SMART_ROUTING_ENABLED =
   (process.env.SMART_ROUTING_ENABLED || envConfig.SMART_ROUTING_ENABLED || 'false').toLowerCase() === 'true';
 export const SMART_ROUTING_CHEAP_MODEL =
-  process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-4-5';
+  process.env.SMART_ROUTING_CHEAP_MODEL || envConfig.SMART_ROUTING_CHEAP_MODEL || 'claude-haiku-5-5';
 
 // ── Claude model selection ──────────────────────────────────────────
 // The /model opus|sonnet|haiku Telegram shortcuts and the fresh-install
 // default all resolve through these. Defaults track the current Claude
 // lineup; override any of them in .env so a new model release is picked
 // up on the next restart WITHOUT a code change or a new release.
-// Example: CLAUDE_MODEL_OPUS=claude-opus-4-9
+// Example: CLAUDE_MODEL_OPUS=claude-opus-4-6
 export const CLAUDE_MODEL_OPUS =
   process.env.CLAUDE_MODEL_OPUS || envConfig.CLAUDE_MODEL_OPUS || 'claude-opus-5-5';
 export const CLAUDE_MODEL_SONNET =
-  process.env.CLAUDE_MODEL_SONNET || envConfig.CLAUDE_MODEL_SONNET || 'claude-sonnet-4-6';
+  process.env.CLAUDE_MODEL_SONNET || envConfig.CLAUDE_MODEL_SONNET || 'claude-sonnet-5-5';
 export const CLAUDE_MODEL_HAIKU =
-  process.env.CLAUDE_MODEL_HAIKU || envConfig.CLAUDE_MODEL_HAIKU || 'claude-haiku-4-5';
+  process.env.CLAUDE_MODEL_HAIKU || envConfig.CLAUDE_MODEL_HAIKU || 'claude-haiku-5-5';
 // Default Claude model when no provider/agent model is configured (e.g. fresh installs).
 // Falls back to the Opus alias above so it tracks the same single source of truth.
 export const DEFAULT_CLAUDE_MODEL =

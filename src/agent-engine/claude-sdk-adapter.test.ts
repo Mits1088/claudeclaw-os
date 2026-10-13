@@ -168,3 +168,12 @@ describe('ClaudeSdkEngineAdapter resume recovery', () => {
     expect(results[0]).toMatchObject({ text: null, stopReason: 'error_during_execution' });
   });
 });
+
+describe('Haiku 5.5 SDK options', () => {
+  it.each(['low', 'medium', 'high', 'xhigh', 'max'] as const)('forwards %s effort and exact model on resume', async effort => {
+    queryMock.mockReset();
+    queryMock.mockImplementation(successQuery as never);
+    await collect(new ClaudeSdkEngineAdapter().invoke(turnInput({ model: 'claude-haiku-5-5', effort, sessionId: 'existing-session' })));
+    expect(queryMock.mock.calls[0][0].options).toMatchObject({ model: 'claude-haiku-5-5', effort, resume: 'existing-session' });
+  });
+});

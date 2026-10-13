@@ -23,6 +23,7 @@ const MODEL_LABELS: Readonly<Record<string, string>> = {
   'claude-fable-5-1': 'Fable 5.1',
   'claude-fable-5': 'Fable 5',
   'claude-sonnet-5-5': 'Sonnet 5.5',
+  'claude-haiku-5-5': 'Haiku 5.5',
   'claude-sonnet-5': 'Sonnet 5',
   'claude-opus-4-8': 'Opus 4.8',
   'claude-opus-4-7': 'Opus 4.7',
@@ -55,13 +56,14 @@ function uniqueOptions(ids: string[]): ModelOption[] {
 }
 
 // Keep older supported models selectable; remove only against provider retirement notices.
-// Catalogs reviewed 2026-09-29.
+// Catalogs reviewed 2026-10-12.
 export const CLAUDE_MODEL_OPTIONS: readonly ModelOption[] = uniqueOptions([
   'claude-opus-5-5',
   'claude-opus-5',
   'claude-fable-5-1',
   'claude-fable-5',
   'claude-sonnet-5-5',
+  'claude-haiku-5-5',
   'claude-sonnet-5',
   'claude-opus-4-8',
   'claude-sonnet-4-6',
@@ -122,6 +124,7 @@ function claudeThinkingOptions(model: string): RuntimeOption[] {
     || model === 'claude-opus-5'
     || model === 'claude-fable-5-1'
     || model === 'claude-fable-5'
+    || model === 'claude-haiku-5-5'
     || model === 'claude-sonnet-5-5'
     || model === 'claude-sonnet-5') {
     return [];
@@ -147,7 +150,7 @@ export function staticRuntimeOptionsFor(provider: ProviderConfig, requestedModel
     return {
       modeLabel: 'Effort',
       thinkingLabel: 'Thinking',
-      modeOptions: effortOptions(claudeEffortIds(effectiveModel), effectiveModel === 'claude-opus-5-5' ? 'medium' : 'high'),
+      modeOptions: effortOptions(claudeEffortIds(effectiveModel), (effectiveModel === 'claude-opus-5-5' || effectiveModel === 'claude-haiku-5-5') ? 'medium' : 'high'),
       thinkingOptions: claudeThinkingOptions(effectiveModel),
     };
   }
@@ -259,7 +262,7 @@ export function claudeThinkingForModel(
   const mode = normalizedMode(requested);
   if (!mode) return undefined;
 
-  if (model === 'claude-sonnet-5-5' || model === 'claude-opus-5-5' || model === 'claude-fable-5-1' || model === 'claude-fable-5') return undefined;
+  if (model === 'claude-haiku-5-5' || model === 'claude-sonnet-5-5' || model === 'claude-opus-5-5' || model === 'claude-fable-5-1' || model === 'claude-fable-5') return undefined;
   if (model === 'claude-opus-5') {
     if (mode === 'off') {
       return effort === 'xhigh' || effort === 'max' ? undefined : { type: 'disabled' };

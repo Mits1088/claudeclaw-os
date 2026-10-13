@@ -486,6 +486,7 @@ const AVAILABLE_MODELS: Record<string, string> = {
   fable51: 'claude-fable-5-1',
   fable5: 'claude-fable-5',
   sonnet55: 'claude-sonnet-5-5',
+  haiku55: 'claude-haiku-5-5',
   sonnet5: 'claude-sonnet-5',
 };
 
