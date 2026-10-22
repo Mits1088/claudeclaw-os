@@ -3,6 +3,7 @@
  * Sends realistic conversation pairs through the ingest function
  * and reports what gets stored vs filtered.
  */
+import './_hermetic-store.js';
 import { initDatabase } from '../src/db.js';
 import { getRecentMemories, getRecentConsolidations } from '../src/db.js';
 import { ingestConversationTurn } from '../src/memory-ingest.js';

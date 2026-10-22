@@ -196,6 +196,8 @@ describe('cwd .env store mismatch warning', () => {
   });
 
   it('warns once and names both env files and resolved store paths', async () => {
+    // test-env-setup.ts forces a temp store; the warning path needs it unset.
+    vi.stubEnv('CLAUDECLAW_STORE_DIR', undefined);
     const { readEnvFile, REPO_ROOT_ENV } = await import('./env.js');
     const cwd = path.resolve(path.dirname(REPO_ROOT_ENV), '..', 'sibling-checkout');
     const cwdEnv = path.join(cwd, '.env');

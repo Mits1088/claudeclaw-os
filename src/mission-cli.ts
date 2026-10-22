@@ -164,6 +164,10 @@ function dispatch(): void {
         console.error('Usage: mission-cli create --agent <id> --title "Label" [--at <RFC3339>] "Full prompt text"');
         process.exit(1);
       }
+      if (!targetAgent && process.env.CLAUDECLAW_AGENT_ID?.trim()) {
+        console.error('An agent must pass --agent <id>. Unassigned missions wait in the Inbox for dashboard assignment.');
+        process.exit(1);
+      }
       const r = actionCreateMission({
         prompt,
         agent: targetAgent,

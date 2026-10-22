@@ -16,6 +16,7 @@
  *
  * Run: npx tsx scripts/integration-test.ts
  */
+import './_hermetic-store.js';
 import {
   _initTestDatabase,
   addWarRoomTranscript,

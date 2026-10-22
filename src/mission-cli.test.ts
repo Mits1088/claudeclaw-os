@@ -27,23 +27,24 @@ function seedAgent(id: string, cfg: Record<string, unknown>) {
   fs.writeFileSync(path.join(dir, 'agent.yaml'), yaml.dump(cfg), 'utf-8');
 }
 
-function childEnv(): Record<string, string | undefined> {
+function childEnv(extra: Record<string, string | undefined> = {}): Record<string, string | undefined> {
   return {
     ...process.env,
     DB_ENCRYPTION_KEY: TEST_DB_KEY,
     CLAUDECLAW_CONFIG: cfgDir,
     CLAUDECLAW_STORE_DIR: storeDir,
     CLAUDECLAW_AGENT_ID: undefined,
+    ...extra,
   };
 }
 
 interface RunResult { status: number; stdout: string; stderr: string; }
 
-function run(args: string): RunResult {
+function run(args: string, extra: Record<string, string | undefined> = {}): RunResult {
   try {
     const stdout = execSync(`node "${CLI_PATH}" ${args}`, {
       cwd: PROJECT_DIR,
-      env: childEnv(),
+      env: childEnv(extra),
       encoding: 'utf-8',
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -96,6 +97,19 @@ describe('mission-cli create — resolve-then-store guard', () => {
     // Nothing was written.
     const listed = run('list');
     expect(listed.stdout).toContain('No mission tasks');
+  });
+
+  it('rejects an agent-created unassigned task without writing it', () => {
+    const created = run('create --title "lost" "do this"', { CLAUDECLAW_AGENT_ID: 'main' });
+    expect(created.status).not.toBe(0);
+    expect(created.stderr).toContain('--agent');
+    expect(run('list').stdout).toContain('No mission tasks');
+  });
+
+  it('accepts an assigned task from an agent', () => {
+    const created = run('create --agent amos "do this"', { CLAUDECLAW_AGENT_ID: 'main' });
+    expect(created.status).toBe(0);
+    expect(run('list').stdout).toContain('@amos');
   });
 
   it('leaves the task unassigned when --agent is omitted', () => {

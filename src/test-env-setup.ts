@@ -46,3 +46,9 @@ process.env.DASHBOARD_URL = process.env.DASHBOARD_URL || 'https://dash.test.exam
 // to off, so enable it here to keep those tests meaningful. Tests for the gated
 // (off) state should override this explicitly.
 process.env.ENABLE_ACP = process.env.ENABLE_ACP || 'true';
+
+// Hermetic store: ALWAYS force a throwaway store dir, never honoring an
+// ambient value nor the repo .env (config.ts reads process.env before .env).
+// Without this, a developer .env pointing CLAUDECLAW_STORE_DIR at the live
+// production store would have the suite open and mutate the production DB.
+process.env.CLAUDECLAW_STORE_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'claudeclaw-test-store-'));

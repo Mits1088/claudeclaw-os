@@ -3,6 +3,7 @@
  * Mixes noise, preferences, context, corrections, follow-ups.
  * Analyzes what got stored, what got filtered, and quality of extraction.
  */
+import './_hermetic-store.js';
 import { initDatabase } from '../src/db.js';
 import { readEnvFile } from '../src/env.js';
 import {

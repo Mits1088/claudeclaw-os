@@ -14,6 +14,13 @@ import {
   resolveDispatchAgentId,
 } from './dispatch-mcp-server.js';
 
+// Top-level: any call reaching ensureDatabase (obsidianAvailable via
+// dispatchMcpServerToolDefinitions) must hit an in-memory test DB, never a
+// file store.
+beforeEach(() => {
+  _initTestDatabase();
+});
+
 interface ToolResult {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;

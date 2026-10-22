@@ -10,7 +10,6 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const tsx = pathToFileURL(createRequire(import.meta.url).resolve('tsx')).href;
 
 it.each(['success', 'error', 'abort'])('captures actual voice subprocess stdout on %s without a provider', mode => {
-  expect(fs.existsSync(path.join(root, '.env'))).toBe(false);
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'voice-output-fixture-'));
   const loader = path.join(dir, 'fixture.mjs');
   const secret = 'alpha\nbeta "quoted" \\ credential';
@@ -56,6 +55,9 @@ it.each(['success', 'error', 'abort'])('captures actual voice subprocess stdout 
       EXFILTRATION_GUARD_ENABLED: 'true', PROTECTED_ENV_VARS: 'FIXTURE_SECRET',
       FIXTURE_SECRET: secret, FIXTURE_MODE: mode },
   });
+  // The explicit temp store wins over any repo-root .env. Verify the child
+  // actually opened that isolated database.
+  expect(fs.existsSync(path.join(dir, 'store', 'claudeclaw.db'))).toBe(true);
   expect(child.stderr, child.stdout).toContain('FIXTURE_ENGINE_USED');
   expect(child.stdout).not.toContain('alpha');
   expect(child.stderr).not.toContain('alpha');

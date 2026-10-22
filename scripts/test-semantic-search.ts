@@ -1,3 +1,4 @@
+import './_hermetic-store.js';
 import { initDatabase } from '../src/db.js';
 import { searchMemories } from '../src/db.js';
 import { embedText } from '../src/embeddings.js';

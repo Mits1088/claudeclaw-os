@@ -8,6 +8,7 @@
  * 3. Verify what got stored and what got filtered
  * 4. Run consolidation and verify insights
  */
+import './_hermetic-store.js';
 import { readEnvFile } from '../src/env.js';
 import { initDatabase } from '../src/db.js';
 import {

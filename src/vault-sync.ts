@@ -22,7 +22,11 @@ export function getVaultRemotePath(vaultDir: string): string {
 }
 
 async function git(cwd: string, args: string[]): Promise<{ stdout: string; stderr: string }> {
-  return execFileAsync('git', args, { cwd });
+  return execFileAsync('git', args, {
+    cwd,
+    // The no-change commit paths below match Git's diagnostic text.
+    env: { ...process.env, LC_ALL: 'C', LANGUAGE: 'C' },
+  });
 }
 
 function errorMessage(e: unknown): string {

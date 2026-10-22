@@ -1,3 +1,4 @@
+import './_hermetic-store.js';
 import { initDatabase } from '../src/db.js';
 import { getUnconsolidatedMemories, getRecentConsolidations, getRecentMemories } from '../src/db.js';
 import { runConsolidation } from '../src/memory-consolidate.js';

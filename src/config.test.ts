@@ -39,6 +39,8 @@ describe('MIDTURN_STEERING_ENABLED resolution', () => {
 
 describe('STORE_DIR resolution', () => {
   it('defaults to PROJECT_ROOT/store when CLAUDECLAW_STORE_DIR is unset', async () => {
+    // test-env-setup.ts forces a temp store; this case needs it truly unset.
+    vi.stubEnv('CLAUDECLAW_STORE_DIR', undefined);
     const c = await loadConfig();
     expect(c.STORE_DIR).toBe(path.resolve(c.PROJECT_ROOT, 'store'));
   });
@@ -50,6 +52,7 @@ describe('STORE_DIR resolution', () => {
   });
 
   it('honours an absolute CLAUDECLAW_STORE_DIR from the .env file', async () => {
+    vi.stubEnv('CLAUDECLAW_STORE_DIR', undefined);
     const c = await loadConfig({ CLAUDECLAW_STORE_DIR: '/abs/store' });
     expect(c.STORE_DIR).toBe('/abs/store');
   });

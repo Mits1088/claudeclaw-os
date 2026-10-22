@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import crypto from 'crypto';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 
 import { DB_ENCRYPTION_KEY, MEMORY_RECALL_MODE_ENV, STORE_DIR } from './config.js';
@@ -468,8 +469,22 @@ function createSchema(database: Database.Database): void {
   `);
 }
 
+/**
+ * Safety belt: under vitest, refuse to open any database outside the OS temp
+ * dir (compares realpaths: macOS /var/folders is /private/var/folders).
+ */
+export function assertTestStoreIsHermetic(storeDir: string): void {
+  if (!process.env.VITEST) return;
+  const real = fs.realpathSync(storeDir);
+  const tmp = fs.realpathSync(os.tmpdir());
+  if (real !== tmp && !real.startsWith(tmp + path.sep)) {
+    throw new Error(`refused: database outside tmpdir during tests (${real})`);
+  }
+}
+
 export function initDatabase(): void {
   fs.mkdirSync(STORE_DIR, { recursive: true });
+  assertTestStoreIsHermetic(STORE_DIR);
   const dbPath = path.join(STORE_DIR, 'claudeclaw.db');
 
   // Validate encryption key is available before proceeding
